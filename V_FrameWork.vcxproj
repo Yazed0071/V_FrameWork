@@ -24,6 +24,7 @@
     <ProjectGuid>{7de278a4-5c40-4bfb-a6bf-b74a0cd6d472}</ProjectGuid>
     <RootNamespace>Zozoverhaul</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <ProjectName>V_FrameWork</ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -110,9 +111,9 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;ZOZOVERHAUL_EXPORTS;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
-      <AdditionalIncludeDirectories>C:\dev\Zoz_Overhaul_HOOK;C:\dev\Zoz_Overhaul_HOOK\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)\functions;$(SolutionDir)\include;$(SolutionDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -128,9 +129,9 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;ZOZOVERHAUL_EXPORTS;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
-      <AdditionalIncludeDirectories>C:\dev\Zoz_Overhaul_HOOK;C:\dev\Zoz_Overhaul_HOOK\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)\functions;$(SolutionDir)\include;$(SolutionDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -142,12 +143,40 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="framework.h" />
+    <ClInclude Include="functions\BuiltInModules.h" />
+    <ClInclude Include="functions\CautionStepNormalTimerHook.h" />
+    <ClInclude Include="functions\EnterDownHoldupForceVoiceHook.h" />
+    <ClInclude Include="functions\FeatureModule.h" />
+    <ClInclude Include="functions\HookUtils.h" />
+    <ClInclude Include="functions\PlayerVoiceFpkHook.h" />
+    <ClInclude Include="functions\StateComradeActionLogHook.h" />
+    <ClInclude Include="functions\StateRadioSpeechLabelLogHook.h" />
+    <ClInclude Include="functions\UiTextureOverrides.h" />
+    <ClInclude Include="functions\VIPSleepWakeReactionHook.h" />
+    <ClInclude Include="include\FoxHashes.h" />
+    <ClInclude Include="include\lauxlib.h" />
+    <ClInclude Include="include\log.h" />
+    <ClInclude Include="include\lua.h" />
+    <ClInclude Include="include\luaconf.h" />
+    <ClInclude Include="include\lualib.h" />
     <ClInclude Include="include\MinHook.h" />
     <ClInclude Include="pch.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp" />
+    <ClCompile Include="functions\BuiltInModules.cpp" />
+    <ClCompile Include="functions\CautionStepNormalTimerHook.cpp" />
+    <ClCompile Include="functions\EnterDownHoldupForceVoiceHook.cpp" />
+    <ClCompile Include="functions\FeatureModule.cpp" />
+    <ClCompile Include="functions\PlayerVoiceFpkHook.cpp" />
+    <ClCompile Include="functions\SetLuaFunctions.cpp" />
+    <ClCompile Include="functions\StateComradeActionLogHook.cpp" />
+    <ClCompile Include="functions\StateRadioSpeechLabelLogHook.cpp" />
     <ClCompile Include="functions\State_StandHoldupCancelLookToPlayer.cpp" />
+    <ClCompile Include="functions\UiTextureOverrides.cpp" />
+    <ClCompile Include="functions\VIPSleepWakeReactionHook.cpp" />
+    <ClCompile Include="include\FoxHashes.cpp" />
+    <ClCompile Include="include\log.cpp" />
     <ClCompile Include="pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>

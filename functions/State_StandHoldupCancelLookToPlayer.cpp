@@ -191,7 +191,7 @@ static void __fastcall Hook_State(void* holdupThis, uint64_t id, int phase)
 }
 
 
-bool Install_HoldupCancelLookToPlayerHook(HMODULE hGame)
+bool Install_State_StandHoldupCancelLookToPlayer_Hook(HMODULE hGame)
 {
     if (!hGame) return false;
 
@@ -225,7 +225,7 @@ bool Install_HoldupCancelLookToPlayerHook(HMODULE hGame)
     return true;
 }
 
-bool Uninstall_HoldupCancelLookToPlayerHook()
+bool Uninstall_State_StandHoldupCancelLookToPlayer_Hook()
 {
     if (!gBase) return true;
 
