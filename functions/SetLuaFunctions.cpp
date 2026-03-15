@@ -18,8 +18,6 @@ extern "C" {
     #include "lualib.h"
 }
 
-
-
 namespace
 {
     using SetLuaFunctions_t = void(__fastcall*)(lua_State* L);
@@ -53,8 +51,9 @@ namespace
     // Absolute address of the game's lua_pushnumber thunk.
     // Params: L (lua_State*), n (lua_Number)
     static constexpr uintptr_t ABS_lua_pushnumber = 0x141A11BC0ull;
+
     // Absolute address of the game's lua_toboolean thunk.
-// Params: L (lua_State*), idx (int)
+    // Params: L (lua_State*), idx (int)
     static constexpr uintptr_t ABS_lua_toboolean = 0x141A12330ull;
 
     static SetLuaFunctions_t       g_OrigSetLuaFunctions = nullptr;
@@ -63,7 +62,7 @@ namespace
     static lua_tointeger_t         g_lua_tointeger = nullptr;
     static lua_tonumber_t          g_lua_tonumber = nullptr;
     static lua_pushnumber_t        g_lua_pushnumber = nullptr;
-    static lua_toboolean_t g_lua_toboolean = nullptr;
+    static lua_toboolean_t         g_lua_toboolean = nullptr;
 
     static std::unordered_set<lua_State*> g_RegisteredLuaStates;
     static std::mutex g_RegisteredLuaStatesMutex;
@@ -102,6 +101,7 @@ static bool ResolveLuaApi()
         g_lua_toboolean = reinterpret_cast<lua_toboolean_t>(
             ResolveGameAddress(ABS_lua_toboolean));
     }
+
     if (!g_lua_pushnumber)
     {
         g_lua_pushnumber = reinterpret_cast<lua_pushnumber_t>(
@@ -396,6 +396,7 @@ static int l_GetCautionStepNormalDurationSeconds(lua_State* L)
 // Lua params: none
 static int l_UnsetCautionStepNormalDurationSeconds(lua_State* L)
 {
+    UNREFERENCED_PARAMETER(L);
     Unset_CautionStepNormalDurationSeconds();
     return 0;
 }
@@ -448,19 +449,37 @@ static int __cdecl l_ClearAllPlayerVoiceFpkOverrides(lua_State* L)
     return 0;
 }
 
+// Adds an important VIP target from a Lua GameObjectId.
+// Lua params:
+//   1 = gameObjectId (number)
+//   2 = isRussian    (boolean, optional)
+//   3 = isOfficer    (boolean, optional)
+// Example:
+//   V_FrameWork.AddVIPImportant(GameObject.GetGameObjectId("sol_vip_field"), true, false)
+static int __cdecl l_AddVIPImportant(lua_State* L)
+{
+    const std::uint32_t gameObjectId = static_cast<std::uint32_t>(GetLuaInt64(L, 1));
+    const bool isRussian = GetLuaBool(L, 2);
+    const bool isOfficer = GetLuaBool(L, 3);
+
+    Add_VIPImportantGameObjectId(gameObjectId, isRussian, isOfficer);
+    return 0;
+}
+
 // Alias for AddVIPImportant.
 // Lua params:
 //   1 = gameObjectId (number)
-//   2 = useRussianLine (boolean, optional)
-//   3 = TODO: IsOfficer (boolean, optional)
+//   2 = isRussian    (boolean, optional)
+//   3 = isOfficer    (boolean, optional)
 // Example:
 //   V_FrameWork.SetVIPImportant(GameObject.GetGameObjectId("sol_vip_field"), true, true)
 static int __cdecl l_SetVIPImportant(lua_State* L)
 {
     const std::uint32_t gameObjectId = static_cast<std::uint32_t>(GetLuaInt64(L, 1));
-    const bool useRussianLine = GetLuaBool(L, 2);
+    const bool isRussian = GetLuaBool(L, 2);
+    const bool isOfficer = GetLuaBool(L, 3);
 
-    Add_VIPImportantGameObjectId(gameObjectId, useRussianLine);
+    Add_VIPImportantGameObjectId(gameObjectId, isRussian, isOfficer);
     return 0;
 }
 
@@ -473,7 +492,7 @@ static int __cdecl l_RemoveVIPImportant(lua_State* L)
     return 0;
 }
 
-// Clears all important VIP targets.
+// Clears all important VIP targets and related runtime cache.
 // Lua params: none
 static int __cdecl l_ClearVIPImportant(lua_State* L)
 {
@@ -481,8 +500,6 @@ static int __cdecl l_ClearVIPImportant(lua_State* L)
     Clear_VIPImportantGameObjectIds();
     return 0;
 }
-
-
 
 static luaL_Reg g_VFrameWorkLib[] =
 {
@@ -508,6 +525,7 @@ static luaL_Reg g_VFrameWorkLib[] =
     { "SetPlayerVoiceFpkPathForType",               l_SetPlayerVoiceFpkPathForType },
     { "ClearPlayerVoiceFpkPathForType",             l_ClearPlayerVoiceFpkPathForType },
     { "ClearAllPlayerVoiceFpkOverrides",            l_ClearAllPlayerVoiceFpkOverrides },
+    { "AddVIPImportant",                            l_AddVIPImportant },
     { "SetVIPImportant",                            l_SetVIPImportant },
     { "RemoveVIPImportant",                         l_RemoveVIPImportant },
     { "ClearVIPImportant",                          l_ClearVIPImportant },

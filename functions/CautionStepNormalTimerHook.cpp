@@ -273,20 +273,20 @@ namespace
 
             if (g_LogEveryAppliedDrain)
             {
-                LogCautionPhaseTimer(
-                    "[CautionPhaseTimer] phase=%u state=%u flagsBefore=0x%02X flagsAfter=0x%02X timer %.3f -> vanilla %.3f localTimer=%.3f override=OFF delta=%.6f phaseRate=%.6f predictedVanilla=%.6f actualVanilla=%.6f\n",
-                    phaseIndex,
-                    static_cast<unsigned>(stateId),
-                    static_cast<unsigned>(knowledgeFlagsBefore),
-                    static_cast<unsigned>(knowledgeFlagsAfter),
-                    beforeTimer,
-                    vanillaAfterTimer,
-                    localKnowledgeTimer,
-                    deltaScale,
-                    vanillaPhaseRate,
-                    predictedVanillaDrain,
-                    vanillaDrain
-                );
+                //LogCautionPhaseTimer(
+                //    "[CautionPhaseTimer] phase=%u state=%u flagsBefore=0x%02X flagsAfter=0x%02X timer %.3f -> vanilla %.3f localTimer=%.3f override=OFF delta=%.6f phaseRate=%.6f predictedVanilla=%.6f actualVanilla=%.6f\n",
+                //    phaseIndex,
+                //    static_cast<unsigned>(stateId),
+                //    static_cast<unsigned>(knowledgeFlagsBefore),
+                //    static_cast<unsigned>(knowledgeFlagsAfter),
+                //    beforeTimer,
+                //    vanillaAfterTimer,
+                //    localKnowledgeTimer,
+                //    deltaScale,
+                //    vanillaPhaseRate,
+                //    predictedVanillaDrain,
+                //    vanillaDrain
+                //);
             }
 
             return;
@@ -312,22 +312,22 @@ namespace
 
             if (g_LogEveryAppliedDrain)
             {
-                LogCautionPhaseTimer(
-                    "[CautionPhaseTimer] phase=%u state=%u flagsBefore=0x%02X flagsAfter=0x%02X timer %.3f -> vanilla %.3f localTimer=%.3f seconds=%.3f normalized=%.6f delta=%.6f phaseRate=%.6f predictedVanilla=%.6f actualVanilla=%.6f -> keeping vanilla\n",
-                    phaseIndex,
-                    static_cast<unsigned>(stateId),
-                    static_cast<unsigned>(knowledgeFlagsBefore),
-                    static_cast<unsigned>(knowledgeFlagsAfter),
-                    beforeTimer,
-                    vanillaAfterTimer,
-                    localKnowledgeTimer,
-                    g_DurationSeconds,
-                    g_NormalizedDrainRate,
-                    deltaScale,
-                    vanillaPhaseRate,
-                    predictedVanillaDrain,
-                    vanillaDrain
-                );
+                //LogCautionPhaseTimer(
+                //    "[CautionPhaseTimer] phase=%u state=%u flagsBefore=0x%02X flagsAfter=0x%02X timer %.3f -> vanilla %.3f localTimer=%.3f seconds=%.3f normalized=%.6f delta=%.6f phaseRate=%.6f predictedVanilla=%.6f actualVanilla=%.6f -> keeping vanilla\n",
+                //    phaseIndex,
+                //    static_cast<unsigned>(stateId),
+                //    static_cast<unsigned>(knowledgeFlagsBefore),
+                //    static_cast<unsigned>(knowledgeFlagsAfter),
+                //    beforeTimer,
+                //    vanillaAfterTimer,
+                //    localKnowledgeTimer,
+                //    g_DurationSeconds,
+                //    g_NormalizedDrainRate,
+                //    deltaScale,
+                //    vanillaPhaseRate,
+                //    predictedVanillaDrain,
+                //    vanillaDrain
+                //);
             }
 
             return;
