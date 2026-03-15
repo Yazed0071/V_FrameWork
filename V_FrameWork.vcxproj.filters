@@ -60,16 +60,7 @@
     <ClInclude Include="functions\BuiltInModules.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="functions\VIPSleepWakeReactionHook.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="functions\StateComradeActionLogHook.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="functions\EnterDownHoldupForceVoiceHook.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="functions\StateRadioSpeechLabelLogHook.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -107,16 +98,7 @@
     <ClCompile Include="functions\BuiltInModules.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="functions\VIPSleepWakeReactionHook.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="functions\StateComradeActionLogHook.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="functions\EnterDownHoldupForceVoiceHook.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="functions\StateRadioSpeechLabelLogHook.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

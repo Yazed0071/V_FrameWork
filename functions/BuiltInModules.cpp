@@ -123,25 +123,6 @@ namespace
             Uninstall_PlayerVoiceFpk_Hook();
         }
     };
-    class VIPSleepWakeReactionModule final : public IFeatureModule
-    {
-    public:
-        const char* GetName() const override
-        {
-            return "VIPSleepWakeReaction";
-        }
-
-        bool Install(HMODULE hGame) override
-        {
-            UNREFERENCED_PARAMETER(hGame);
-            return Install_VIPSleepWakeReaction_Hook();
-        }
-
-        void Uninstall() override
-        {
-            Uninstall_VIPSleepWakeReaction_Hook();
-        }
-    };
     class EnterDownHoldupForceVoiceModule final : public IFeatureModule
     {
     public:
@@ -161,25 +142,6 @@ namespace
             Uninstall_State_EnterDownHoldupForceVoice_Hook();
         }
     };
-    class StateRadioSpeechLabelLogModule final : public IFeatureModule
-    {
-    public:
-        const char* GetName() const override
-        {
-            return "StateRadioSpeechLabelLog";
-        }
-
-        bool Install(HMODULE hGame) override
-        {
-            UNREFERENCED_PARAMETER(hGame);
-            return Install_StateRadioSpeechLabelLog_Hook();
-        }
-
-        void Uninstall() override
-        {
-            Uninstall_StateRadioSpeechLabelLog_Hook();
-        }
-    };
 
 }
 
@@ -190,9 +152,7 @@ void RegisterBuiltInFeatureModules()
     static HoldupCancelLookToPlayerModule s_HoldupCancelLookToPlayerModule;
     static CautionTimerModule s_CautionTimerModule;
     static PlayerVoiceFpkModule s_PlayerVoiceFpkModule;
-    static VIPSleepWakeReactionModule s_VIPSleepWakeReactionModule;
     static EnterDownHoldupForceVoiceModule s_EnterDownHoldupForceVoiceModule;
-    static StateRadioSpeechLabelLogModule s_StateRadioSpeechLabelLogModule;
 
     static std::once_flag s_Once;
     std::call_once(s_Once, []()
@@ -202,8 +162,6 @@ void RegisterBuiltInFeatureModules()
             FeatureModuleRegistry::Instance().Register(&s_HoldupCancelLookToPlayerModule);
             FeatureModuleRegistry::Instance().Register(&s_CautionTimerModule);
             FeatureModuleRegistry::Instance().Register(&s_PlayerVoiceFpkModule);
-            FeatureModuleRegistry::Instance().Register(&s_VIPSleepWakeReactionModule);
             FeatureModuleRegistry::Instance().Register(&s_EnterDownHoldupForceVoiceModule);
-            FeatureModuleRegistry::Instance().Register(&s_StateRadioSpeechLabelLogModule);
         });
 }

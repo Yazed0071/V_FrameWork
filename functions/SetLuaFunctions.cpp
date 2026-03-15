@@ -10,7 +10,6 @@
 #include "UiTextureOverrides.h"
 #include "CautionStepNormalTimerHook.h"
 #include "PlayerVoiceFpkHook.h"
-#include "VIPSleepWakeReactionHook.h"
 
 extern "C" {
     #include "lua.h"
@@ -449,57 +448,6 @@ static int __cdecl l_ClearAllPlayerVoiceFpkOverrides(lua_State* L)
     return 0;
 }
 
-// Adds an important VIP target from a Lua GameObjectId.
-// Lua params:
-//   1 = gameObjectId (number)
-//   2 = isRussian    (boolean, optional)
-//   3 = isOfficer    (boolean, optional)
-// Example:
-//   V_FrameWork.AddVIPImportant(GameObject.GetGameObjectId("sol_vip_field"), true, false)
-static int __cdecl l_AddVIPImportant(lua_State* L)
-{
-    const std::uint32_t gameObjectId = static_cast<std::uint32_t>(GetLuaInt64(L, 1));
-    const bool isRussian = GetLuaBool(L, 2);
-    const bool isOfficer = GetLuaBool(L, 3);
-
-    Add_VIPImportantGameObjectId(gameObjectId, isRussian, isOfficer);
-    return 0;
-}
-
-// Alias for AddVIPImportant.
-// Lua params:
-//   1 = gameObjectId (number)
-//   2 = isRussian    (boolean, optional)
-//   3 = isOfficer    (boolean, optional)
-// Example:
-//   V_FrameWork.SetVIPImportant(GameObject.GetGameObjectId("sol_vip_field"), true, true)
-static int __cdecl l_SetVIPImportant(lua_State* L)
-{
-    const std::uint32_t gameObjectId = static_cast<std::uint32_t>(GetLuaInt64(L, 1));
-    const bool isRussian = GetLuaBool(L, 2);
-    const bool isOfficer = GetLuaBool(L, 3);
-
-    Add_VIPImportantGameObjectId(gameObjectId, isRussian, isOfficer);
-    return 0;
-}
-
-// Removes an important VIP target from a Lua GameObjectId.
-// Lua params: gameObjectId (number)
-static int __cdecl l_RemoveVIPImportant(lua_State* L)
-{
-    const std::uint32_t gameObjectId = static_cast<std::uint32_t>(GetLuaInt64(L, 1));
-    Remove_VIPImportantGameObjectId(gameObjectId);
-    return 0;
-}
-
-// Clears all important VIP targets and related runtime cache.
-// Lua params: none
-static int __cdecl l_ClearVIPImportant(lua_State* L)
-{
-    UNREFERENCED_PARAMETER(L);
-    Clear_VIPImportantGameObjectIds();
-    return 0;
-}
 
 static luaL_Reg g_VFrameWorkLib[] =
 {
@@ -525,10 +473,6 @@ static luaL_Reg g_VFrameWorkLib[] =
     { "SetPlayerVoiceFpkPathForType",               l_SetPlayerVoiceFpkPathForType },
     { "ClearPlayerVoiceFpkPathForType",             l_ClearPlayerVoiceFpkPathForType },
     { "ClearAllPlayerVoiceFpkOverrides",            l_ClearAllPlayerVoiceFpkOverrides },
-    { "AddVIPImportant",                            l_AddVIPImportant },
-    { "SetVIPImportant",                            l_SetVIPImportant },
-    { "RemoveVIPImportant",                         l_RemoveVIPImportant },
-    { "ClearVIPImportant",                          l_ClearVIPImportant },
     { nullptr, nullptr }
 };
 
