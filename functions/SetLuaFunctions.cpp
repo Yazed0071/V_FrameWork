@@ -10,6 +10,9 @@
 #include "UiTextureOverrides.h"
 #include "CautionStepNormalTimerHook.h"
 #include "PlayerVoiceFpkHook.h"
+#include "VIPSleepFaintHook.h"
+#include "VIPHoldupHook.h"
+#include <VIPRadioHook.h>
 
 extern "C" {
     #include "lua.h"
@@ -375,7 +378,7 @@ static int __cdecl l_ClearGameOverSplashTextures(lua_State* L)
 }
 
 // Sets the custom caution duration in seconds from Lua.
-// Lua params: seconds (number)
+// Params: seconds (number)
 static int l_SetCautionStepNormalDurationSeconds(lua_State* L)
 {
     const float seconds = GetLuaNumber(L, 1);
@@ -384,7 +387,7 @@ static int l_SetCautionStepNormalDurationSeconds(lua_State* L)
 }
 
 // Returns the current custom caution duration in seconds to Lua.
-// Lua params: none
+// Params: none
 static int l_GetCautionStepNormalDurationSeconds(lua_State* L)
 {
     PushLuaNumber(L, Get_CautionStepNormalDurationSeconds());
@@ -392,7 +395,7 @@ static int l_GetCautionStepNormalDurationSeconds(lua_State* L)
 }
 
 // Disables the custom caution duration override from Lua.
-// Lua params: none
+// Params: none
 static int l_UnsetCautionStepNormalDurationSeconds(lua_State* L)
 {
     UNREFERENCED_PARAMETER(L);
@@ -401,7 +404,7 @@ static int l_UnsetCautionStepNormalDurationSeconds(lua_State* L)
 }
 
 // Returns the last observed remaining caution time in seconds to Lua.
-// Lua params: none
+// Params: none
 static int l_GetCautionStepNormalRemainingSeconds(lua_State* L)
 {
     PushLuaNumber(L, Get_CautionStepNormalRemainingSeconds());
@@ -409,11 +412,7 @@ static int l_GetCautionStepNormalRemainingSeconds(lua_State* L)
 }
 
 // Sets a player-type-specific voice FPK override from Lua.
-// Supported intended values:
-//   1 = male DD
-//   2 = female DD
-//   anything else = fallback/non-DD
-// Lua params: playerType (number), path (string)
+// Params: playerType (number), path (string)
 static int __cdecl l_SetPlayerVoiceFpkPathForType(lua_State* L)
 {
     const int playerType = GetLuaInt(L, 1);
@@ -427,11 +426,7 @@ static int __cdecl l_SetPlayerVoiceFpkPathForType(lua_State* L)
 }
 
 // Clears a player-type-specific voice FPK override from Lua.
-// Supported intended values:
-//   1 = male DD
-//   2 = female DD
-//   anything else = fallback/non-DD
-// Lua params: playerType (number)
+// Params: playerType (number)
 static int __cdecl l_ClearPlayerVoiceFpkPathForType(lua_State* L)
 {
     const int playerType = GetLuaInt(L, 1);
@@ -440,7 +435,7 @@ static int __cdecl l_ClearPlayerVoiceFpkPathForType(lua_State* L)
 }
 
 // Clears all player voice FPK overrides from Lua.
-// Lua params: none
+// Params: none
 static int __cdecl l_ClearAllPlayerVoiceFpkOverrides(lua_State* L)
 {
     UNREFERENCED_PARAMETER(L);
@@ -448,6 +443,46 @@ static int __cdecl l_ClearAllPlayerVoiceFpkOverrides(lua_State* L)
     return 0;
 }
 
+// Sets one VIP-important soldier.
+// Lua params: gameObjectId, isOfficer
+static int __cdecl l_SetVIPImportant(lua_State* L)
+{
+    const std::uint32_t gameObjectId =
+        static_cast<std::uint32_t>(GetLuaInt64(L, 1));
+
+    const bool isOfficer = GetLuaBool(L, 2);
+
+    Add_VIPSleepFaintImportantGameObjectId(gameObjectId, isOfficer);
+    Add_VIPHoldupImportantGameObjectId(gameObjectId, isOfficer);
+	Add_VIPRadioImportantGameObjectId(gameObjectId, isOfficer);
+
+    return 0;
+}
+
+// Removes one VIP-important soldier.
+// Lua params: gameObjectId
+static int __cdecl l_RemoveVIPImportant(lua_State* L)
+{
+    const std::uint32_t gameObjectId =
+        static_cast<std::uint32_t>(GetLuaInt64(L, 1));
+
+    Remove_VIPSleepFaintImportantGameObjectId(gameObjectId);
+    Remove_VIPHoldupImportantGameObjectId(gameObjectId);
+    Remove_VIPRadioImportantGameObjectId(gameObjectId);
+    return 0;
+}
+
+// Clears all VIP-important soldiers.
+// Lua params: none
+static int __cdecl l_ClearVIPImportant(lua_State* L)
+{
+    UNREFERENCED_PARAMETER(L);
+
+    Clear_VIPSleepFaintImportantGameObjectIds();
+    Clear_VIPHoldupImportantGameObjectIds();
+    Clear_VIPRadioImportantGameObjectIds();
+    return 0;
+}
 
 static luaL_Reg g_VFrameWorkLib[] =
 {
@@ -473,6 +508,9 @@ static luaL_Reg g_VFrameWorkLib[] =
     { "SetPlayerVoiceFpkPathForType",               l_SetPlayerVoiceFpkPathForType },
     { "ClearPlayerVoiceFpkPathForType",             l_ClearPlayerVoiceFpkPathForType },
     { "ClearAllPlayerVoiceFpkOverrides",            l_ClearAllPlayerVoiceFpkOverrides },
+    { "SetVIPImportant",                            l_SetVIPImportant },
+    { "RemoveVIPImportant",                         l_RemoveVIPImportant },
+    { "ClearVIPImportant",                          l_ClearVIPImportant },
     { nullptr, nullptr }
 };
 

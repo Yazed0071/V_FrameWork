@@ -150,6 +150,9 @@
     <ClInclude Include="functions\HookUtils.h" />
     <ClInclude Include="functions\PlayerVoiceFpkHook.h" />
     <ClInclude Include="functions\UiTextureOverrides.h" />
+    <ClInclude Include="functions\VIPHoldupHook.h" />
+    <ClInclude Include="functions\VIPRadioHook.h" />
+    <ClInclude Include="functions\VIPSleepFaintHook.h" />
     <ClInclude Include="include\FoxHashes.h" />
     <ClInclude Include="include\lauxlib.h" />
     <ClInclude Include="include\log.h" />
@@ -169,6 +172,9 @@
     <ClCompile Include="functions\SetLuaFunctions.cpp" />
     <ClCompile Include="functions\State_StandHoldupCancelLookToPlayer.cpp" />
     <ClCompile Include="functions\UiTextureOverrides.cpp" />
+    <ClCompile Include="functions\VIPHoldupHook.cpp" />
+    <ClCompile Include="functions\VIPRadioHook.cpp" />
+    <ClCompile Include="functions\VIPSleepFaintHook.cpp" />
     <ClCompile Include="include\FoxHashes.cpp" />
     <ClCompile Include="include\log.cpp" />
     <ClCompile Include="pch.cpp">

@@ -63,6 +63,15 @@
     <ClInclude Include="functions\EnterDownHoldupForceVoiceHook.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="functions\VIPSleepFaintHook.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="functions\VIPHoldupHook.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="functions\VIPRadioHook.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp">
@@ -99,6 +108,15 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="functions\EnterDownHoldupForceVoiceHook.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="functions\VIPSleepFaintHook.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="functions\VIPHoldupHook.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="functions\VIPRadioHook.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
