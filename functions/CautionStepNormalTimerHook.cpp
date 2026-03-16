@@ -7,6 +7,7 @@
 
 #include "HookUtils.h"
 #include "log.h"
+#include "MissionCodeGuard.h"
 
 namespace
 {
@@ -33,7 +34,7 @@ namespace
     static float g_NormalizedDrainRate = 0.0f;
 
     static bool g_EnableOverride = true;
-    static bool g_LogEveryAppliedDrain = true;
+    static bool g_LogEveryAppliedDrain = false;
 
     // Last observed snapshot from the hook.
     static bool g_HaveLastObservedSnapshot = false;
@@ -273,20 +274,20 @@ namespace
 
             if (g_LogEveryAppliedDrain)
             {
-                //LogCautionPhaseTimer(
-                //    "[CautionPhaseTimer] phase=%u state=%u flagsBefore=0x%02X flagsAfter=0x%02X timer %.3f -> vanilla %.3f localTimer=%.3f override=OFF delta=%.6f phaseRate=%.6f predictedVanilla=%.6f actualVanilla=%.6f\n",
-                //    phaseIndex,
-                //    static_cast<unsigned>(stateId),
-                //    static_cast<unsigned>(knowledgeFlagsBefore),
-                //    static_cast<unsigned>(knowledgeFlagsAfter),
-                //    beforeTimer,
-                //    vanillaAfterTimer,
-                //    localKnowledgeTimer,
-                //    deltaScale,
-                //    vanillaPhaseRate,
-                //    predictedVanillaDrain,
-                //    vanillaDrain
-                //);
+                LogCautionPhaseTimer(
+                    "[CautionPhaseTimer] phase=%u state=%u flagsBefore=0x%02X flagsAfter=0x%02X timer %.3f -> vanilla %.3f localTimer=%.3f override=OFF delta=%.6f phaseRate=%.6f predictedVanilla=%.6f actualVanilla=%.6f\n",
+                    phaseIndex,
+                    static_cast<unsigned>(stateId),
+                    static_cast<unsigned>(knowledgeFlagsBefore),
+                    static_cast<unsigned>(knowledgeFlagsAfter),
+                    beforeTimer,
+                    vanillaAfterTimer,
+                    localKnowledgeTimer,
+                    deltaScale,
+                    vanillaPhaseRate,
+                    predictedVanillaDrain,
+                    vanillaDrain
+                );
             }
 
             return;
@@ -312,22 +313,22 @@ namespace
 
             if (g_LogEveryAppliedDrain)
             {
-                //LogCautionPhaseTimer(
-                //    "[CautionPhaseTimer] phase=%u state=%u flagsBefore=0x%02X flagsAfter=0x%02X timer %.3f -> vanilla %.3f localTimer=%.3f seconds=%.3f normalized=%.6f delta=%.6f phaseRate=%.6f predictedVanilla=%.6f actualVanilla=%.6f -> keeping vanilla\n",
-                //    phaseIndex,
-                //    static_cast<unsigned>(stateId),
-                //    static_cast<unsigned>(knowledgeFlagsBefore),
-                //    static_cast<unsigned>(knowledgeFlagsAfter),
-                //    beforeTimer,
-                //    vanillaAfterTimer,
-                //    localKnowledgeTimer,
-                //    g_DurationSeconds,
-                //    g_NormalizedDrainRate,
-                //    deltaScale,
-                //    vanillaPhaseRate,
-                //    predictedVanillaDrain,
-                //    vanillaDrain
-                //);
+                LogCautionPhaseTimer(
+                    "[CautionPhaseTimer] phase=%u state=%u flagsBefore=0x%02X flagsAfter=0x%02X timer %.3f -> vanilla %.3f localTimer=%.3f seconds=%.3f normalized=%.6f delta=%.6f phaseRate=%.6f predictedVanilla=%.6f actualVanilla=%.6f -> keeping vanilla\n",
+                    phaseIndex,
+                    static_cast<unsigned>(stateId),
+                    static_cast<unsigned>(knowledgeFlagsBefore),
+                    static_cast<unsigned>(knowledgeFlagsAfter),
+                    beforeTimer,
+                    vanillaAfterTimer,
+                    localKnowledgeTimer,
+                    g_DurationSeconds,
+                    g_NormalizedDrainRate,
+                    deltaScale,
+                    vanillaPhaseRate,
+                    predictedVanillaDrain,
+                    vanillaDrain
+                );
             }
 
             return;
@@ -362,34 +363,35 @@ namespace
 
         UpdateLastObservedSnapshot(self, phaseIndex, knowledge, customAfterTimer);
 
-        //if (g_LogEveryAppliedDrain)
-        //{
-        //    LogCautionPhaseTimer(
-        //        "[CautionPhaseTimer] phase=%u state=%u flagsBefore=0x%02X flagsAfter=0x%02X timer %.3f -> vanilla %.3f -> custom %.3f localTimer=%.3f seconds=%.3f normalized=%.6f delta=%.6f phaseRate=%.6f predictedVanilla=%.6f actualVanilla=%.6f customDrain=%.6f remaining=%.3f\n",
-        //        phaseIndex,
-        //        static_cast<unsigned>(stateId),
-        //        static_cast<unsigned>(knowledgeFlagsBefore),
-        //        static_cast<unsigned>(knowledgeFlagsAfter),
-        //        beforeTimer,
-        //        vanillaAfterTimer,
-        //        customAfterTimer,
-        //        localKnowledgeTimer,
-        //        g_DurationSeconds,
-        //        g_NormalizedDrainRate,
-        //        deltaScale,
-        //        vanillaPhaseRate,
-        //        predictedVanillaDrain,
-        //        vanillaDrain,
-        //        customDrain,
-        //        g_LastObservedRemainingSeconds
-        //    );
-        //}
+        if (g_LogEveryAppliedDrain)
+        {
+            LogCautionPhaseTimer(
+                "[CautionPhaseTimer] phase=%u state=%u flagsBefore=0x%02X flagsAfter=0x%02X timer %.3f -> vanilla %.3f -> custom %.3f localTimer=%.3f seconds=%.3f normalized=%.6f delta=%.6f phaseRate=%.6f predictedVanilla=%.6f actualVanilla=%.6f customDrain=%.6f remaining=%.3f\n",
+                phaseIndex,
+                static_cast<unsigned>(stateId),
+                static_cast<unsigned>(knowledgeFlagsBefore),
+                static_cast<unsigned>(knowledgeFlagsAfter),
+                beforeTimer,
+                vanillaAfterTimer,
+                customAfterTimer,
+                localKnowledgeTimer,
+                g_DurationSeconds,
+                g_NormalizedDrainRate,
+                deltaScale,
+                vanillaPhaseRate,
+                predictedVanillaDrain,
+                vanillaDrain,
+                customDrain,
+                g_LastObservedRemainingSeconds
+            );
+        }
     }
 
     // Hooked DecrementPhaseCounter.
     // Params: self (void*), phaseIndex (uint32_t), knowledge (void*)
     static void __fastcall hkDecrementPhaseCounter(void* self, std::uint32_t phaseIndex, void* knowledge)
     {
+        MISSION_GUARD_ORIGINAL_VOID(g_OrigDecrementPhaseCounter, self, phaseIndex, knowledge);
         ReplaceVanillaDrainIfNeeded(self, phaseIndex, knowledge);
     }
 }

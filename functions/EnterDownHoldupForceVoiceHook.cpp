@@ -6,6 +6,7 @@
 
 #include "HookUtils.h"
 #include "log.h"
+#include "MissionCodeGuard.h"
 
 namespace
 {
@@ -181,6 +182,8 @@ static void __fastcall hkState_EnterDownHoldup(
     std::uint32_t actorId,
     std::uint32_t proc)
 {
+    MISSION_GUARD_ORIGINAL_VOID(g_OrigState_EnterDownHoldup, self, actorId, proc);
+
     if (proc == 1)
     {
         const std::uintptr_t entry = GetHoldupEntry(self, actorId);

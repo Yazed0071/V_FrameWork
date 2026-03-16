@@ -148,6 +148,7 @@
     <ClInclude Include="functions\EnterDownHoldupForceVoiceHook.h" />
     <ClInclude Include="functions\FeatureModule.h" />
     <ClInclude Include="functions\HookUtils.h" />
+    <ClInclude Include="functions\MissionCodeGuard.h" />
     <ClInclude Include="functions\PlayerVoiceFpkHook.h" />
     <ClInclude Include="functions\UiTextureOverrides.h" />
     <ClInclude Include="functions\VIPHoldupHook.h" />
@@ -168,6 +169,7 @@
     <ClCompile Include="functions\CautionStepNormalTimerHook.cpp" />
     <ClCompile Include="functions\EnterDownHoldupForceVoiceHook.cpp" />
     <ClCompile Include="functions\FeatureModule.cpp" />
+    <ClCompile Include="functions\MissionCodeGuard.cpp" />
     <ClCompile Include="functions\PlayerVoiceFpkHook.cpp" />
     <ClCompile Include="functions\SetLuaFunctions.cpp" />
     <ClCompile Include="functions\State_StandHoldupCancelLookToPlayer.cpp" />

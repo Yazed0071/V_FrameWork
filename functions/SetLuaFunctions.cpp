@@ -484,6 +484,13 @@ static int __cdecl l_ClearVIPImportant(lua_State* L)
     return 0;
 }
 
+static int l_SetUseConcernedHoldupRecovery(lua_State* L)
+{
+    const bool enabled = GetLuaBool(L, 1) != 0;
+    Set_UseCustomNonVipHoldupRecovery(enabled);
+    return 0;
+}
+
 static luaL_Reg g_VFrameWorkLib[] =
 {
     { "SetDefaultEquipBgTexturePath",               l_SetDefaultEquipBgTexturePath },
@@ -509,6 +516,7 @@ static luaL_Reg g_VFrameWorkLib[] =
     { "ClearPlayerVoiceFpkPathForType",             l_ClearPlayerVoiceFpkPathForType },
     { "ClearAllPlayerVoiceFpkOverrides",            l_ClearAllPlayerVoiceFpkOverrides },
     { "SetVIPImportant",                            l_SetVIPImportant },
+    { "SetUseConcernedHoldupRecovery",              l_SetUseConcernedHoldupRecovery },
     { "RemoveVIPImportant",                         l_RemoveVIPImportant },
     { "ClearVIPImportant",                          l_ClearVIPImportant },
     { nullptr, nullptr }

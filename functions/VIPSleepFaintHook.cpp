@@ -11,6 +11,7 @@
 #include "log.h"
 #include "VIPSleepFaintHook.h"
 #include "VIPRadioHook.h"
+#include <MissionCodeGuard.h>
 
 namespace
 {
@@ -453,6 +454,8 @@ static void __fastcall hkState_ComradeAction(
     std::uint32_t proc,
     void* evt)
 {
+    MISSION_GUARD_ORIGINAL_VOID(g_OrigState_ComradeAction, self, actorId, proc, evt);
+
     UNREFERENCED_PARAMETER(evt);
 
     if (proc == 1 || proc == 2 || proc == 6)
@@ -543,6 +546,8 @@ static void __fastcall hkState_RecoveryTouch(
     std::uint32_t proc,
     void* evt)
 {
+    MISSION_GUARD_ORIGINAL_VOID(g_OrigState_RecoveryTouch, self, actorId, proc, evt);
+
     if (proc == 1 || proc == 2 || proc == 6)
     {
         std::uint16_t sleeperIndexFrom5D = 0xFFFFu;
@@ -618,7 +623,7 @@ static void __fastcall hkState_RecoveryTouch(
                 isImportant ? "YES" : "NO",
                 (isImportant && info.isOfficer) ? "YES" : "NO");
 
-            if (isImportant && info.isOfficer)
+            if (isImportant)
             {
                 Log("[SleepFaint] DISPATCH actor=%u sleeperGameObjectId=0x%04X sleeperIndex=%u officer=YES\n",
                     actorId,

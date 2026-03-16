@@ -9,6 +9,7 @@
 #include "log.h"
 #include "FoxHashes.h"
 #include "PlayerVoiceFpkHook.h"
+#include "MissionCodeGuard.h"
 
 namespace
 {
@@ -87,12 +88,13 @@ static void* WritePlayerVoicePath(void* outPath, std::uint64_t pathCode64Ext)
     return g_FoxPath_Path(outPath, pathCode64Ext);
 }
 
-// Hooked version of player::voice::LoadPlayerVoiceFpk.
-// If an override is active for the incoming player type, it writes the custom path and skips vanilla.
-// Otherwise it falls back to the original function.
-// Params: fileSlotPath (void*), playerType (uint32_t), playerFaceId (uint32_t)
 static void* __fastcall hkLoadPlayerVoiceFpk(void* fileSlotPath, std::uint32_t playerType, std::uint32_t playerFaceId)
 {
+    if (MissionCodeGuard::ShouldBypassHooks())
+    {
+        return g_OrigLoadPlayerVoiceFpk(fileSlotPath, playerType, playerFaceId);
+    }
+
     const VoiceOverrideSlot slot = GetEffectiveOverrideForType(playerType);
     if (!slot.enabled || slot.pathCode64Ext == 0)
     {

@@ -14,6 +14,9 @@ void Remove_VIPHoldupImportantGameObjectId(std::uint32_t gameObjectId);
 // Params: none
 void Clear_VIPHoldupImportantGameObjectIds();
 
+void Set_UseCustomNonVipHoldupRecovery(bool enabled);
+bool Get_UseCustomNonVipHoldupRecovery();
+
 // Installs the holdup-only hook.
 // Params: none
 bool Install_VIPHoldup_Hook();

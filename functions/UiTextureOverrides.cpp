@@ -8,6 +8,7 @@
 #include "FoxHashes.h"
 #include "HookUtils.h"
 #include "log.h"
+#include "MissionCodeGuard.h"
 
 namespace
 {
@@ -377,10 +378,15 @@ static void __fastcall hkLoadingScreenOrGameOverSplash2(void* self)
     }
 }
 
-// Hooked version of tpp::ui::menu::GameOverEvCall::MainLayout::SetVisible.
-// Params: layout (uint64_t*), visible (char)
+
 static void __fastcall hkGameOverSetVisible(uint64_t* layout, char visible)
 {
+    if (MissionCodeGuard::ShouldBypassHooks())
+    {
+        g_OrigGameOverSetVisible(layout, visible);
+        return;
+    }
+
     g_OrigGameOverSetVisible(layout, visible);
 
     if (!visible || !layout || !ResolveUiHelpers())

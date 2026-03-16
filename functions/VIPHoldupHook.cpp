@@ -3,11 +3,13 @@
 #include <Windows.h>
 #include <cstdint>
 #include <unordered_map>
+#include <unordered_set>
 #include <mutex>
 
 #include "HookUtils.h"
 #include "log.h"
 #include "VIPHoldupHook.h"
+#include "MissionCodeGuard.h"
 
 namespace
 {
@@ -28,14 +30,18 @@ namespace
     // Reaction category used by the game's notice reaction manager.
     static constexpr std::uint32_t HASH_REACTION_CATEGORY_NOTICE = 0x95EA16B0u;
 
-    // Custom reaction hash for officer holdup recovery.
-    static constexpr std::uint32_t HASH_HOLDUP_RECOVERY_OFFICER = 0x92D098DEu;
+    // Custom reaction hash for VIP holdup recovery.
+    // Used for any important target, even if not officer.
+    static constexpr std::uint32_t HASH_HOLDUP_RECOVERY_VIP = 0x92D098DEu;
 
-    // Re-dispatch cooldown for the same actor/target.
-    static constexpr ULONGLONG HOLdup_RECOVERY_DISPATCH_COOLDOWN_MS = 3000ull;
+    // Custom reaction hash for non-VIP holdup recovery.
+    static constexpr std::uint32_t HASH_HOLDUP_RECOVERY_NONVIP_CUSTOM = 0x97D0A0FEu;
 
-    // Window where the follow-up vanilla voice notice should be swallowed.
-    static constexpr ULONGLONG HOLdup_VANILLA_SUPPRESS_MS = 2500ull;
+    // Re-dispatch cooldown for the same actor/target on the VIP path.
+    static constexpr ULONGLONG HOLDUP_RECOVERY_DISPATCH_COOLDOWN_MS = 3000ull;
+
+    // Window where follow-up chatter should be swallowed.
+    static constexpr ULONGLONG HOLDUP_VANILLA_SUPPRESS_MS = 4000ull;
 
     // Original function pointer.
     static State_StandRecoveryHoldup_t g_OrigState_StandRecoveryHoldup = nullptr;
@@ -47,7 +53,10 @@ namespace
         bool isOfficer = false;
     };
 
-    // Recent dispatch/suppression state per actor.
+    // Toggle for custom non-VIP holdup recovery replacement.
+    static bool g_UseCustomNonVipHoldupRecovery = false;
+
+    // Recent dispatch/suppression state per actor for VIP path.
     struct RecentRecoveryDispatch
     {
         std::uint16_t recoveredGameObjectId = 0xFFFFu;
@@ -55,32 +64,43 @@ namespace
         ULONGLONG suppressVanillaUntilMs = 0;
     };
 
+    // Suppression window for non-VIP chatter by recovered target.
+    struct RecentNonVipRecoverySuppress
+    {
+        ULONGLONG suppressUntilMs = 0;
+    };
+
     // Important targets by normalized soldier index.
     static std::unordered_map<std::uint16_t, ImportantTargetInfo> g_ImportantTargetsBySoldierIndex;
 
-    // Recent custom dispatch state by actor id.
+    // Recent custom dispatch state by actor id for VIP path.
     static std::unordered_map<std::uint32_t, RecentRecoveryDispatch> g_RecentDispatchByActor;
+
+    // One-shot state for the custom non-VIP replacement by recovered target.
+    // Key = recovered GameObjectId if valid, otherwise recovered soldier index.
+    static std::unordered_set<std::uint32_t> g_CustomNonVipRecoveryPendingTargets;
+
+    // Suppression windows for non-VIP chatter by recovered target.
+    static std::unordered_map<std::uint32_t, RecentNonVipRecoverySuppress> g_RecentNonVipSuppressByTarget;
 
     // Mutex protecting all holdup state.
     static std::mutex g_HoldupMutex;
 }
 
-// Safely reads one byte from memory.
-// Params: addr, outValue
-static bool SafeReadByte(std::uintptr_t addr, std::uint8_t& outValue)
+// Builds a stable key for target-based holdup suppression.
+// Prefer the recovered GameObjectId, fall back to soldier index if needed.
+// Params: recoveredGameObjectId, recoveredSoldierIndex
+static std::uint32_t MakeCustomNonVipRecoveryKey(
+    std::uint16_t recoveredGameObjectId,
+    std::uint16_t recoveredSoldierIndex)
 {
-    if (!addr)
-        return false;
+    if (recoveredGameObjectId != 0xFFFFu && recoveredGameObjectId != 0u)
+        return static_cast<std::uint32_t>(recoveredGameObjectId);
 
-    __try
-    {
-        outValue = *reinterpret_cast<const std::uint8_t*>(addr);
-        return true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        return false;
-    }
+    if (recoveredSoldierIndex != 0xFFFFu && recoveredSoldierIndex != 0u)
+        return 0x80000000u | static_cast<std::uint32_t>(recoveredSoldierIndex);
+
+    return 0u;
 }
 
 // Safely reads one word from memory.
@@ -93,24 +113,6 @@ static bool SafeReadWord(std::uintptr_t addr, std::uint16_t& outValue)
     __try
     {
         outValue = *reinterpret_cast<const std::uint16_t*>(addr);
-        return true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        return false;
-    }
-}
-
-// Safely reads one dword from memory.
-// Params: addr, outValue
-static bool SafeReadDword(std::uintptr_t addr, std::uint32_t& outValue)
-{
-    if (!addr)
-        return false;
-
-    __try
-    {
-        outValue = *reinterpret_cast<const std::uint32_t*>(addr);
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
@@ -258,19 +260,17 @@ static bool TryGetImportantTargetInfo(std::uint16_t soldierIndex, ImportantTarge
     return outInfo.important;
 }
 
-// Resolves the recovered target from the holdup entry.
+// Resolves recovered target ids from the holdup entry.
 // Verified from your dump: +0x52..+0x53 held 0x0408.
-// Params: self, actorId, outRecoveredGameObjectId, outRecoveredSoldierIndex, outInfo
-static bool TryResolveHoldupImportantTargetInfo(
+// Params: self, actorId, outRecoveredGameObjectId, outRecoveredSoldierIndex
+static bool TryResolveHoldupRecoveredTargetIds(
     void* self,
     std::uint32_t actorId,
     std::uint16_t& outRecoveredGameObjectId,
-    std::uint16_t& outRecoveredSoldierIndex,
-    ImportantTargetInfo& outInfo)
+    std::uint16_t& outRecoveredSoldierIndex)
 {
     outRecoveredGameObjectId = 0xFFFFu;
     outRecoveredSoldierIndex = 0xFFFFu;
-    outInfo = {};
 
     const std::uintptr_t entry = GetNoticeActionEntry(self, actorId);
     if (!entry)
@@ -292,16 +292,10 @@ static bool TryResolveHoldupImportantTargetInfo(
         static_cast<unsigned>(recoveredGameObjectId),
         static_cast<unsigned>(recoveredSoldierIndex));
 
-    if (recoveredSoldierIndex == 0xFFFFu)
-        return false;
-
-    if (!TryGetImportantTargetInfo(recoveredSoldierIndex, outInfo))
-        return false;
-
-    return true;
+    return recoveredSoldierIndex != 0xFFFFu;
 }
 
-// Returns true only if this actor/target should dispatch the custom holdup voice now.
+// Returns true only if this actor/target should dispatch the custom VIP holdup voice now.
 // Params: actorId, recoveredGameObjectId
 static bool ShouldDispatchHoldupRecovery(
     std::uint32_t actorId,
@@ -319,17 +313,17 @@ static bool ShouldDispatchHoldupRecovery(
     if (entry.recoveredGameObjectId == recoveredGameObjectId)
     {
         const ULONGLONG elapsed = now - entry.lastDispatchTickMs;
-        if (elapsed <= HOLdup_RECOVERY_DISPATCH_COOLDOWN_MS)
+        if (elapsed <= HOLDUP_RECOVERY_DISPATCH_COOLDOWN_MS)
             return false;
     }
 
     entry.recoveredGameObjectId = recoveredGameObjectId;
     entry.lastDispatchTickMs = now;
-    entry.suppressVanillaUntilMs = now + HOLdup_VANILLA_SUPPRESS_MS;
+    entry.suppressVanillaUntilMs = now + HOLDUP_VANILLA_SUPPRESS_MS;
     return true;
 }
 
-// Returns true if the follow-up vanilla voice notice should be swallowed.
+// Returns true if the follow-up vanilla voice notice should be swallowed for the VIP path.
 // Params: actorId, recoveredGameObjectId
 static bool ShouldSuppressVanillaVoiceNotice(
     std::uint32_t actorId,
@@ -349,13 +343,85 @@ static bool ShouldSuppressVanillaVoiceNotice(
     if (it->second.recoveredGameObjectId != recoveredGameObjectId)
         return false;
 
-    if (now <= it->second.suppressVanillaUntilMs)
-        return true;
-
-    return false;
+    return now <= it->second.suppressVanillaUntilMs;
 }
 
-// Hooks holdup recovery and suppresses the vanilla follow-up line after custom officer dispatch.
+// Returns true only the first time the custom non-VIP recovery should dispatch for this recovered target.
+// Params: recoveredGameObjectId, recoveredSoldierIndex
+static bool ShouldDispatchCustomNonVipRecovery(
+    std::uint16_t recoveredGameObjectId,
+    std::uint16_t recoveredSoldierIndex)
+{
+    const std::uint32_t key =
+        MakeCustomNonVipRecoveryKey(recoveredGameObjectId, recoveredSoldierIndex);
+
+    if (key == 0u)
+        return false;
+
+    std::lock_guard<std::mutex> lock(g_HoldupMutex);
+    return g_CustomNonVipRecoveryPendingTargets.insert(key).second;
+}
+
+// Starts a suppression window for non-VIP recovery chatter on this recovered target.
+// Params: recoveredGameObjectId, recoveredSoldierIndex
+static void BeginCustomNonVipRecoverySuppressWindow(
+    std::uint16_t recoveredGameObjectId,
+    std::uint16_t recoveredSoldierIndex)
+{
+    const std::uint32_t key =
+        MakeCustomNonVipRecoveryKey(recoveredGameObjectId, recoveredSoldierIndex);
+
+    if (key == 0u)
+        return;
+
+    const ULONGLONG now = GetTickCount64();
+
+    std::lock_guard<std::mutex> lock(g_HoldupMutex);
+    g_RecentNonVipSuppressByTarget[key].suppressUntilMs = now + HOLDUP_VANILLA_SUPPRESS_MS;
+}
+
+// Returns true if non-VIP recovery chatter for this recovered target should be suppressed now.
+// Params: recoveredGameObjectId, recoveredSoldierIndex
+static bool ShouldSuppressCustomNonVipRecoveryNow(
+    std::uint16_t recoveredGameObjectId,
+    std::uint16_t recoveredSoldierIndex)
+{
+    const std::uint32_t key =
+        MakeCustomNonVipRecoveryKey(recoveredGameObjectId, recoveredSoldierIndex);
+
+    if (key == 0u)
+        return false;
+
+    const ULONGLONG now = GetTickCount64();
+
+    std::lock_guard<std::mutex> lock(g_HoldupMutex);
+
+    const auto it = g_RecentNonVipSuppressByTarget.find(key);
+    if (it == g_RecentNonVipSuppressByTarget.end())
+        return false;
+
+    return now <= it->second.suppressUntilMs;
+}
+
+// Clears all pending custom non-VIP recovery one-shot state.
+// Params: none
+static void ClearAllCustomNonVipRecovery()
+{
+    std::lock_guard<std::mutex> lock(g_HoldupMutex);
+    g_CustomNonVipRecoveryPendingTargets.clear();
+}
+
+// Clears all non-VIP recovery suppression windows.
+// Params: none
+static void ClearAllCustomNonVipRecoverySuppressWindows()
+{
+    std::lock_guard<std::mutex> lock(g_HoldupMutex);
+    g_RecentNonVipSuppressByTarget.clear();
+}
+
+// Hooks holdup recovery and suppresses the vanilla follow-up line after custom VIP dispatch.
+// Also optionally replaces the non-VIP holdup-recovery line with a custom hash.
+// VIP path applies to any important target, even when it is not an officer.
 // Params: self, actorId, proc, evt
 static void __fastcall hkState_StandRecoveryHoldup(
     void* self,
@@ -363,45 +429,94 @@ static void __fastcall hkState_StandRecoveryHoldup(
     int proc,
     void* evt)
 {
+    MISSION_GUARD_ORIGINAL_VOID(g_OrigState_StandRecoveryHoldup, self, actorId, proc, evt);
+
     if (proc == 6 && evt)
     {
         const std::uint32_t eventHash = GetEventHash(evt);
         Log("[Holdup] PROC=6 actor=%u eventHash=0x%08X\n", actorId, eventHash);
 
+        std::uint16_t recoveredGameObjectId = 0xFFFFu;
+        std::uint16_t recoveredSoldierIndex = 0xFFFFu;
+        const bool resolvedTarget =
+            TryResolveHoldupRecoveredTargetIds(
+                self,
+                actorId,
+                recoveredGameObjectId,
+                recoveredSoldierIndex);
+
+        ImportantTargetInfo info{};
+        const bool isImportant =
+            resolvedTarget &&
+            TryGetImportantTargetInfo(recoveredSoldierIndex, info);
+
+        // Broad suppression for non-VIP chatter on this recovered target.
+        if (g_UseCustomNonVipHoldupRecovery &&
+            resolvedTarget &&
+            !isImportant &&
+            (eventHash == HASH_EVENT_HOLDUP_RECOVERY || eventHash == HASH_EVENT_VOICE_NOTICE) &&
+            ShouldSuppressCustomNonVipRecoveryNow(recoveredGameObjectId, recoveredSoldierIndex))
+        {
+            Log("[Holdup] SUPPRESS non-VIP chatter actor=%u eventHash=0x%08X recoveredGameObjectId=0x%04X recoveredSoldierIndex=%u\n",
+                actorId,
+                static_cast<unsigned>(eventHash),
+                static_cast<unsigned>(recoveredGameObjectId),
+                static_cast<unsigned>(recoveredSoldierIndex));
+            return;
+        }
+
         // First branch: the actual holdup-recovery event.
         if (eventHash == HASH_EVENT_HOLDUP_RECOVERY)
         {
-            std::uint16_t recoveredGameObjectId = 0xFFFFu;
-            std::uint16_t recoveredSoldierIndex = 0xFFFFu;
-            ImportantTargetInfo info{};
-
-            const bool isImportant =
-                TryResolveHoldupImportantTargetInfo(
-                    self,
-                    actorId,
-                    recoveredGameObjectId,
-                    recoveredSoldierIndex,
-                    info);
-
             Log("[Holdup] RECOVERY actor=%u recoveredSoldierIndex=%u important=%s officer=%s\n",
                 actorId,
                 static_cast<unsigned>(recoveredSoldierIndex),
                 isImportant ? "YES" : "NO",
                 (isImportant && info.isOfficer) ? "YES" : "NO");
 
-            if (isImportant && info.isOfficer)
+            // VIP path: any important target, officer or not.
+            if (isImportant)
             {
                 if (ShouldDispatchHoldupRecovery(actorId, recoveredGameObjectId))
                 {
-                    Log("[Holdup] DISPATCH actor=%u recoveredGameObjectId=0x%04X recoveredSoldierIndex=%u officer=YES\n",
+                    Log("[Holdup] DISPATCH VIP actor=%u recoveredGameObjectId=0x%04X recoveredSoldierIndex=%u officer=%s\n",
+                        actorId,
+                        static_cast<unsigned>(recoveredGameObjectId),
+                        static_cast<unsigned>(recoveredSoldierIndex),
+                        info.isOfficer ? "YES" : "NO");
+
+                    DispatchNoticeReaction(self, actorId, HASH_HOLDUP_RECOVERY_VIP);
+                }
+
+                // Always swallow the original holdup-recovery branch for important targets.
+                return;
+            }
+
+            // Non-VIP replacement path.
+            if (g_UseCustomNonVipHoldupRecovery && resolvedTarget)
+            {
+                if (ShouldDispatchCustomNonVipRecovery(recoveredGameObjectId, recoveredSoldierIndex))
+                {
+                    Log("[Holdup] REPLACE non-VIP recovery actor=%u recoveredGameObjectId=0x%04X recoveredSoldierIndex=%u customHash=0x%08X\n",
+                        actorId,
+                        static_cast<unsigned>(recoveredGameObjectId),
+                        static_cast<unsigned>(recoveredSoldierIndex),
+                        static_cast<unsigned>(HASH_HOLDUP_RECOVERY_NONVIP_CUSTOM));
+
+                    DispatchNoticeReaction(self, actorId, HASH_HOLDUP_RECOVERY_NONVIP_CUSTOM);
+                    BeginCustomNonVipRecoverySuppressWindow(recoveredGameObjectId, recoveredSoldierIndex);
+                }
+                else
+                {
+                    Log("[Holdup] IGNORE duplicate non-VIP recovery actor=%u recoveredGameObjectId=0x%04X recoveredSoldierIndex=%u\n",
                         actorId,
                         static_cast<unsigned>(recoveredGameObjectId),
                         static_cast<unsigned>(recoveredSoldierIndex));
 
-                    DispatchNoticeReaction(self, actorId, HASH_HOLDUP_RECOVERY_OFFICER);
+                    BeginCustomNonVipRecoverySuppressWindow(recoveredGameObjectId, recoveredSoldierIndex);
                 }
 
-                // Always swallow the original holdup-recovery branch for officer targets.
+                // Always swallow vanilla when the replacement is enabled.
                 return;
             }
         }
@@ -409,28 +524,29 @@ static void __fastcall hkState_StandRecoveryHoldup(
         // Second branch: the normal voice-notice event that follows the custom dispatch.
         if (eventHash == HASH_EVENT_VOICE_NOTICE)
         {
-            std::uint16_t recoveredGameObjectId = 0xFFFFu;
-            std::uint16_t recoveredSoldierIndex = 0xFFFFu;
-            ImportantTargetInfo info{};
-
-            const bool isImportant =
-                TryResolveHoldupImportantTargetInfo(
-                    self,
-                    actorId,
-                    recoveredGameObjectId,
-                    recoveredSoldierIndex,
-                    info);
-
-            if (isImportant && info.isOfficer)
+            if (isImportant)
             {
                 if (ShouldSuppressVanillaVoiceNotice(actorId, recoveredGameObjectId))
                 {
-                    Log("[Holdup] SUPPRESS vanilla voice notice actor=%u recoveredGameObjectId=0x%04X recoveredSoldierIndex=%u\n",
+                    Log("[Holdup] SUPPRESS vanilla VIP voice notice actor=%u recoveredGameObjectId=0x%04X recoveredSoldierIndex=%u officer=%s\n",
                         actorId,
                         static_cast<unsigned>(recoveredGameObjectId),
-                        static_cast<unsigned>(recoveredSoldierIndex));
+                        static_cast<unsigned>(recoveredSoldierIndex),
+                        info.isOfficer ? "YES" : "NO");
                     return;
                 }
+            }
+
+            if (g_UseCustomNonVipHoldupRecovery &&
+                resolvedTarget &&
+                !isImportant &&
+                ShouldSuppressCustomNonVipRecoveryNow(recoveredGameObjectId, recoveredSoldierIndex))
+            {
+                Log("[Holdup] SUPPRESS vanilla non-VIP voice notice actor=%u recoveredGameObjectId=0x%04X recoveredSoldierIndex=%u\n",
+                    actorId,
+                    static_cast<unsigned>(recoveredGameObjectId),
+                    static_cast<unsigned>(recoveredSoldierIndex));
+                return;
             }
         }
     }
@@ -483,6 +599,8 @@ void Remove_VIPHoldupImportantGameObjectId(std::uint32_t gameObjectId)
         std::lock_guard<std::mutex> lock(g_HoldupMutex);
         g_ImportantTargetsBySoldierIndex.erase(soldierIndex);
         g_RecentDispatchByActor.clear();
+        g_CustomNonVipRecoveryPendingTargets.clear();
+        g_RecentNonVipSuppressByTarget.clear();
     }
 
     Log("[Holdup] Removed important target: gameObjectId=0x%08X soldierIndex=0x%04X\n",
@@ -498,9 +616,35 @@ void Clear_VIPHoldupImportantGameObjectIds()
         std::lock_guard<std::mutex> lock(g_HoldupMutex);
         g_ImportantTargetsBySoldierIndex.clear();
         g_RecentDispatchByActor.clear();
+        g_CustomNonVipRecoveryPendingTargets.clear();
+        g_RecentNonVipSuppressByTarget.clear();
     }
 
     Log("[Holdup] Cleared all important targets\n");
+}
+
+// Enables or disables the custom non-VIP holdup-recovery replacement.
+// Params: enabled (true = use custom hash instead of vanilla non-VIP line)
+void Set_UseCustomNonVipHoldupRecovery(bool enabled)
+{
+    g_UseCustomNonVipHoldupRecovery = enabled;
+
+    if (!enabled)
+    {
+        ClearAllCustomNonVipRecovery();
+        ClearAllCustomNonVipRecoverySuppressWindows();
+    }
+
+    Log("[Holdup] Custom non-VIP holdup recovery: %s (hash=0x%08X)\n",
+        enabled ? "ON" : "OFF",
+        static_cast<unsigned>(HASH_HOLDUP_RECOVERY_NONVIP_CUSTOM));
+}
+
+// Returns whether the custom non-VIP holdup-recovery replacement is enabled.
+// Params: none
+bool Get_UseCustomNonVipHoldupRecovery()
+{
+    return g_UseCustomNonVipHoldupRecovery;
 }
 
 // Installs the holdup-only hook.
@@ -527,6 +671,8 @@ bool Uninstall_VIPHoldup_Hook()
         std::lock_guard<std::mutex> lock(g_HoldupMutex);
         g_ImportantTargetsBySoldierIndex.clear();
         g_RecentDispatchByActor.clear();
+        g_CustomNonVipRecoveryPendingTargets.clear();
+        g_RecentNonVipSuppressByTarget.clear();
     }
 
     Log("[Holdup] Hooks removed and state cleared\n");
