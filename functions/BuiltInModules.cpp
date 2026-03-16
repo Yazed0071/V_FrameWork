@@ -5,7 +5,7 @@
 
 #include "BuiltInModules.h"
 #include "FeatureModule.h"
-#include "VIPRadioHook.h"
+
 
 bool Install_SetLuaFunctions_Hook();
 bool Uninstall_SetLuaFunctions_Hook();
@@ -31,10 +31,17 @@ bool Uninstall_VIPSleepFaint_Hook();
 bool Install_VIPHoldup_Hook();
 bool Uninstall_VIPHoldup_Hook();
 
-
 bool Install_VIPRadio_Hook();
 bool Uninstall_VIPRadio_Hook();
 
+bool Install_HoldUpReactionCowardlyReactions_Hook();
+bool Uninstall_HoldUpReactionCowardlyReactions_Hook();
+
+bool Install_CallSignExtra_Hook();
+bool Uninstall_CallSignExtra_Hook();
+
+bool Install_LostHostage_Hooks();
+bool Uninstall_LostHostage_Hooks();
 
 namespace
 {
@@ -212,6 +219,57 @@ namespace
 			Uninstall_VIPRadio_Hook();
 		}
 	};
+	class HoldUpReactionCowardlyReactionsModule final : public IFeatureModule
+	{
+	public:
+		const char* GetName() const override
+		{
+			return "HoldUpReactionCowardlyReactions";
+		}
+		bool Install(HMODULE hGame) override
+		{
+			UNREFERENCED_PARAMETER(hGame);
+			return Install_HoldUpReactionCowardlyReactions_Hook();
+		}
+		void Uninstall() override
+		{
+			Uninstall_HoldUpReactionCowardlyReactions_Hook();
+		}
+	};
+	class PerSoldierCallSignOverrideModule final : public IFeatureModule
+	{
+	public:
+		const char* GetName() const override
+		{
+			return "PerSoldierCallSignOverride";
+		}
+		bool Install(HMODULE hGame) override
+		{
+			UNREFERENCED_PARAMETER(hGame);
+			return Install_CallSignExtra_Hook();
+		}
+		void Uninstall() override
+		{
+			Uninstall_CallSignExtra_Hook();
+		}
+	};
+	class LostHostageModule final : public IFeatureModule
+	{
+	public:
+		const char* GetName() const override
+		{
+			return "LostHostage";
+		}
+		bool Install(HMODULE hGame) override
+		{
+			UNREFERENCED_PARAMETER(hGame);
+			return Install_LostHostage_Hooks();
+		}
+		void Uninstall() override
+		{
+			Uninstall_LostHostage_Hooks();
+		}
+	};
 }
 
 void RegisterBuiltInFeatureModules()
@@ -225,6 +283,9 @@ void RegisterBuiltInFeatureModules()
     static VIPSleepFaintModule s_VIPSleepFaintModule;
     static VIPHoldupModule s_VIPHoldupModule;
 	static VIPRadioModule s_VIPRadioModule;
+	static HoldUpReactionCowardlyReactionsModule s_HoldUpReactionCowardlyReactionsModule;
+	static PerSoldierCallSignOverrideModule s_PerSoldierCallSignOverrideModule;
+	static LostHostageModule s_LostHostageModule;
 
     static std::once_flag s_Once;
     std::call_once(s_Once, []()
@@ -238,5 +299,8 @@ void RegisterBuiltInFeatureModules()
             FeatureModuleRegistry::Instance().Register(&s_VIPSleepFaintModule);
             FeatureModuleRegistry::Instance().Register(&s_VIPHoldupModule);
 			FeatureModuleRegistry::Instance().Register(&s_VIPRadioModule);
+			FeatureModuleRegistry::Instance().Register(&s_HoldUpReactionCowardlyReactionsModule);
+			FeatureModuleRegistry::Instance().Register(&s_PerSoldierCallSignOverrideModule);
+			FeatureModuleRegistry::Instance().Register(&s_LostHostageModule);
         });
 }

@@ -51,7 +51,6 @@ static DWORD WINAPI InitThread(LPVOID)
 
     RegisterBuiltInFeatureModules();
 
-
     HMODULE hGame = GetModuleHandleW(nullptr);
     const bool allOk = FeatureModuleRegistry::Instance().InstallAll(hGame);
     Log("[DLL] FeatureModuleRegistry::InstallAll -> %s\n", allOk ? "OK" : "PARTIAL/FAIL");

@@ -447,6 +447,7 @@ static bool TryExtractSleepFaintCandidatesFromEntry(
 }
 
 // Hooks ComradeAction and caches actor -> sleeperIndex during proc=1.
+// Also queues VIP radio using the best important-target candidate, with RequestCorpse fallback.
 // Params: self, actorId, proc, evt
 static void __fastcall hkState_ComradeAction(
     void* self,
@@ -470,7 +471,7 @@ static void __fastcall hkState_ComradeAction(
             sleeperIndexFrom5D,
             sleeperGameObjectIdFrom52,
             sleeperIndexFrom52,
-            false);
+            true);
 
         Log("[SleepFaint] COMRADE_PROC=%u actor=%u idxFrom5D=%u gameObjectIdFrom52=0x%04X idxFrom52=%u\n",
             proc,
@@ -492,27 +493,62 @@ static void __fastcall hkState_ComradeAction(
             sleeperIndexFrom5D,
             sleeperGameObjectIdFrom52,
             sleeperIndexFrom52,
-            false))
+            true))
         {
             std::uint16_t chosenIndex = 0xFFFFu;
+            ImportantTargetInfo info{};
+            bool isImportant = false;
 
-            // For ComradeAction proc=1, prefer +0x5D because the decomp showed it
-            // feeding CallVoiceNotice. Keep +0x52 only as additional debug context.
+            // Prefer whichever extracted candidate is actually important.
             if (sleeperIndexFrom5D != 0xFFFFu && sleeperIndexFrom5D != 0)
             {
-                chosenIndex = sleeperIndexFrom5D;
+                if (TryGetImportantTargetInfo(sleeperIndexFrom5D, info))
+                {
+                    chosenIndex = sleeperIndexFrom5D;
+                    isImportant = true;
+                }
             }
-            else if (sleeperIndexFrom52 != 0xFFFFu)
+
+            if (!isImportant && sleeperIndexFrom52 != 0xFFFFu)
             {
-                chosenIndex = sleeperIndexFrom52;
+                if (TryGetImportantTargetInfo(sleeperIndexFrom52, info))
+                {
+                    chosenIndex = sleeperIndexFrom52;
+                    isImportant = true;
+                }
+            }
+
+            // Fallback: if SleepFaint extracted the wrong target, but there is exactly one
+            // recent important corpse from RequestCorpse, use that.
+            if (!isImportant)
+            {
+                std::uint16_t fallbackIndex = 0xFFFFu;
+                bool fallbackOfficer = false;
+
+                if (Try_GetSingleRecentImportantCorpseIndex(fallbackIndex, fallbackOfficer))
+                {
+                    chosenIndex = fallbackIndex;
+                    isImportant = TryGetImportantTargetInfo(chosenIndex, info);
+
+                    Log("[SleepFaint] COMRADE_PREP fallback from recent RequestCorpse -> chosenSleeperIndex=%u important=%s officer=%s\n",
+                        static_cast<unsigned>(chosenIndex),
+                        isImportant ? "YES" : "NO",
+                        (isImportant && info.isOfficer) ? "YES" : "NO");
+                }
+            }
+
+            // Final fallback only for cache/debug, not for radio correctness.
+            if (chosenIndex == 0xFFFFu)
+            {
+                if (sleeperIndexFrom5D != 0xFFFFu && sleeperIndexFrom5D != 0)
+                    chosenIndex = sleeperIndexFrom5D;
+                else if (sleeperIndexFrom52 != 0xFFFFu)
+                    chosenIndex = sleeperIndexFrom52;
             }
 
             if (chosenIndex != 0xFFFFu)
             {
                 SetPendingWake(actorId, chosenIndex, sleeperGameObjectIdFrom52);
-
-                ImportantTargetInfo info{};
-                const bool isImportant = TryGetImportantTargetInfo(chosenIndex, info);
 
                 Log("[SleepFaint] COMRADE_PREP actor=%u chosenSleeperIndex=%u important=%s officer=%s\n",
                     actorId,
@@ -560,7 +596,7 @@ static void __fastcall hkState_RecoveryTouch(
             sleeperIndexFrom5D,
             sleeperGameObjectIdFrom52,
             sleeperIndexFrom52,
-            false);
+            true);
 
         Log("[SleepFaint] TOUCH_PROC=%u actor=%u idxFrom5D=%u gameObjectIdFrom52=0x%04X idxFrom52=%u\n",
             proc,
@@ -598,7 +634,7 @@ static void __fastcall hkState_RecoveryTouch(
                     sleeperIndexFrom5D,
                     sleeperGameObjectIdFrom52,
                     sleeperIndexFrom52,
-                    false))
+                    true))
                 {
                     // At touch time, try both and prefer the full GameObjectId-derived value if valid.
                     if (sleeperIndexFrom52 != 0xFFFFu)

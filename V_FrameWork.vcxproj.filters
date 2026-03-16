@@ -75,6 +75,15 @@
     <ClInclude Include="functions\MissionCodeGuard.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="functions\State_EnterStandHoldup1.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="functions\GetVoiceParamWithCallSign.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="functions\LostHostageHook.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp">
@@ -123,6 +132,15 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="functions\MissionCodeGuard.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="functions\State_EnterStandHoldup1.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="functions\GetVoiceParamWithCallSign.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="functions\LostHostageHook.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

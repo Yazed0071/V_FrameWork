@@ -457,8 +457,6 @@ bool Install_UiTextureOverrides_Hook()
     return ok;
 }
 
-// Removes the unified UI texture override hooks.
-// Params: none
 bool Uninstall_UiTextureOverrides_Hook()
 {
     DisableAndRemoveHook(ResolveGameAddress(ABS_SetEquipBackgroundTexture));

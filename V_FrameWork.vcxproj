@@ -147,9 +147,12 @@
     <ClInclude Include="functions\CautionStepNormalTimerHook.h" />
     <ClInclude Include="functions\EnterDownHoldupForceVoiceHook.h" />
     <ClInclude Include="functions\FeatureModule.h" />
+    <ClInclude Include="functions\GetVoiceParamWithCallSign.h" />
     <ClInclude Include="functions\HookUtils.h" />
+    <ClInclude Include="functions\LostHostageHook.h" />
     <ClInclude Include="functions\MissionCodeGuard.h" />
     <ClInclude Include="functions\PlayerVoiceFpkHook.h" />
+    <ClInclude Include="functions\State_EnterStandHoldup1.h" />
     <ClInclude Include="functions\UiTextureOverrides.h" />
     <ClInclude Include="functions\VIPHoldupHook.h" />
     <ClInclude Include="functions\VIPRadioHook.h" />
@@ -166,12 +169,15 @@
   <ItemGroup>
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="functions\BuiltInModules.cpp" />
+    <ClCompile Include="functions\GetVoiceParamWithCallSign.cpp" />
     <ClCompile Include="functions\CautionStepNormalTimerHook.cpp" />
     <ClCompile Include="functions\EnterDownHoldupForceVoiceHook.cpp" />
     <ClCompile Include="functions\FeatureModule.cpp" />
+    <ClCompile Include="functions\LostHostageHook.cpp" />
     <ClCompile Include="functions\MissionCodeGuard.cpp" />
     <ClCompile Include="functions\PlayerVoiceFpkHook.cpp" />
     <ClCompile Include="functions\SetLuaFunctions.cpp" />
+    <ClCompile Include="functions\State_EnterStandHoldup1.cpp" />
     <ClCompile Include="functions\State_StandHoldupCancelLookToPlayer.cpp" />
     <ClCompile Include="functions\UiTextureOverrides.cpp" />
     <ClCompile Include="functions\VIPHoldupHook.cpp" />

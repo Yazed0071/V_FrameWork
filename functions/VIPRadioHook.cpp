@@ -9,12 +9,13 @@
 
 #include "HookUtils.h"
 #include "log.h"
+#include "MissionCodeGuard.h"
 #include "VIPRadioHook.h"
 
 namespace
 {
     // Address of tpp::gm::corpse::impl::CorpseManagerImpl::RequestCorpse.
-    // Params: self, animControl, ragdoll, facial, facialParam, location, originalGameObjectId, inheritanceInfo, fromScript
+    // Params: self, animControl, ragdollPlugin, facialPlugin, facialParam, location, originalGameObjectId, inheritanceInfo, fromScript
     static constexpr uintptr_t ABS_RequestCorpse = 0x140A69070ull;
 
     // Address of tpp::gm::impl::cp::ActionControllerImpl::StateRadio.
@@ -97,164 +98,189 @@ namespace
     static std::unordered_map<std::uint32_t, ImportantTargetInfo> g_ImportantByGameObjectId;
     static std::unordered_map<std::uint16_t, ImportantTargetInfo> g_ImportantBySoldierIndex;
 
-    // Exact important bodies that were actually discovered and should override the next body-found radio(s).
+    // Bodies that were actually discovered and are waiting to override the next radio.
     static std::deque<ImportantTargetInfo> g_DiscoveredImportantBodyQueue;
 
-    // Prevent repeated queueing of the same discovered important body.
+    // Duplicate suppression for discovered important bodies.
     static std::unordered_set<std::uint64_t> g_SeenDiscoveredImportantBodies;
 
-    // The currently armed override for the next body-found radio call.
+    // Recent important corpses seen by RequestCorpse.
+    // Used only as a fallback when SleepFaint extracts the wrong discovered target.
+    static std::deque<ImportantTargetInfo> g_RecentImportantCorpsesFromRequest;
+
+    // The currently armed body-found override.
     static PendingBodyFoundOverride g_PendingBodyFoundOverride;
+}
 
-    // Converts a game object id to the soldier index used by the gameplay systems.
-    // For your soldiers: 0x00000408 -> 0x0008, 0x00000411 -> 0x0011.
-    // Params: gameObjectId (32-bit game object id)
-    static std::uint16_t GameObjectIdToSoldierIndex(std::uint32_t gameObjectId)
+// Converts a gameObjectId to the soldier index used by gameplay code.
+// Params: gameObjectId
+static std::uint16_t GameObjectIdToSoldierIndex(std::uint32_t gameObjectId)
+{
+    const std::uint16_t low8 = static_cast<std::uint16_t>(gameObjectId & 0x00FFu);
+    if (low8 != 0)
+        return low8;
+
+    return static_cast<std::uint16_t>(gameObjectId & 0xFFFFu);
+}
+
+// Returns YES/NO for logs.
+// Params: value
+static const char* YesNo(bool value)
+{
+    return value ? "YES" : "NO";
+}
+
+// Normalizes a soldier index so broken values like 0x0408 do not poison lookups.
+// Params: gameObjectId, soldierIndex
+static std::uint16_t NormalizeSoldierIndex(std::uint32_t gameObjectId, std::uint16_t soldierIndex)
+{
+    if (soldierIndex != 0 && soldierIndex <= 0x00FFu)
+        return soldierIndex;
+
+    return GameObjectIdToSoldierIndex(gameObjectId);
+}
+
+// Builds a stable key for duplicate suppression.
+// Params: gameObjectId, soldierIndex
+static std::uint64_t MakeBodyKey(std::uint32_t gameObjectId, std::uint16_t soldierIndex)
+{
+    return (static_cast<std::uint64_t>(gameObjectId) << 32) | static_cast<std::uint64_t>(soldierIndex);
+}
+
+// Looks up an important target by gameObjectId first, then by normalized soldierIndex.
+// Params: gameObjectId, soldierIndex, outInfo
+static bool FindImportantTarget(
+    std::uint32_t gameObjectId,
+    std::uint16_t soldierIndex,
+    ImportantTargetInfo& outInfo)
+{
+    if (gameObjectId != 0)
     {
-        const std::uint16_t low8 = static_cast<std::uint16_t>(gameObjectId & 0x00FFu);
-        if (low8 != 0)
-            return low8;
-
-        return static_cast<std::uint16_t>(gameObjectId & 0xFFFFu);
-    }
-
-    // Returns a readable YES/NO string for logging.
-    // Params: value (boolean flag)
-    static const char* YesNo(bool value)
-    {
-        return value ? "YES" : "NO";
-    }
-
-    // Normalizes a soldier index so broken values like 0x0408 do not poison the lookup tables.
-    // Params: gameObjectId (full soldier game object id), soldierIndex (candidate soldier index)
-    static std::uint16_t NormalizeSoldierIndex(std::uint32_t gameObjectId, std::uint16_t soldierIndex)
-    {
-        if (soldierIndex != 0 && soldierIndex <= 0x00FFu)
-            return soldierIndex;
-
-        return GameObjectIdToSoldierIndex(gameObjectId);
-    }
-
-    // Builds a stable key for de-duplicating discovered important bodies.
-    // Params: gameObjectId, soldierIndex
-    static std::uint64_t MakeBodyKey(std::uint32_t gameObjectId, std::uint16_t soldierIndex)
-    {
-        return (static_cast<std::uint64_t>(gameObjectId) << 32) | static_cast<std::uint64_t>(soldierIndex);
-    }
-
-    // Looks up an important target by gameObjectId first, then by normalized soldierIndex.
-    // Params: gameObjectId, soldierIndex, outInfo (receives match on success)
-    static bool FindImportantTarget(
-        std::uint32_t gameObjectId,
-        std::uint16_t soldierIndex,
-        ImportantTargetInfo& outInfo)
-    {
-        if (gameObjectId != 0)
+        const auto byGameObject = g_ImportantByGameObjectId.find(gameObjectId);
+        if (byGameObject != g_ImportantByGameObjectId.end())
         {
-            const auto byGameObject = g_ImportantByGameObjectId.find(gameObjectId);
-            if (byGameObject != g_ImportantByGameObjectId.end())
-            {
-                outInfo = byGameObject->second;
-                return true;
-            }
+            outInfo = byGameObject->second;
+            return true;
         }
+    }
 
-        const std::uint16_t normalizedSoldierIndex = NormalizeSoldierIndex(gameObjectId, soldierIndex);
-        if (normalizedSoldierIndex != 0)
+    const std::uint16_t normalizedSoldierIndex = NormalizeSoldierIndex(gameObjectId, soldierIndex);
+    if (normalizedSoldierIndex != 0)
+    {
+        const auto bySoldierIndex = g_ImportantBySoldierIndex.find(normalizedSoldierIndex);
+        if (bySoldierIndex != g_ImportantBySoldierIndex.end())
         {
-            const auto bySoldierIndex = g_ImportantBySoldierIndex.find(normalizedSoldierIndex);
-            if (bySoldierIndex != g_ImportantBySoldierIndex.end())
-            {
-                outInfo = bySoldierIndex->second;
-                return true;
-            }
+            outInfo = bySoldierIndex->second;
+            return true;
         }
+    }
 
+    return false;
+}
+
+// Convenience overload when only a gameObjectId is available.
+// Params: gameObjectId, outInfo
+static bool FindImportantTarget(std::uint32_t gameObjectId, ImportantTargetInfo& outInfo)
+{
+    return FindImportantTarget(
+        gameObjectId,
+        static_cast<std::uint16_t>(gameObjectId & 0xFFFFu),
+        outInfo);
+}
+
+// Reads the current radio type from ActionControllerImpl state.
+// Params: self, slot
+static std::uint8_t ReadRadioType(void* self, std::uint32_t slot)
+{
+    const auto selfBytes = reinterpret_cast<std::uint8_t*>(self);
+    const auto entry88Base = *reinterpret_cast<std::uint8_t**>(selfBytes + 0x88);
+    if (!entry88Base)
+        return 0;
+
+    return *(entry88Base + 8 + static_cast<std::size_t>(slot) * 0x0C);
+}
+
+// Removes one recent RequestCorpse candidate by exact target.
+// Params: info
+static void RemoveRecentImportantCorpse_NoLock(const ImportantTargetInfo& info)
+{
+    for (auto it = g_RecentImportantCorpsesFromRequest.begin();
+        it != g_RecentImportantCorpsesFromRequest.end();
+        ++it)
+    {
+        if (it->gameObjectId == info.gameObjectId &&
+            it->soldierIndex == info.soldierIndex)
+        {
+            g_RecentImportantCorpsesFromRequest.erase(it);
+            return;
+        }
+    }
+}
+
+// Clears runtime radio state without taking the mutex.
+// Params: none
+static void ClearRuntimeRadioState_NoLock()
+{
+    g_DiscoveredImportantBodyQueue.clear();
+    g_SeenDiscoveredImportantBodies.clear();
+    g_RecentImportantCorpsesFromRequest.clear();
+    g_PendingBodyFoundOverride = {};
+}
+
+// Queues a discovered important body for the next body-found radio override.
+// Params: foundGameObjectId, foundSoldierIndex
+static bool QueueDiscoveredImportantBody(std::uint32_t foundGameObjectId, std::uint16_t foundSoldierIndex)
+{
+    ImportantTargetInfo info{};
+    if (!FindImportantTarget(foundGameObjectId, foundSoldierIndex, info))
+    {
+        Log(
+            "[Radio] The found body wasn't the VIP's: gameObjectId=0x%08X soldierIndex=0x%04X\n",
+            static_cast<unsigned int>(foundGameObjectId),
+            static_cast<unsigned int>(foundSoldierIndex));
         return false;
     }
 
-    // Convenience overload when only a gameObjectId is available.
-    // Params: gameObjectId, outInfo (receives match on success)
-    static bool FindImportantTarget(std::uint32_t gameObjectId, ImportantTargetInfo& outInfo)
+    const std::uint64_t bodyKey = MakeBodyKey(info.gameObjectId, info.soldierIndex);
+    if (g_SeenDiscoveredImportantBodies.find(bodyKey) != g_SeenDiscoveredImportantBodies.end())
     {
-        return FindImportantTarget(
-            gameObjectId,
-            static_cast<std::uint16_t>(gameObjectId & 0xFFFFu),
-            outInfo);
-    }
-
-    // Reads the current radio type from ActionControllerImpl state.
-    // Params: self (ActionControllerImpl*), slot (radio slot)
-    static std::uint8_t ReadRadioType(void* self, std::uint32_t slot)
-    {
-        const auto selfBytes = reinterpret_cast<std::uint8_t*>(self);
-        const auto entry88Base = *reinterpret_cast<std::uint8_t**>(selfBytes + 0x88);
-        if (!entry88Base)
-            return 0;
-
-        return *(entry88Base + 8 + static_cast<std::size_t>(slot) * 0x0C);
-    }
-
-    // Clears runtime radio override state without taking the mutex.
-    // Params: none
-    static void ClearRuntimeRadioState_NoLock()
-    {
-        g_DiscoveredImportantBodyQueue.clear();
-        g_SeenDiscoveredImportantBodies.clear();
-        g_PendingBodyFoundOverride = {};
-    }
-
-    // Queues an actually discovered important body for the next body-found radio override.
-    // Params: foundGameObjectId (0 if unknown), foundSoldierIndex (must be valid when gameObjectId is unknown)
-    static bool QueueDiscoveredImportantBody(std::uint32_t foundGameObjectId, std::uint16_t foundSoldierIndex)
-    {
-        ImportantTargetInfo info{};
-        if (!FindImportantTarget(foundGameObjectId, foundSoldierIndex, info))
-        {
-            Log(
-                "[Radio] The found body wasn't the VIP's: gameObjectId=0x%08X soldierIndex=0x%04X\n",
-                static_cast<unsigned int>(foundGameObjectId),
-                static_cast<unsigned int>(foundSoldierIndex));
-            return false;
-        }
-
-        const std::uint64_t bodyKey = MakeBodyKey(info.gameObjectId, info.soldierIndex);
-        if (g_SeenDiscoveredImportantBodies.find(bodyKey) != g_SeenDiscoveredImportantBodies.end())
-        {
-            Log(
-                "[Radio] Duplicate important body discovery ignored: gameObjectId=0x%08X soldierIndex=0x%04X officer=%s\n",
-                static_cast<unsigned int>(info.gameObjectId),
-                static_cast<unsigned int>(info.soldierIndex),
-                YesNo(info.isOfficer));
-            return false;
-        }
-
-        g_SeenDiscoveredImportantBodies.insert(bodyKey);
-        g_DiscoveredImportantBodyQueue.push_back(info);
-
         Log(
-            "[Radio] Queued discovered important body: gameObjectId=0x%08X soldierIndex=0x%04X officer=%s queueSize=%zu\n",
+            "[Radio] Duplicate important body discovery ignored: gameObjectId=0x%08X soldierIndex=0x%04X officer=%s\n",
             static_cast<unsigned int>(info.gameObjectId),
             static_cast<unsigned int>(info.soldierIndex),
-            YesNo(info.isOfficer),
-            g_DiscoveredImportantBodyQueue.size());
-
-        return true;
+            YesNo(info.isOfficer));
+        return false;
     }
 
-    // Hook for CorpseManagerImpl::RequestCorpse.
-    // This only logs corpse creation. It must NOT decide radio overrides.
-    // Params: original function params from RequestCorpse
-    static void __fastcall hkRequestCorpse(
-        void* self,
-        void* animControl,
-        void* ragdollPlugin,
-        void* facialPlugin,
-        std::uint32_t* facialParam,
-        const void* location,
-        std::uint16_t originalGameObjectId,
-        const void* inheritanceInfo,
-        bool fromScript)
+    g_SeenDiscoveredImportantBodies.insert(bodyKey);
+    g_DiscoveredImportantBodyQueue.push_back(info);
+    RemoveRecentImportantCorpse_NoLock(info);
+
+    Log(
+        "[Radio] Queued discovered important body: gameObjectId=0x%08X soldierIndex=0x%04X officer=%s queueSize=%zu\n",
+        static_cast<unsigned int>(info.gameObjectId),
+        static_cast<unsigned int>(info.soldierIndex),
+        YesNo(info.isOfficer),
+        g_DiscoveredImportantBodyQueue.size());
+
+    return true;
+}
+
+// Hook for CorpseManagerImpl::RequestCorpse.
+// This only logs corpse creation and caches recent important corpses for fallback use.
+// Params: self, animControl, ragdollPlugin, facialPlugin, facialParam, location, originalGameObjectId, inheritanceInfo, fromScript
+static void __fastcall hkRequestCorpse(
+    void* self,
+    void* animControl,
+    void* ragdollPlugin,
+    void* facialPlugin,
+    std::uint32_t* facialParam,
+    const void* location,
+    std::uint16_t originalGameObjectId,
+    const void* inheritanceInfo,
+    bool fromScript)
+{
+    if (MissionCodeGuard::ShouldBypassHooks())
     {
         if (g_OrigRequestCorpse)
         {
@@ -269,162 +295,210 @@ namespace
                 inheritanceInfo,
                 fromScript);
         }
-
-        ImportantTargetInfo info{};
-        {
-            std::lock_guard<std::mutex> lock(g_StateMutex);
-            if (FindImportantTarget(static_cast<std::uint32_t>(originalGameObjectId), info))
-            {
-                Log(
-                    "[Radio] RequestCorpse originalGameObjectId=0x%04X soldierIndex=%u important=YES officer=%s fromScript=%s\n",
-                    static_cast<unsigned int>(originalGameObjectId),
-                    static_cast<unsigned int>(info.soldierIndex),
-                    YesNo(info.isOfficer),
-                    YesNo(fromScript));
-                return;
-            }
-        }
-
-        Log(
-            "[Radio] RequestCorpse originalGameObjectId=0x%04X soldierIndex=%u important=NO officer=NO fromScript=%s\n",
-            static_cast<unsigned int>(originalGameObjectId),
-            static_cast<unsigned int>(GameObjectIdToSoldierIndex(static_cast<std::uint32_t>(originalGameObjectId))),
-            YesNo(fromScript));
+        return;
     }
 
-    // Hook for ActionControllerImpl::StateRadio.
-    // This only arms from already-verified discovered important bodies.
-    // Params: self (ActionControllerImpl*), slot (radio slot), proc (state proc)
-    static void __fastcall hkStateRadio(void* self, std::uint32_t slot, int proc)
+    if (g_OrigRequestCorpse)
     {
-        if (proc == 0)
+        g_OrigRequestCorpse(
+            self,
+            animControl,
+            ragdollPlugin,
+            facialPlugin,
+            facialParam,
+            location,
+            originalGameObjectId,
+            inheritanceInfo,
+            fromScript);
+    }
+
+    ImportantTargetInfo info{};
+    {
+        std::lock_guard<std::mutex> lock(g_StateMutex);
+        if (FindImportantTarget(static_cast<std::uint32_t>(originalGameObjectId), info))
         {
-            const std::uint8_t radioType = ReadRadioType(self, slot);
-
-            std::lock_guard<std::mutex> lock(g_StateMutex);
-
-            if (radioType == kRadioTypeBodyFound)
+            bool alreadyRecent = false;
+            for (const auto& recent : g_RecentImportantCorpsesFromRequest)
             {
-                if (!g_PendingBodyFoundOverride.active && !g_DiscoveredImportantBodyQueue.empty())
+                if (recent.gameObjectId == info.gameObjectId &&
+                    recent.soldierIndex == info.soldierIndex)
                 {
-                    g_PendingBodyFoundOverride.active = true;
-                    g_PendingBodyFoundOverride.target = g_DiscoveredImportantBodyQueue.front();
-
-                    Log(
-                        "[Radio] Armed body-found override: slot=%u gameObjectId=0x%08X soldierIndex=%u officer=%s queueSize=%zu\n",
-                        static_cast<unsigned int>(slot),
-                        static_cast<unsigned int>(g_PendingBodyFoundOverride.target.gameObjectId),
-                        static_cast<unsigned int>(g_PendingBodyFoundOverride.target.soldierIndex),
-                        YesNo(g_PendingBodyFoundOverride.target.isOfficer),
-                        g_DiscoveredImportantBodyQueue.size());
+                    alreadyRecent = true;
+                    break;
                 }
             }
-            else
-            {
-                g_PendingBodyFoundOverride = {};
-            }
-        }
 
+            if (!alreadyRecent)
+            {
+                g_RecentImportantCorpsesFromRequest.push_back(info);
+
+                while (g_RecentImportantCorpsesFromRequest.size() > 4)
+                    g_RecentImportantCorpsesFromRequest.pop_front();
+            }
+
+            Log(
+                "[Radio] RequestCorpse originalGameObjectId=0x%04X soldierIndex=%u important=YES officer=%s fromScript=%s\n",
+                static_cast<unsigned int>(originalGameObjectId),
+                static_cast<unsigned int>(info.soldierIndex),
+                YesNo(info.isOfficer),
+                YesNo(fromScript));
+            return;
+        }
+    }
+
+    Log(
+        "[Radio] RequestCorpse originalGameObjectId=0x%04X soldierIndex=%u important=NO officer=NO fromScript=%s\n",
+        static_cast<unsigned int>(originalGameObjectId),
+        static_cast<unsigned int>(GameObjectIdToSoldierIndex(static_cast<std::uint32_t>(originalGameObjectId))),
+        YesNo(fromScript));
+}
+
+// Hook for ActionControllerImpl::StateRadio.
+// This only arms from already-verified discovered important bodies.
+// Params: self, slot, proc
+static void __fastcall hkStateRadio(void* self, std::uint32_t slot, int proc)
+{
+    if (MissionCodeGuard::ShouldBypassHooks())
+    {
         if (g_OrigStateRadio)
-        {
             g_OrigStateRadio(self, slot, proc);
+        return;
+    }
+
+    if (proc == 0)
+    {
+        const std::uint8_t radioType = ReadRadioType(self, slot);
+
+        std::lock_guard<std::mutex> lock(g_StateMutex);
+
+        if (radioType == kRadioTypeBodyFound)
+        {
+            if (!g_PendingBodyFoundOverride.active && !g_DiscoveredImportantBodyQueue.empty())
+            {
+                g_PendingBodyFoundOverride.active = true;
+                g_PendingBodyFoundOverride.target = g_DiscoveredImportantBodyQueue.front();
+
+                Log(
+                    "[Radio] Armed body-found override: slot=%u gameObjectId=0x%08X soldierIndex=%u officer=%s queueSize=%zu\n",
+                    static_cast<unsigned int>(slot),
+                    static_cast<unsigned int>(g_PendingBodyFoundOverride.target.gameObjectId),
+                    static_cast<unsigned int>(g_PendingBodyFoundOverride.target.soldierIndex),
+                    YesNo(g_PendingBodyFoundOverride.target.isOfficer),
+                    g_DiscoveredImportantBodyQueue.size());
+            }
+        }
+        else
+        {
+            g_PendingBodyFoundOverride = {};
         }
     }
 
-    // Hook for RadioSpeechHandlerImpl::CallWithRadioType.
-    // If the next body-found radio belongs to a discovered important body, this swaps the line.
-    // Params: self (RadioSpeechHandlerImpl*), outHandle, ownerIndex, radioType, arg5
-    static short* __fastcall hkCallWithRadioType(
-        void* self,
-        short* outHandle,
-        std::uint32_t ownerIndex,
-        std::uint8_t radioType,
-        std::uint16_t arg5)
+    if (g_OrigStateRadio)
+        g_OrigStateRadio(self, slot, proc);
+}
+
+// Hook for RadioSpeechHandlerImpl::CallWithRadioType.
+// If the next body-found radio belongs to a discovered important body, this swaps the line.
+// Params: self, outHandle, ownerIndex, radioType, arg5
+static short* __fastcall hkCallWithRadioType(
+    void* self,
+    short* outHandle,
+    std::uint32_t ownerIndex,
+    std::uint8_t radioType,
+    std::uint16_t arg5)
+{
+    if (MissionCodeGuard::ShouldBypassHooks())
     {
-        PendingBodyFoundOverride pending{};
-        bool shouldConsumeQueueFront = false;
-
-        {
-            std::lock_guard<std::mutex> lock(g_StateMutex);
-            if (radioType == kRadioTypeBodyFound && g_PendingBodyFoundOverride.active)
-            {
-                pending = g_PendingBodyFoundOverride;
-                g_PendingBodyFoundOverride = {};
-                shouldConsumeQueueFront = !g_DiscoveredImportantBodyQueue.empty();
-            }
-        }
-
-        if (radioType == kRadioTypeBodyFound && pending.active)
-        {
-            if (pending.target.isOfficer)
-            {
-                Log(
-                    "[Radio] Officer body-found override: owner=%u arg5=0x%04X gameObjectId=0x%08X soldierIndex=%u speechLabel=0x%08X\n",
-                    static_cast<unsigned int>(ownerIndex),
-                    static_cast<unsigned int>(arg5),
-                    static_cast<unsigned int>(pending.target.gameObjectId),
-                    static_cast<unsigned int>(pending.target.soldierIndex),
-                    static_cast<unsigned int>(kOfficerBodyFoundSpeechLabel));
-
-                if (shouldConsumeQueueFront)
-                {
-                    std::lock_guard<std::mutex> lock(g_StateMutex);
-                    if (!g_DiscoveredImportantBodyQueue.empty())
-                        g_DiscoveredImportantBodyQueue.pop_front();
-                }
-
-                if (g_CallImpl)
-                {
-                    return g_CallImpl(
-                        reinterpret_cast<long long>(self) - 0x20ll,
-                        outHandle,
-                        static_cast<int>(ownerIndex),
-                        kOfficerBodyFoundSpeechLabel,
-                        arg5);
-                }
-            }
-            else
-            {
-                Log(
-                    "[Radio] VIP body-found override: owner=%u arg5=0x%04X gameObjectId=0x%08X soldierIndex=%u radioType=0x%02X\n",
-                    static_cast<unsigned int>(ownerIndex),
-                    static_cast<unsigned int>(arg5),
-                    static_cast<unsigned int>(pending.target.gameObjectId),
-                    static_cast<unsigned int>(pending.target.soldierIndex),
-                    static_cast<unsigned int>(kRadioTypeVipBodyFound));
-
-                if (shouldConsumeQueueFront)
-                {
-                    std::lock_guard<std::mutex> lock(g_StateMutex);
-                    if (!g_DiscoveredImportantBodyQueue.empty())
-                        g_DiscoveredImportantBodyQueue.pop_front();
-                }
-
-                if (g_OrigCallWithRadioType)
-                {
-                    return g_OrigCallWithRadioType(
-                        self,
-                        outHandle,
-                        ownerIndex,
-                        kRadioTypeVipBodyFound,
-                        arg5);
-                }
-            }
-        }
-
         if (g_OrigCallWithRadioType)
-        {
             return g_OrigCallWithRadioType(self, outHandle, ownerIndex, radioType, arg5);
-        }
 
         return outHandle;
     }
+
+    PendingBodyFoundOverride pending{};
+    bool shouldConsumeQueueFront = false;
+
+    {
+        std::lock_guard<std::mutex> lock(g_StateMutex);
+        if (radioType == kRadioTypeBodyFound && g_PendingBodyFoundOverride.active)
+        {
+            pending = g_PendingBodyFoundOverride;
+            g_PendingBodyFoundOverride = {};
+            shouldConsumeQueueFront = !g_DiscoveredImportantBodyQueue.empty();
+        }
+    }
+
+    if (radioType == kRadioTypeBodyFound && pending.active)
+    {
+        if (pending.target.isOfficer)
+        {
+            Log(
+                "[Radio] Officer body-found override: owner=%u arg5=0x%04X gameObjectId=0x%08X soldierIndex=%u speechLabel=0x%08X\n",
+                static_cast<unsigned int>(ownerIndex),
+                static_cast<unsigned int>(arg5),
+                static_cast<unsigned int>(pending.target.gameObjectId),
+                static_cast<unsigned int>(pending.target.soldierIndex),
+                static_cast<unsigned int>(kOfficerBodyFoundSpeechLabel));
+
+            if (shouldConsumeQueueFront)
+            {
+                std::lock_guard<std::mutex> lock(g_StateMutex);
+                if (!g_DiscoveredImportantBodyQueue.empty())
+                    g_DiscoveredImportantBodyQueue.pop_front();
+            }
+
+            if (g_CallImpl)
+            {
+                return g_CallImpl(
+                    reinterpret_cast<long long>(self) - 0x20ll,
+                    outHandle,
+                    static_cast<int>(ownerIndex),
+                    kOfficerBodyFoundSpeechLabel,
+                    arg5);
+            }
+        }
+        else
+        {
+            Log(
+                "[Radio] VIP body-found override: owner=%u arg5=0x%04X gameObjectId=0x%08X soldierIndex=%u radioType=0x%02X\n",
+                static_cast<unsigned int>(ownerIndex),
+                static_cast<unsigned int>(arg5),
+                static_cast<unsigned int>(pending.target.gameObjectId),
+                static_cast<unsigned int>(pending.target.soldierIndex),
+                static_cast<unsigned int>(kRadioTypeVipBodyFound));
+
+            if (shouldConsumeQueueFront)
+            {
+                std::lock_guard<std::mutex> lock(g_StateMutex);
+                if (!g_DiscoveredImportantBodyQueue.empty())
+                    g_DiscoveredImportantBodyQueue.pop_front();
+            }
+
+            if (g_OrigCallWithRadioType)
+            {
+                return g_OrigCallWithRadioType(
+                    self,
+                    outHandle,
+                    ownerIndex,
+                    kRadioTypeVipBodyFound,
+                    arg5);
+            }
+        }
+    }
+
+    if (g_OrigCallWithRadioType)
+        return g_OrigCallWithRadioType(self, outHandle, ownerIndex, radioType, arg5);
+
+    return outHandle;
 }
 
-// Adds one important target for the radio module using both gameObjectId and soldierIndex.
-// Params: gameObjectId (soldier game object id), soldierIndex (real soldier index), isOfficer
+// Adds one important target using both gameObjectId and soldierIndex.
+// Params: gameObjectId, soldierIndex, isOfficer
 void Add_VIPRadioImportantTarget(std::uint32_t gameObjectId, std::uint16_t soldierIndex, bool isOfficer)
 {
+    if (MissionCodeGuard::ShouldBypassHooks())
+        return;
+
     const ImportantTargetInfo info{
         gameObjectId,
         NormalizeSoldierIndex(gameObjectId, soldierIndex),
@@ -442,8 +516,8 @@ void Add_VIPRadioImportantTarget(std::uint32_t gameObjectId, std::uint16_t soldi
         YesNo(info.isOfficer));
 }
 
-// Adds one important target for the radio module using only the gameObjectId.
-// Params: gameObjectId (soldier game object id), isOfficer
+// Adds one important target using only the gameObjectId.
+// Params: gameObjectId, isOfficer
 void Add_VIPRadioImportantGameObjectId(std::uint32_t gameObjectId, bool isOfficer)
 {
     Add_VIPRadioImportantTarget(
@@ -452,10 +526,13 @@ void Add_VIPRadioImportantGameObjectId(std::uint32_t gameObjectId, bool isOffice
         isOfficer);
 }
 
-// Removes one important target from the radio module.
-// Params: gameObjectId (soldier game object id)
+// Removes one important target by gameObjectId.
+// Params: gameObjectId
 void Remove_VIPRadioImportantGameObjectId(std::uint32_t gameObjectId)
 {
+    if (MissionCodeGuard::ShouldBypassHooks())
+        return;
+
     std::lock_guard<std::mutex> lock(g_StateMutex);
 
     const std::uint16_t soldierIndex = GameObjectIdToSoldierIndex(gameObjectId);
@@ -468,25 +545,48 @@ void Remove_VIPRadioImportantGameObjectId(std::uint32_t gameObjectId)
         static_cast<unsigned int>(soldierIndex));
 }
 
-// Call this from the actual "body discovered / body reported" hook when you know the discovered body's gameObjectId.
-// Params: foundGameObjectId (discovered body's original soldier game object id if available)
+// Queues a discovered important body using gameObjectId.
+// Params: foundGameObjectId
 bool Notify_VIPRadioBodyDiscovered(std::uint32_t foundGameObjectId)
 {
+    if (MissionCodeGuard::ShouldBypassHooks())
+        return false;
+
     std::lock_guard<std::mutex> lock(g_StateMutex);
     return QueueDiscoveredImportantBody(
         foundGameObjectId,
         GameObjectIdToSoldierIndex(foundGameObjectId));
 }
 
-// Call this from the actual "body discovered / body reported" hook when you know both ids.
+// Queues a discovered important body using gameObjectId + soldierIndex.
 // Params: foundGameObjectId, foundSoldierIndex
 bool Notify_VIPRadioBodyDiscoveredTarget(std::uint32_t foundGameObjectId, std::uint16_t foundSoldierIndex)
 {
+    if (MissionCodeGuard::ShouldBypassHooks())
+        return false;
+
     std::lock_guard<std::mutex> lock(g_StateMutex);
     return QueueDiscoveredImportantBody(foundGameObjectId, foundSoldierIndex);
 }
 
-// Clears all important targets and radio runtime state.
+// Returns true only when there is exactly one recent important corpse from RequestCorpse.
+// Params: outSoldierIndex, outIsOfficer
+bool Try_GetSingleRecentImportantCorpseIndex(std::uint16_t& outSoldierIndex, bool& outIsOfficer)
+{
+    outSoldierIndex = 0xFFFFu;
+    outIsOfficer = false;
+
+    std::lock_guard<std::mutex> lock(g_StateMutex);
+
+    if (g_RecentImportantCorpsesFromRequest.size() != 1)
+        return false;
+
+    outSoldierIndex = g_RecentImportantCorpsesFromRequest.front().soldierIndex;
+    outIsOfficer = g_RecentImportantCorpsesFromRequest.front().isOfficer;
+    return true;
+}
+
+// Clears all important targets and runtime state.
 // Params: none
 void Clear_VIPRadioImportantGameObjectIds()
 {
@@ -535,7 +635,7 @@ bool Install_VIPRadio_Hook()
     return ok;
 }
 
-// Uninstalls the VIP radio hooks and clears runtime state.
+// Removes the VIP radio hooks.
 // Params: none
 bool Uninstall_VIPRadio_Hook()
 {

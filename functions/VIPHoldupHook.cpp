@@ -465,7 +465,6 @@ static void __fastcall hkState_StandRecoveryHoldup(
             return;
         }
 
-        // First branch: the actual holdup-recovery event.
         if (eventHash == HASH_EVENT_HOLDUP_RECOVERY)
         {
             Log("[Holdup] RECOVERY actor=%u recoveredSoldierIndex=%u important=%s officer=%s\n",

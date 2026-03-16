@@ -13,11 +13,15 @@
 #include "VIPSleepFaintHook.h"
 #include "VIPHoldupHook.h"
 #include <VIPRadioHook.h>
+#include <State_EnterStandHoldup1.h>
+#include <GetVoiceParamWithCallSign.h>
+#include "LostHostageHook.h"
 
 extern "C" {
     #include "lua.h"
     #include "lauxlib.h"
     #include "lualib.h"
+
 }
 
 namespace
@@ -491,34 +495,125 @@ static int l_SetUseConcernedHoldupRecovery(lua_State* L)
     return 0;
 }
 
+static int l_HoldUpReactionCowardlyReactions(lua_State* L)
+{
+    const bool enabled = GetLuaBool(L, 1);
+    Set_HoldUpReactionCowardlyReactions(enabled);
+    return 0;
+}
+
+// Marks one soldier to use the hardcoded call-sign extra override.
+// Lua params: gameObjectId
+static int __cdecl l_AddCallSignExtraSoldier(lua_State* L)
+{
+    const std::uint32_t gameObjectId =
+        static_cast<std::uint32_t>(GetLuaInt64(L, 1));
+
+    Add_CallSignExtraSoldier(gameObjectId);
+    return 0;
+}
+
+// Removes one soldier from the hardcoded call-sign extra override set.
+// Lua params: gameObjectId
+static int __cdecl l_RemoveCallSignExtraSoldier(lua_State* L)
+{
+    const std::uint32_t gameObjectId =
+        static_cast<std::uint32_t>(GetLuaInt64(L, 1));
+
+    Remove_CallSignExtraSoldier(gameObjectId);
+    return 0;
+}
+
+// Clears all soldiers from the hardcoded call-sign extra override set.
+// Lua params: none
+static int __cdecl l_ClearCallSignExtraSoldiers(lua_State* L)
+{
+    UNREFERENCED_PARAMETER(L);
+    Clear_CallSignExtraSoldiers();
+    return 0;
+}
+
+// Registers one hostage to track for escape reporting.
+// Lua params: gameObjectId, hostageType
+static int __cdecl l_SetLostHostage(lua_State* L)
+{
+    const std::uint32_t gameObjectId =
+        static_cast<std::uint32_t>(GetLuaInt64(L, 1));
+
+    const int hostageType = GetLuaInt(L, 2);
+
+    Add_LostHostage(gameObjectId, hostageType);
+    return 0;
+}
+
+// Removes one tracked hostage.
+// Lua params: gameObjectId
+static int __cdecl l_RemoveLostHostage(lua_State* L)
+{
+    const std::uint32_t gameObjectId =
+        static_cast<std::uint32_t>(GetLuaInt64(L, 1));
+
+    Remove_LostHostage(gameObjectId);
+    return 0;
+}
+
+// Clears all tracked hostages.
+// Lua params: none
+static int __cdecl l_ClearLostHostages(lua_State* L)
+{
+    UNREFERENCED_PARAMETER(L);
+    Clear_LostHostages();
+    return 0;
+}
+
+// Sets the custom speech label for one hostage type.
+// Lua params: hostageType, speechLabel
+static int __cdecl l_SetLostHostageSpeechLabel(lua_State* L)
+{
+    const int hostageType = GetLuaInt(L, 1);
+    const std::uint32_t speechLabel =
+        static_cast<std::uint32_t>(GetLuaInt64(L, 2));
+
+    Set_LostHostageSpeechLabel(hostageType, speechLabel);
+    return 0;
+}
+
 static luaL_Reg g_VFrameWorkLib[] =
 {
-    { "SetDefaultEquipBgTexturePath",               l_SetDefaultEquipBgTexturePath },
-    { "ClearDefaultEquipBgTexture",                 l_ClearDefaultEquipBgTexture },
-    { "SetEquipBgTexturePath",                      l_SetEquipBgTexturePath },
-    { "ClearEquipBgTexture",                        l_ClearEquipBgTexture },
-    { "SetEnemyWeaponBgTexturePath",                l_SetEnemyWeaponBgTexturePath },
-    { "ClearEnemyWeaponBgTexture",                  l_ClearEnemyWeaponBgTexture },
-    { "SetEnemyEquipBgTexturePath",                 l_SetEnemyEquipBgTexturePath },
-    { "ClearEnemyEquipBgTexture",                   l_ClearEnemyEquipBgTexture },
-    { "ClearAllEquipBgTextures",                    l_ClearAllEquipBgTextures },
-    { "SetLoadingSplashMainTexturePath",            l_SetLoadingSplashMainTexturePath },
-    { "SetLoadingSplashBlurTexturePath",            l_SetLoadingSplashBlurTexturePath },
-    { "ClearLoadingSplashTextures",                 l_ClearLoadingSplashTextures },
-    { "SetGameOverSplashMainTexturePath",           l_SetGameOverSplashMainTexturePath },
-    { "SetGameOverSplashBlurTexturePath",           l_SetGameOverSplashBlurTexturePath },
-    { "ClearGameOverSplashTextures",                l_ClearGameOverSplashTextures },
-    { "SetCautionStepNormalDurationSeconds",        l_SetCautionStepNormalDurationSeconds },
-    { "GetCautionStepNormalDurationSeconds",        l_GetCautionStepNormalDurationSeconds },
-    { "UnsetCautionStepNormalDurationSeconds",      l_UnsetCautionStepNormalDurationSeconds },
-    { "GetCautionStepNormalRemainingSeconds",       l_GetCautionStepNormalRemainingSeconds },
-    { "SetPlayerVoiceFpkPathForType",               l_SetPlayerVoiceFpkPathForType },
-    { "ClearPlayerVoiceFpkPathForType",             l_ClearPlayerVoiceFpkPathForType },
-    { "ClearAllPlayerVoiceFpkOverrides",            l_ClearAllPlayerVoiceFpkOverrides },
-    { "SetVIPImportant",                            l_SetVIPImportant },
-    { "SetUseConcernedHoldupRecovery",              l_SetUseConcernedHoldupRecovery },
-    { "RemoveVIPImportant",                         l_RemoveVIPImportant },
-    { "ClearVIPImportant",                          l_ClearVIPImportant },
+    { "SetDefaultEquipBgTexturePath",           l_SetDefaultEquipBgTexturePath },
+    { "ClearDefaultEquipBgTexture",             l_ClearDefaultEquipBgTexture },
+    { "SetEquipBgTexturePath",                  l_SetEquipBgTexturePath },
+    { "ClearEquipBgTexture",                    l_ClearEquipBgTexture },
+    { "SetEnemyWeaponBgTexturePath",            l_SetEnemyWeaponBgTexturePath },
+    { "ClearEnemyWeaponBgTexture",              l_ClearEnemyWeaponBgTexture },
+    { "SetEnemyEquipBgTexturePath",             l_SetEnemyEquipBgTexturePath },
+    { "ClearEnemyEquipBgTexture",               l_ClearEnemyEquipBgTexture },
+    { "ClearAllEquipBgTextures",                l_ClearAllEquipBgTextures },
+    { "SetLoadingSplashMainTexturePath",        l_SetLoadingSplashMainTexturePath },
+    { "SetLoadingSplashBlurTexturePath",        l_SetLoadingSplashBlurTexturePath },
+    { "ClearLoadingSplashTextures",             l_ClearLoadingSplashTextures },
+    { "SetGameOverSplashMainTexturePath",       l_SetGameOverSplashMainTexturePath },
+    { "SetGameOverSplashBlurTexturePath",       l_SetGameOverSplashBlurTexturePath },
+    { "ClearGameOverSplashTextures",            l_ClearGameOverSplashTextures },
+    { "SetCautionStepNormalDurationSeconds",    l_SetCautionStepNormalDurationSeconds },
+    { "GetCautionStepNormalDurationSeconds",    l_GetCautionStepNormalDurationSeconds },
+    { "UnsetCautionStepNormalDurationSeconds",  l_UnsetCautionStepNormalDurationSeconds },
+    { "GetCautionStepNormalRemainingSeconds",   l_GetCautionStepNormalRemainingSeconds },
+    { "SetPlayerVoiceFpkPathForType",           l_SetPlayerVoiceFpkPathForType },
+    { "ClearPlayerVoiceFpkPathForType",         l_ClearPlayerVoiceFpkPathForType },
+    { "ClearAllPlayerVoiceFpkOverrides",        l_ClearAllPlayerVoiceFpkOverrides },
+    { "SetVIPImportant",                        l_SetVIPImportant },
+    { "SetUseConcernedHoldupRecovery",          l_SetUseConcernedHoldupRecovery },
+    { "RemoveVIPImportant",                     l_RemoveVIPImportant },
+    { "ClearVIPImportant",                      l_ClearVIPImportant },
+	{ "HoldUpReactionCowardlyReaction",         l_HoldUpReactionCowardlyReactions },
+    { "AddCallSignExtraSoldier",                l_AddCallSignExtraSoldier },
+    { "RemoveCallSignExtraSoldier",             l_RemoveCallSignExtraSoldier },
+    { "ClearCallSignExtraSoldiers",             l_ClearCallSignExtraSoldiers },
+    { "SetLostHostage",                         l_SetLostHostage },
+    { "RemoveLostHostage",                      l_RemoveLostHostage },
+    { "ClearLostHostages",                      l_ClearLostHostages },
+    { "SetLostHostageSpeechLabel",              l_SetLostHostageSpeechLabel },
     { nullptr, nullptr }
 };
 
