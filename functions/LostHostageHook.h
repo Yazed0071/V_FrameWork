@@ -14,9 +14,10 @@ void Remove_LostHostage(std::uint32_t gameObjectId);
 // Params: none
 void Clear_LostHostages();
 
-// Sets the custom speech label for one hostage type.
-// Params: hostageType (0=male, 1=female, 2=child), speechLabel (uint32_t)
-void Set_LostHostageSpeechLabel(int hostageType, std::uint32_t speechLabel);
+// Sets whether the hostage was taken by the player.
+// This value is copied into the next pending lost-hostage report when the trap hook fires.
+// Params: playerTookHostage (bool)
+void SetLostHostageFromPlayer(bool playerTookHostage);
 
 // Installs the lost-hostage hooks.
 // Params: none

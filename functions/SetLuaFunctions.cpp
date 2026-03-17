@@ -566,18 +566,12 @@ static int __cdecl l_ClearLostHostages(lua_State* L)
     return 0;
 }
 
-// Sets the custom speech label for one hostage type.
-// Lua params: hostageType, speechLabel
-static int __cdecl l_SetLostHostageSpeechLabel(lua_State* L)
+static int __cdecl l_SetLostHostageFromPlayer(lua_State* L)
 {
-    const int hostageType = GetLuaInt(L, 1);
-    const std::uint32_t speechLabel =
-        static_cast<std::uint32_t>(GetLuaInt64(L, 2));
-
-    Set_LostHostageSpeechLabel(hostageType, speechLabel);
+    const bool playerTookHostage = GetLuaBool(L, 1);
+    SetLostHostageFromPlayer(playerTookHostage);
     return 0;
 }
-
 static luaL_Reg g_VFrameWorkLib[] =
 {
     { "SetDefaultEquipBgTexturePath",           l_SetDefaultEquipBgTexturePath },
@@ -607,13 +601,13 @@ static luaL_Reg g_VFrameWorkLib[] =
     { "RemoveVIPImportant",                     l_RemoveVIPImportant },
     { "ClearVIPImportant",                      l_ClearVIPImportant },
 	{ "HoldUpReactionCowardlyReaction",         l_HoldUpReactionCowardlyReactions },
-    { "AddCallSignExtraSoldier",                l_AddCallSignExtraSoldier },
-    { "RemoveCallSignExtraSoldier",             l_RemoveCallSignExtraSoldier },
-    { "ClearCallSignExtraSoldiers",             l_ClearCallSignExtraSoldiers },
+    { "AddCallSignPatrolSoldier",                l_AddCallSignExtraSoldier },
+    { "RemoveCallSignPatrolSoldier",             l_RemoveCallSignExtraSoldier },
+    { "ClearCallSignPatrolSoldiers",             l_ClearCallSignExtraSoldiers },
     { "SetLostHostage",                         l_SetLostHostage },
     { "RemoveLostHostage",                      l_RemoveLostHostage },
     { "ClearLostHostages",                      l_ClearLostHostages },
-    { "SetLostHostageSpeechLabel",              l_SetLostHostageSpeechLabel },
+    { "SetLostHostageFromPlayer",              l_SetLostHostageFromPlayer },
     { nullptr, nullptr }
 };
 
