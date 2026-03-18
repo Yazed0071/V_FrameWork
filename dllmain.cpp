@@ -35,7 +35,6 @@ static void SetupConsole()
     fflush(stdout);
 }
 
-
 static DWORD WINAPI InitThread(LPVOID)
 {
     #ifdef _DEBUG
@@ -51,6 +50,8 @@ static DWORD WINAPI InitThread(LPVOID)
 
     RegisterBuiltInFeatureModules();
 
+
+
     HMODULE hGame = GetModuleHandleW(nullptr);
     const bool allOk = FeatureModuleRegistry::Instance().InstallAll(hGame);
     Log("[DLL] FeatureModuleRegistry::InstallAll -> %s\n", allOk ? "OK" : "PARTIAL/FAIL");
@@ -65,7 +66,6 @@ static void UninstallAll(bool processTerminating)
         return;
 
     FeatureModuleRegistry::Instance().UninstallAll();
-
     MH_Uninitialize();
     Log("[DLL] UninstallAll done.\n");
 

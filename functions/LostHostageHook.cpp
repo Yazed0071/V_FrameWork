@@ -12,758 +12,471 @@
 #include "log.h"
 #include "MissionCodeGuard.h"
 #include "LostHostageHook.h"
+#include "StepRadioDiscovery.h"
 
-namespace
+
+// ============================================================
+// Function pointer types for the game functions we hook
+// ============================================================
+
+using ExecCallback_t = void(__fastcall*)(void* self, void* trapInfo);
+using ConvertRadioTypeToSpeechLabel_t = std::uint32_t(__fastcall*)(std::uint8_t radioType);
+using AddNoticeInfo_t = bool(__fastcall*)(void* self, std::uint32_t soldierIndex, const void* noticeBlob);
+using StateRadioRequest_t = void(__fastcall*)(void* self, int actionIndex, int stateProc);
+using GetNameIdWithGameObjectId_t = std::uint32_t(__fastcall*)(std::uint16_t gameObjectId);
+
+
+// ============================================================
+// Game addresses
+// ============================================================
+
+static constexpr std::uintptr_t ADDR_ExecCallback = 0x140A19030ull;
+static constexpr std::uintptr_t ADDR_ConvertRadioTypeToLabel = 0x140D685C0ull;
+static constexpr std::uintptr_t ADDR_AddNoticeInfo = 0x1414DCB60ull;
+static constexpr std::uintptr_t ADDR_StateRadioRequest = 0x14A2ACC00ull;
+static constexpr std::uintptr_t ADDR_GetNameIdWithGameObjectId = 0x146C98180ull;
+
+
+// ============================================================
+// Game constants
+// ============================================================
+
+static constexpr std::uint8_t  RADIO_PRISONER_GONE = 0x1Au;
+static constexpr std::uint8_t  NOTICE_ESCAPE_OBJECT = 0x21u;
+static constexpr std::uint8_t  NOTICE_ESCAPE_PRELUDE = 0x32u;
+static constexpr std::uint16_t ESCAPE_OBJECT_ID_BASE = 0x6200u;
+
+static constexpr int HOSTAGE_MALE = 0;
+static constexpr int HOSTAGE_FEMALE = 1;
+static constexpr int HOSTAGE_CHILD = 2;
+
+static constexpr int SOURCE_NONE = 0;
+static constexpr int SOURCE_NOTICE = 1;
+static constexpr int SOURCE_RADIO = 2;
+
+static constexpr std::uint32_t LABEL_MALE_NOT_TAKEN = 0xFA42F4E9u;
+static constexpr std::uint32_t LABEL_MALE_TAKEN = 0x43ED2D08u;
+static constexpr std::uint32_t LABEL_FEMALE_NOT_TAKEN = 0xBAE03A98u;
+static constexpr std::uint32_t LABEL_FEMALE_TAKEN = 0xD586CA7Bu;
+static constexpr std::uint32_t LABEL_CHILD_NOT_TAKEN = 0x2A2B54E0u;
+static constexpr std::uint32_t LABEL_CHILD_TAKEN = 0x96902568u;
+
+
+// ============================================================
+// Data structures
+// ============================================================
+
+struct TrackedHostage
 {
-    // Hook type for tpp::gm::TrapExecLostHostageCallback::ExecCallback.
-    // Params: self (void*), trapInfo (void*)
-    using ExecCallback_t = void(__fastcall*)(void* self, void* trapInfo);
+    std::uint16_t objectId = 0xFFFFu;
+    int           type = HOSTAGE_MALE;
+    int           nameId = -1;
+    bool          playerTookIt = false;
+};
 
-    // Hook type for tpp::gm::CpRadioService::ConvertRadioTypeToSpeechLabel.
-    // Params: radioType (uint8_t)
-    using ConvertRadioTypeToSpeechLabel_t = std::uint32_t(__fastcall*)(std::uint8_t radioType);
+struct EscapedHostage
+{
+    bool           active = false;
+    std::uint16_t  objectId = 0xFFFFu;
+    int            type = -1;
+    int            moverNameId = -1;
+    int            expectedNameId = -1;
+    bool           playerTookIt = false;
+    std::uintptr_t trapSelf = 0;
+    std::uintptr_t cbData = 0;
+    std::uintptr_t cbData40 = 0;
+};
 
-    // Hook type for tpp::gm::soldier::impl::NoticeControllerImpl::AddNoticeInfo.
-    // Params: self (void*), soldierIndex (uint32_t), noticeInfoBlob (const void*)
-    using AddNoticeInfo_t = bool(__fastcall*)(void* self, std::uint32_t soldierIndex, const void* noticeInfoBlob);
+struct PendingReport
+{
+    bool           active = false;
+    std::uint32_t  soldierIndex = 0xFFFFFFFFu;
+    std::uint16_t  hostageObjId = 0xFFFFu;
+    int            hostageType = -1;
+    int            requestType = -1;
+    int            moverNameId = -1;
+    int            expectedNameId = -1;
+    bool           playerTookIt = false;
+    int            source = SOURCE_NONE;
+    int            escapeSlot = -1;
+    std::uint16_t  noticeObjId = 0xFFFFu;
+    std::uintptr_t trapSelf = 0;
+    std::uintptr_t cbData = 0;
+    std::uintptr_t cbData40 = 0;
+};
 
-    // Hook type for tpp::gm::soldier::impl::RadioActionImpl::State_RadioRequest.
-    // Params: self (void*), actionIndex (int), stateProc (int)
-    using StateRadioRequest_t = void(__fastcall*)(void* self, int actionIndex, int stateProc);
 
-    // Game function type for fox::gm::GetNameIdWithGameObjectId.
-    // Params: gameObjectId (uint16_t)
-    using GetNameIdWithGameObjectId_t = std::uint32_t(__fastcall*)(std::uint16_t gameObjectId);
+// ============================================================
+// Global state
+// ============================================================
 
-    // Absolute addresses.
-    static constexpr std::uintptr_t ABS_ExecCallback = 0x140A19030ull;
-    static constexpr std::uintptr_t ABS_ConvertRadioTypeToSpeechLabel = 0x140D685C0ull;
-    static constexpr std::uintptr_t ABS_AddNoticeInfo = 0x1414DCB60ull;
-    static constexpr std::uintptr_t ABS_StateRadioRequest = 0x14A2ACC00ull;
-    static constexpr std::uintptr_t ABS_GetNameIdWithGameObjectId_BODY = 0x146C98180ull;
+static ExecCallback_t                  g_OrigExecCallback = nullptr;
+static ConvertRadioTypeToSpeechLabel_t g_OrigConvertLabel = nullptr;
+static AddNoticeInfo_t                 g_OrigAddNoticeInfo = nullptr;
+static StateRadioRequest_t             g_OrigRadioRequest = nullptr;
+static GetNameIdWithGameObjectId_t     g_GetNameId = nullptr;
 
-    static constexpr std::uint8_t RADIO_TYPE_PRISONER_GONE = 0x1Au;
-    static constexpr std::uint8_t NOTICE_TYPE_ESCAPE_OBJECT = 0x21u;
-    static constexpr std::uint8_t NOTICE_TYPE_ESCAPE_PRELUDE = 0x32u;
-    static constexpr std::uint16_t NOTICE_OBJECT_ESCAPE_BASE = 0x6200u;
+static std::unordered_map<std::uint16_t, TrackedHostage> g_HostagesByObjectId;
+static std::unordered_map<int, TrackedHostage> g_HostagesByNameId;
+static std::vector<EscapedHostage>                       g_EscapedHostages;
+static std::unordered_map<std::uint32_t, PendingReport>  g_PendingBySoldier;
+static PendingReport                                     g_SelectedReport;
+static std::mutex                                        g_Mutex;
 
-    // Hardcoded labels by hostage type and whether player took the hostage.
-    static constexpr std::uint32_t LABEL_MALE_NOT_TAKEN = 0xFA42F4E9u;
-    static constexpr std::uint32_t LABEL_MALE_TAKEN = 0x43ED2D08u;
-    static constexpr std::uint32_t LABEL_FEMALE_NOT_TAKEN = 0xBAE03A98u;
-    static constexpr std::uint32_t LABEL_FEMALE_TAKEN = 0xD586CA7Bu;
-    static constexpr std::uint32_t LABEL_CHILD_NOT_TAKEN = 0x2A2B54E0u;
-    static constexpr std::uint32_t LABEL_CHILD_TAKEN = 0x96902568u;
 
-    // Pending report source.
-    enum PendingSource
-    {
-        PENDING_SOURCE_NONE = 0,
-        PENDING_SOURCE_NOTICE21 = 1,
-        PENDING_SOURCE_RADIOREQUEST = 2
-    };
+// ============================================================
+// Small utilities
+// ============================================================
 
-    static ExecCallback_t g_OrigExecCallback = nullptr;
-    static ConvertRadioTypeToSpeechLabel_t g_OrigConvertRadioTypeToSpeechLabel = nullptr;
-    static AddNoticeInfo_t g_OrigAddNoticeInfo = nullptr;
-    static StateRadioRequest_t g_OrigStateRadioRequest = nullptr;
-    static GetNameIdWithGameObjectId_t g_GetNameIdWithGameObjectId = nullptr;
-
-    // Hostage types are radio variants only:
-    // 0 = male radio
-    // 1 = female radio
-    // 2 = child radio
-    struct LostHostageInfo
-    {
-        std::uint16_t rawGameObjectId = 0xFFFFu;
-        int hostageType = 0;
-        int nameId = -1;
-    };
-
-    struct LostHostageTrapEval
-    {
-        bool valid = false;
-        int mapRequest = -1;
-        std::uint16_t moverGameObjectId = 0xFFFFu;
-        int moverNameId = -1;
-        int expectedNameId = -1;
-        bool moverNameMatchesExpected = false;
-        std::uintptr_t callbackData = 0;
-        std::uintptr_t callbackData40 = 0;
-    };
-
-    struct EscapedHostageEntry
-    {
-        bool valid = false;
-        std::uint16_t hostageGameObjectId = 0xFFFFu;
-        int hostageType = -1;
-        int moverNameId = -1;
-        int expectedNameId = -1;
-        bool playerTookHostage = false;
-        std::uintptr_t trapSelf = 0;
-        std::uintptr_t callbackData = 0;
-        std::uintptr_t callbackData40 = 0;
-    };
-
-    struct PendingLostHostageReport
-    {
-        bool active = false;
-        std::uint32_t soldierIndex = 0xFFFFFFFFu;
-        std::uint16_t hostageGameObjectId = 0xFFFFu;
-        int hostageType = -1;
-        int requestType = -1;
-        int moverNameId = -1;
-        int expectedNameId = -1;
-        bool playerTookHostage = false;
-        ULONGLONG armedAtTickMs = 0;
-        int source = PENDING_SOURCE_NONE;
-        int escapeOrderSlot = -1;
-        std::uint16_t noticeObjectId = 0xFFFFu;
-        std::uintptr_t trapSelf = 0;
-        std::uintptr_t callbackData = 0;
-        std::uintptr_t callbackData40 = 0;
-    };
-
-    struct RadioRequestEntryView
-    {
-        std::uintptr_t objectPtr = 0;
-        std::uint32_t gameObjectId = 0xFFFFFFFFu; // actually looks like speaker soldier index in logs
-        std::uint16_t word0C = 0xFFFFu;
-        std::uint16_t word0E = 0xFFFFu;
-        std::uint8_t byte10 = 0xFFu; // radio type
-        std::uint8_t byte12 = 0xFFu;
-        std::uint8_t byte13 = 0xFFu;
-        std::uint8_t byte15 = 0xFFu;
-    };
-
-    static std::unordered_map<std::uint16_t, LostHostageInfo> g_TrackedLostHostagesByRawId;
-    static std::unordered_map<int, LostHostageInfo> g_TrackedLostHostagesByNameId;
-
-    // Escape order: first escaped hostage -> slot 0 -> 0x6200, second -> slot 1 -> 0x6201, etc.
-    static std::vector<EscapedHostageEntry> g_EscapedHostagesInOrder;
-
-    // Pending notice21 result per noticing soldier.
-    static std::unordered_map<std::uint32_t, PendingLostHostageReport> g_PendingReportsBySoldierIndex;
-
-    // Final report chosen by RadioRequest speaker soldier, consumed by ConvertRadioTypeToSpeechLabel.
-    static PendingLostHostageReport g_SelectedRadioPending;
-
-    static bool g_LostHostagePlayerTookHostage = false;
-    static std::mutex g_LostHostageMutex;
+static const char* HostageTypeName(int type)
+{
+    if (type == HOSTAGE_MALE)   return "MALE";
+    if (type == HOSTAGE_FEMALE) return "FEMALE";
+    if (type == HOSTAGE_CHILD)  return "CHILD";
+    return "UNKNOWN";
 }
 
-// Returns a readable hostage type name.
-// Params: hostageType (int)
-static const char* HostageTypeName(int hostageType)
+static const char* YesNo(bool value) { return value ? "YES" : "NO"; }
+
+static const char* SourceName(int source)
 {
-    switch (hostageType)
-    {
-    case 0: return "MALE";
-    case 1: return "FEMALE";
-    case 2: return "CHILD";
-    default: return "UNKNOWN";
-    }
+    if (source == SOURCE_NOTICE) return "NOTICE";
+    if (source == SOURCE_RADIO)  return "RADIO";
+    return "NONE";
 }
 
-// Returns YES or NO for logs.
-// Params: value (bool)
-static const char* YesNo(bool value)
+static std::uint32_t PickSpeechLabel(int hostageType, bool playerTookIt)
 {
-    return value ? "YES" : "NO";
+    if (hostageType == HOSTAGE_MALE)   return playerTookIt ? LABEL_MALE_TAKEN : LABEL_MALE_NOT_TAKEN;
+    if (hostageType == HOSTAGE_FEMALE) return playerTookIt ? LABEL_FEMALE_TAKEN : LABEL_FEMALE_NOT_TAKEN;
+    if (hostageType == HOSTAGE_CHILD)  return playerTookIt ? LABEL_CHILD_TAKEN : LABEL_CHILD_NOT_TAKEN;
+    return 0;
 }
 
-// Returns a readable pending source name.
-// Params: source (int)
-static const char* PendingSourceName(int source)
+
+// ============================================================
+// Safe memory reads
+// Each one returns false if the address is null or causes
+// an access violation, instead of crashing the game.
+// ============================================================
+
+static bool ReadU8(std::uintptr_t addr, std::uint8_t& out)
 {
-    switch (source)
-    {
-    case PENDING_SOURCE_NOTICE21:    return "NOTICE21";
-    case PENDING_SOURCE_RADIOREQUEST:return "RADIOREQUEST";
-    default:                         return "NONE";
-    }
+    if (!addr) return false;
+    __try { out = *reinterpret_cast<const std::uint8_t*>(addr);  return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-// Returns the hardcoded override speech label for one hostage type and player-took mode.
-// Params: hostageType (int), playerTookHostage (bool)
-static std::uint32_t GetLostHostageOverrideLabel(int hostageType, bool playerTookHostage)
+static bool ReadU16(std::uintptr_t addr, std::uint16_t& out)
 {
-    switch (hostageType)
-    {
-    case 0: return playerTookHostage ? LABEL_MALE_TAKEN : LABEL_MALE_NOT_TAKEN;
-    case 1: return playerTookHostage ? LABEL_FEMALE_TAKEN : LABEL_FEMALE_NOT_TAKEN;
-    case 2: return playerTookHostage ? LABEL_CHILD_TAKEN : LABEL_CHILD_NOT_TAKEN;
-    default: return 0;
-    }
+    if (!addr) return false;
+    __try { out = *reinterpret_cast<const std::uint16_t*>(addr); return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-// Safely reads one qword from memory.
-// Params: addr (uintptr_t), outValue (uint64_t&)
-static bool SafeReadQword(std::uintptr_t addr, std::uint64_t& outValue)
+static bool ReadInt(std::uintptr_t addr, int& out)
 {
-    if (!addr)
-        return false;
-
-    __try
-    {
-        outValue = *reinterpret_cast<const std::uint64_t*>(addr);
-        return true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        return false;
-    }
+    if (!addr) return false;
+    __try { out = *reinterpret_cast<const int*>(addr);           return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-// Safely reads one int from memory.
-// Params: addr (uintptr_t), outValue (int&)
-static bool SafeReadInt(std::uintptr_t addr, int& outValue)
+static bool ReadU64(std::uintptr_t addr, std::uint64_t& out)
 {
-    if (!addr)
-        return false;
-
-    __try
-    {
-        outValue = *reinterpret_cast<const int*>(addr);
-        return true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        return false;
-    }
+    if (!addr) return false;
+    __try { out = *reinterpret_cast<const std::uint64_t*>(addr); return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-// Safely reads one uint16 from memory.
-// Params: addr (uintptr_t), outValue (uint16_t&)
-static bool SafeReadU16(std::uintptr_t addr, std::uint16_t& outValue)
+static bool ReadBytes(std::uintptr_t addr, std::uint8_t* buf, std::size_t size)
 {
-    if (!addr)
-        return false;
-
-    __try
-    {
-        outValue = *reinterpret_cast<const std::uint16_t*>(addr);
-        return true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        return false;
-    }
+    if (!addr || !buf || !size) return false;
+    __try { std::memcpy(buf, reinterpret_cast<const void*>(addr), size); return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-// Safely reads one uint8 from memory.
-// Params: addr (uintptr_t), outValue (uint8_t&)
-static bool SafeReadU8(std::uintptr_t addr, std::uint8_t& outValue)
-{
-    if (!addr)
-        return false;
 
-    __try
-    {
-        outValue = *reinterpret_cast<const std::uint8_t*>(addr);
-        return true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        return false;
-    }
+// ============================================================
+// Helpers that read structured data from game objects
+// ============================================================
+
+static bool LoadGetNameIdFunction()
+{
+    if (!g_GetNameId)
+        g_GetNameId = reinterpret_cast<GetNameIdWithGameObjectId_t>(ResolveGameAddress(ADDR_GetNameIdWithGameObjectId));
+    return g_GetNameId != nullptr;
 }
 
-// Safely copies raw bytes from memory.
-// Params: addr (uintptr_t), outBuffer (uint8_t*), sizeBytes (size_t)
-static bool SafeReadBytes(std::uintptr_t addr, std::uint8_t* outBuffer, std::size_t sizeBytes)
-{
-    if (!addr || !outBuffer || sizeBytes == 0)
-        return false;
-
-    __try
-    {
-        std::memcpy(outBuffer, reinterpret_cast<const void*>(addr), sizeBytes);
-        return true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        return false;
-    }
-}
-
-// Resolves helper functions used by this module.
-// Params: none
-static bool ResolveLostHostageHelpers()
-{
-    if (!g_GetNameIdWithGameObjectId)
-    {
-        g_GetNameIdWithGameObjectId = reinterpret_cast<GetNameIdWithGameObjectId_t>(
-            ResolveGameAddress(ABS_GetNameIdWithGameObjectId_BODY));
-    }
-
-    return g_GetNameIdWithGameObjectId != nullptr;
-}
-
-// Safely calls fox::gm::GetNameIdWithGameObjectId using the real body address.
-// Params: gameObjectId (uint16_t), outNameId (int&)
-static bool TryGetNameIdWithGameObjectId(std::uint16_t gameObjectId, int& outNameId)
+static bool TryGetNameId(std::uint16_t objectId, int& outNameId)
 {
     outNameId = -1;
-
-    if (!ResolveLostHostageHelpers() || !g_GetNameIdWithGameObjectId)
-        return false;
-
-    __try
-    {
-        outNameId = static_cast<int>(g_GetNameIdWithGameObjectId(gameObjectId));
-        return true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        outNameId = -1;
-        return false;
-    }
+    if (!LoadGetNameIdFunction()) return false;
+    __try { outNameId = static_cast<int>(g_GetNameId(objectId)); return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { outNameId = -1; return false; }
 }
 
-// Reads trap-side pointers from the callback object.
-// Params: self (void*), outCallbackData (uintptr_t&), outCallbackData40 (uintptr_t&)
-static bool TryGetTrapPointers(
-    void* self,
-    std::uintptr_t& outCallbackData,
-    std::uintptr_t& outCallbackData40)
+static bool ReadTrapPointers(void* self, std::uintptr_t& outCbData, std::uintptr_t& outCbData40)
 {
-    outCallbackData = 0;
-    outCallbackData40 = 0;
+    outCbData = outCbData40 = 0;
+    if (!self) return false;
 
-    if (!self)
-        return false;
+    std::uint64_t cbData = 0;
+    if (!ReadU64(reinterpret_cast<std::uintptr_t>(self) + 0x10ull, cbData) || !cbData) return false;
 
-    std::uint64_t callbackData = 0;
-    if (!SafeReadQword(reinterpret_cast<std::uintptr_t>(self) + 0x10ull, callbackData) || callbackData == 0)
-        return false;
+    std::uint64_t cbData40 = 0;
+    if (!ReadU64(static_cast<std::uintptr_t>(cbData) + 0x40ull, cbData40) || !cbData40) return false;
 
-    std::uint64_t callbackData40 = 0;
-    if (!SafeReadQword(static_cast<std::uintptr_t>(callbackData) + 0x40ull, callbackData40) || callbackData40 == 0)
-        return false;
-
-    outCallbackData = static_cast<std::uintptr_t>(callbackData);
-    outCallbackData40 = static_cast<std::uintptr_t>(callbackData40);
+    outCbData = static_cast<std::uintptr_t>(cbData);
+    outCbData40 = static_cast<std::uintptr_t>(cbData40);
     return true;
 }
 
-// Reads the expected hostage NameId from the callback object.
-// Params: self (void*), outExpectedNameId (int&)
-static bool TryGetExpectedNameId(void* self, int& outExpectedNameId)
+static bool ReadExpectedNameId(void* self, int& outNameId)
 {
-    outExpectedNameId = -1;
-
-    std::uintptr_t callbackData = 0;
-    std::uintptr_t callbackData40 = 0;
-    if (!TryGetTrapPointers(self, callbackData, callbackData40))
-        return false;
-
-    return SafeReadInt(callbackData40 + 0x10ull, outExpectedNameId);
+    outNameId = -1;
+    std::uintptr_t cbData = 0, cbData40 = 0;
+    if (!ReadTrapPointers(self, cbData, cbData40)) return false;
+    return ReadInt(cbData40 + 0x10ull, outNameId);
 }
 
-// Evaluates the top-level trap values.
-// Params: self (void*), trapInfo (void*), outEval (LostHostageTrapEval&)
-static bool EvaluateLostHostageTrap(void* self, void* trapInfo, LostHostageTrapEval& outEval)
+static bool ReadCurrentNoticeType(void* self, std::uint32_t soldierIndex, std::uint32_t& outType)
 {
-    outEval = {};
+    outType = 0;
+    if (!self) return false;
 
-    if (!self || !trapInfo)
-        return false;
+    std::uint64_t slotsBase = 0;
+    if (!ReadU64(reinterpret_cast<std::uintptr_t>(self) + 0x40ull, slotsBase) || !slotsBase) return false;
 
-    outEval.valid = true;
+    std::uintptr_t slot = static_cast<std::uintptr_t>(slotsBase) + soldierIndex * 0x80ull;
 
-    if (!SafeReadInt(reinterpret_cast<std::uintptr_t>(trapInfo) + 0xD0ull, outEval.mapRequest))
-        return false;
+    std::uint8_t compactType = 0;
+    if (!ReadU8(slot, compactType)) return false;
 
-    if (!SafeReadU16(reinterpret_cast<std::uintptr_t>(trapInfo) + 0x68ull, outEval.moverGameObjectId))
-        return false;
-
-    TryGetTrapPointers(self, outEval.callbackData, outEval.callbackData40);
-
-    if (!TryGetExpectedNameId(self, outEval.expectedNameId))
-        return false;
-
-    TryGetNameIdWithGameObjectId(outEval.moverGameObjectId, outEval.moverNameId);
-
-    outEval.moverNameMatchesExpected =
-        (outEval.moverNameId != -1 && outEval.moverNameId == outEval.expectedNameId);
-
-    return true;
-}
-
-// Reads the currently stored notice type for one soldier.
-// Params: self (void*), soldierIndex (uint32_t), outCurrentNoticeType (uint32_t&)
-static bool TryGetCurrentNoticeType(void* self, std::uint32_t soldierIndex, std::uint32_t& outCurrentNoticeType)
-{
-    outCurrentNoticeType = 0;
-
-    if (!self)
-        return false;
-
-    std::uint64_t noticeSlotsBase = 0;
-    if (!SafeReadQword(reinterpret_cast<std::uintptr_t>(self) + 0x40ull, noticeSlotsBase) || noticeSlotsBase == 0)
-        return false;
-
-    const std::uintptr_t slotBase =
-        static_cast<std::uintptr_t>(noticeSlotsBase) + (static_cast<std::uintptr_t>(soldierIndex) * 0x80ull);
-
-    std::uint8_t currentType8 = 0;
-    if (!SafeReadU8(slotBase + 0x0ull, currentType8))
-        return false;
-
-    if (currentType8 == 0x3Eu)
+    if (compactType == 0x3Eu)
     {
-        int currentType32 = 0;
-        if (!SafeReadInt(slotBase + 0x60ull, currentType32))
-            return false;
-
-        outCurrentNoticeType = static_cast<std::uint32_t>(currentType32);
-        return true;
+        int fullType = 0;
+        if (!ReadInt(slot + 0x60ull, fullType)) return false;
+        outType = static_cast<std::uint32_t>(fullType);
     }
-
-    outCurrentNoticeType = static_cast<std::uint32_t>(currentType8);
+    else
+    {
+        outType = compactType;
+    }
     return true;
 }
 
-// Builds a short hex string for the first 16 bytes of a notice blob.
-// Params: blobAddr (uintptr_t), outText (char*), outTextSize (size_t)
-static void BuildNoticeBlobHex16(std::uintptr_t blobAddr, char* outText, std::size_t outTextSize)
+static void BuildHexDump(std::uintptr_t addr, char* buf, std::size_t bufSize)
 {
-    if (!outText || outTextSize == 0)
-        return;
-
-    outText[0] = '\0';
-
+    if (!buf || !bufSize) return;
+    buf[0] = '\0';
     std::uint8_t bytes[16] = {};
-    if (!SafeReadBytes(blobAddr, bytes, sizeof(bytes)))
-    {
-        std::snprintf(outText, outTextSize, "<read failed>");
-        return;
-    }
-
-    std::snprintf(
-        outText,
-        outTextSize,
+    if (!ReadBytes(addr, bytes, 16)) { std::snprintf(buf, bufSize, "<read failed>"); return; }
+    std::snprintf(buf, bufSize,
         "%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
-        static_cast<unsigned>(bytes[0]),
-        static_cast<unsigned>(bytes[1]),
-        static_cast<unsigned>(bytes[2]),
-        static_cast<unsigned>(bytes[3]),
-        static_cast<unsigned>(bytes[4]),
-        static_cast<unsigned>(bytes[5]),
-        static_cast<unsigned>(bytes[6]),
-        static_cast<unsigned>(bytes[7]),
-        static_cast<unsigned>(bytes[8]),
-        static_cast<unsigned>(bytes[9]),
-        static_cast<unsigned>(bytes[10]),
-        static_cast<unsigned>(bytes[11]),
-        static_cast<unsigned>(bytes[12]),
-        static_cast<unsigned>(bytes[13]),
-        static_cast<unsigned>(bytes[14]),
-        static_cast<unsigned>(bytes[15]));
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]);
 }
 
-// Extracts notice type and 0x62xx escape-order slot from a notice blob.
-// Params: noticeInfoBlob (const void*), outNoticeType (uint8_t&), outNoticeObjectId (uint16_t&), outEscapeSlot (int&)
-static bool TryParseEscapeNoticeBlob(
-    const void* noticeInfoBlob,
-    std::uint8_t& outNoticeType,
-    std::uint16_t& outNoticeObjectId,
-    int& outEscapeSlot)
+static bool ParseNoticeBlob(const void* blob, std::uint8_t& outType, std::uint16_t& outObjId, int& outSlot)
 {
-    outNoticeType = 0xFFu;
-    outNoticeObjectId = 0xFFFFu;
-    outEscapeSlot = -1;
+    outType = 0xFFu; outObjId = 0xFFFFu; outSlot = -1;
+    if (!blob) return false;
 
-    if (!noticeInfoBlob)
-        return false;
-
-    const std::uintptr_t blob = reinterpret_cast<std::uintptr_t>(noticeInfoBlob);
-
-    if (!SafeReadU8(blob + 0x0ull, outNoticeType))
-        return false;
-
-    if (outNoticeType != NOTICE_TYPE_ESCAPE_OBJECT)
-        return true;
-
-    if (!SafeReadU16(blob + 0x2ull, outNoticeObjectId))
-        return false;
-
-    if (outNoticeObjectId >= NOTICE_OBJECT_ESCAPE_BASE)
-        outEscapeSlot = static_cast<int>(outNoticeObjectId - NOTICE_OBJECT_ESCAPE_BASE);
-
+    std::uintptr_t addr = reinterpret_cast<std::uintptr_t>(blob);
+    if (!ReadU8(addr, outType)) return false;
+    if (outType != NOTICE_ESCAPE_OBJECT) return true;
+    if (!ReadU16(addr + 0x2ull, outObjId)) return false;
+    if (outObjId >= ESCAPE_OBJECT_ID_BASE)
+        outSlot = static_cast<int>(outObjId - ESCAPE_OBJECT_ID_BASE);
     return true;
 }
 
-// Reads one RadioActionImpl::State_RadioRequest entry.
-// Params: self (void*), actionIndex (int), outView (RadioRequestEntryView&)
-static bool TryReadRadioRequestEntry(void* self, int actionIndex, RadioRequestEntryView& outView)
+static bool ReadRadioEntry(void* self, int actionIndex, std::uint32_t& outSoldierIndex, std::uint8_t& outRadioType)
 {
-    outView = {};
+    outSoldierIndex = 0xFFFFFFFFu; outRadioType = 0xFFu;
+    if (!self) return false;
 
-    if (!self)
-        return false;
-
-    const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(self);
-
+    std::uintptr_t base = reinterpret_cast<std::uintptr_t>(self);
     std::uint64_t listBase = 0;
-    int baseActionIndex = 0;
+    int baseIndex = 0;
+    if (!ReadU64(base + 0x88ull, listBase) || !listBase) return false;
+    if (!ReadInt(base + 0x90ull, baseIndex)) return false;
 
-    if (!SafeReadQword(base + 0x88ull, listBase) || listBase == 0)
-        return false;
+    int relativeIndex = actionIndex - baseIndex;
+    if (relativeIndex < 0) return false;
 
-    if (!SafeReadInt(base + 0x90ull, baseActionIndex))
-        return false;
+    std::uintptr_t entry = static_cast<std::uintptr_t>(listBase) + static_cast<std::uintptr_t>(relativeIndex) * 0x18ull;
 
-    const int relativeIndex = actionIndex - baseActionIndex;
-    if (relativeIndex < 0)
-        return false;
+    int soldierIndex = -1;
+    ReadInt(entry + 0x08ull, soldierIndex);
+    ReadU8(entry + 0x10ull, outRadioType);
 
-    const std::uintptr_t entry = static_cast<std::uintptr_t>(listBase) + (static_cast<std::uintptr_t>(relativeIndex) * 0x18ull);
-
-    std::uint64_t objectPtr = 0;
-    int gameObjectId = -1;
-
-    SafeReadQword(entry + 0x0ull, objectPtr);
-    SafeReadInt(entry + 0x8ull, gameObjectId);
-    SafeReadU16(entry + 0xCull, outView.word0C);
-    SafeReadU16(entry + 0xEull, outView.word0E);
-    SafeReadU8(entry + 0x10ull, outView.byte10);
-    SafeReadU8(entry + 0x12ull, outView.byte12);
-    SafeReadU8(entry + 0x13ull, outView.byte13);
-    SafeReadU8(entry + 0x15ull, outView.byte15);
-
-    outView.objectPtr = static_cast<std::uintptr_t>(objectPtr);
-    outView.gameObjectId = static_cast<std::uint32_t>(gameObjectId);
+    outSoldierIndex = static_cast<std::uint32_t>(soldierIndex);
     return true;
 }
 
-// Tries to match a tracked hostage by raw mover id first, then moverNameId, then expectedNameId.
-// Params: moverGameObjectId (uint16_t), moverNameId (int), expectedNameId (int), outInfo (LostHostageInfo&)
-static bool TryMatchTrackedLostHostage(
-    std::uint16_t moverGameObjectId,
-    int moverNameId,
-    int expectedNameId,
-    LostHostageInfo& outInfo)
-{
-    std::lock_guard<std::mutex> lock(g_LostHostageMutex);
 
-    const auto itRaw = g_TrackedLostHostagesByRawId.find(moverGameObjectId);
-    if (itRaw != g_TrackedLostHostagesByRawId.end())
+// ============================================================
+// State helpers
+// ============================================================
+
+static bool FindTrackedHostage(std::uint16_t objectId, int moverNameId, int expectedNameId, TrackedHostage& out)
+{
+    std::lock_guard<std::mutex> lock(g_Mutex);
+
+    auto it = g_HostagesByObjectId.find(objectId);
+    if (it != g_HostagesByObjectId.end())
     {
-        outInfo = itRaw->second;
-        Log("[LostHostage] Match by raw GameObjectId: 0x%04X\n",
-            static_cast<unsigned>(moverGameObjectId));
+        out = it->second;
+        Log("[LostHostage] Matched hostage by objectId=0x%04X\n", static_cast<unsigned>(objectId));
         return true;
     }
 
     if (moverNameId != -1)
     {
-        const auto itMoverName = g_TrackedLostHostagesByNameId.find(moverNameId);
-        if (itMoverName != g_TrackedLostHostagesByNameId.end())
+        auto it2 = g_HostagesByNameId.find(moverNameId);
+        if (it2 != g_HostagesByNameId.end())
         {
-            outInfo = itMoverName->second;
-            Log("[LostHostage] Match by moverNameId: %d\n", moverNameId);
+            out = it2->second;
+            Log("[LostHostage] Matched hostage by moverNameId=%d\n", moverNameId);
             return true;
         }
     }
 
     if (expectedNameId != -1)
     {
-        const auto itExpectedName = g_TrackedLostHostagesByNameId.find(expectedNameId);
-        if (itExpectedName != g_TrackedLostHostagesByNameId.end())
+        auto it3 = g_HostagesByNameId.find(expectedNameId);
+        if (it3 != g_HostagesByNameId.end())
         {
-            outInfo = itExpectedName->second;
-            Log("[LostHostage] Match by expectedNameId: %d\n", expectedNameId);
+            out = it3->second;
+            Log("[LostHostage] Matched hostage by expectedNameId=%d\n", expectedNameId);
             return true;
         }
     }
 
-    Log("[LostHostage] Dump tracked hostages: rawCount=%u nameCount=%u\n",
-        static_cast<unsigned>(g_TrackedLostHostagesByRawId.size()),
-        static_cast<unsigned>(g_TrackedLostHostagesByNameId.size()));
-
-    for (const auto& kv : g_TrackedLostHostagesByRawId)
-    {
-        const LostHostageInfo& info = kv.second;
-        Log("[LostHostage]   raw=0x%04X type=%s nameId=%d\n",
-            static_cast<unsigned>(info.rawGameObjectId),
-            HostageTypeName(info.hostageType),
-            info.nameId);
-    }
-
+    Log("[LostHostage] No match. Tracked: byId=%u byName=%u\n",
+        static_cast<unsigned>(g_HostagesByObjectId.size()),
+        static_cast<unsigned>(g_HostagesByNameId.size()));
+    for (const auto& kv : g_HostagesByObjectId)
+        Log("[LostHostage]   objectId=0x%04X type=%s nameId=%d playerTook=%s\n",
+            static_cast<unsigned>(kv.second.objectId), HostageTypeName(kv.second.type),
+            kv.second.nameId, YesNo(kv.second.playerTookIt));
     return false;
 }
 
-// Registers one escaped hostage in current-run escape order.
-// Params: hostageInfo (const LostHostageInfo&), eval (const LostHostageTrapEval&), trapSelf (void*)
-static int RegisterEscapedHostage_NoLock(
-    const LostHostageInfo& hostageInfo,
-    const LostHostageTrapEval& eval,
-    void* trapSelf)
+static int RecordEscapedHostage(const TrackedHostage& h, int moverNameId, int expectedNameId,
+    void* trapSelf, std::uintptr_t cbData, std::uintptr_t cbData40)
 {
-    for (std::size_t i = 0; i < g_EscapedHostagesInOrder.size(); ++i)
+    for (std::size_t i = 0; i < g_EscapedHostages.size(); ++i)
     {
-        EscapedHostageEntry& entry = g_EscapedHostagesInOrder[i];
-        if (entry.valid && entry.hostageGameObjectId == hostageInfo.rawGameObjectId)
-        {
-            entry.hostageType = hostageInfo.hostageType;
-            entry.moverNameId = eval.moverNameId;
-            entry.expectedNameId = eval.expectedNameId;
-            entry.playerTookHostage = g_LostHostagePlayerTookHostage;
-            entry.trapSelf = reinterpret_cast<std::uintptr_t>(trapSelf);
-            entry.callbackData = eval.callbackData;
-            entry.callbackData40 = eval.callbackData40;
-            return static_cast<int>(i);
-        }
+        EscapedHostage& e = g_EscapedHostages[i];
+        if (!e.active || e.objectId != h.objectId) continue;
+        e.type = h.type;
+        e.moverNameId = moverNameId;
+        e.expectedNameId = expectedNameId;
+        e.playerTookIt = h.playerTookIt;
+        e.trapSelf = reinterpret_cast<std::uintptr_t>(trapSelf);
+        e.cbData = cbData;
+        e.cbData40 = cbData40;
+        return static_cast<int>(i);
     }
 
-    EscapedHostageEntry entry{};
-    entry.valid = true;
-    entry.hostageGameObjectId = hostageInfo.rawGameObjectId;
-    entry.hostageType = hostageInfo.hostageType;
-    entry.moverNameId = eval.moverNameId;
-    entry.expectedNameId = eval.expectedNameId;
-    entry.playerTookHostage = g_LostHostagePlayerTookHostage;
-    entry.trapSelf = reinterpret_cast<std::uintptr_t>(trapSelf);
-    entry.callbackData = eval.callbackData;
-    entry.callbackData40 = eval.callbackData40;
-
-    g_EscapedHostagesInOrder.push_back(entry);
-    return static_cast<int>(g_EscapedHostagesInOrder.size() - 1);
+    EscapedHostage e{};
+    e.active = true;
+    e.objectId = h.objectId;
+    e.type = h.type;
+    e.moverNameId = moverNameId;
+    e.expectedNameId = expectedNameId;
+    e.playerTookIt = h.playerTookIt;
+    e.trapSelf = reinterpret_cast<std::uintptr_t>(trapSelf);
+    e.cbData = cbData;
+    e.cbData40 = cbData40;
+    g_EscapedHostages.push_back(e);
+    return static_cast<int>(g_EscapedHostages.size() - 1);
 }
 
-// Stores one soldier-specific pending report from notice21.
-// Params: report (const PendingLostHostageReport&)
-static void StorePendingReportForSoldier_NoLock(const PendingLostHostageReport& report)
+static PendingReport BuildPendingReport(std::uint32_t soldierIndex, const EscapedHostage& e,
+    int requestType, int source, int slot, std::uint16_t noticeObjId)
 {
-    g_PendingReportsBySoldierIndex[report.soldierIndex] = report;
-
-    Log(
-        "[LostHostage] Stored soldier pending: soldierIndex=%u source=%s hostageGameObjectId=0x%04X hostageType=%s slot=%d noticeObjectId=0x%04X\n",
-        static_cast<unsigned>(report.soldierIndex),
-        PendingSourceName(report.source),
-        static_cast<unsigned>(report.hostageGameObjectId),
-        HostageTypeName(report.hostageType),
-        report.escapeOrderSlot,
-        static_cast<unsigned>(report.noticeObjectId));
+    PendingReport r{};
+    r.active = true;
+    r.soldierIndex = soldierIndex;
+    r.hostageObjId = e.objectId;
+    r.hostageType = e.type;
+    r.requestType = requestType;
+    r.moverNameId = e.moverNameId;
+    r.expectedNameId = e.expectedNameId;
+    r.playerTookIt = e.playerTookIt;
+    r.source = source;
+    r.escapeSlot = slot;
+    r.noticeObjId = noticeObjId;
+    r.trapSelf = e.trapSelf;
+    r.cbData = e.cbData;
+    r.cbData40 = e.cbData40;
+    return r;
 }
 
-// Builds one soldier-specific pending report from one escaped-hostage entry.
-// Params: soldierIndex (uint32_t), entry (const EscapedHostageEntry&), requestType (int), source (int), escapeOrderSlot (int), noticeObjectId (uint16_t)
-static PendingLostHostageReport MakePendingReportFromEntry(
-    std::uint32_t soldierIndex,
-    const EscapedHostageEntry& entry,
-    int requestType,
-    int source,
-    int escapeOrderSlot,
-    std::uint16_t noticeObjectId)
+static void ClearSelectedReport(const char* reason)
 {
-    PendingLostHostageReport report{};
-    report.active = true;
-    report.soldierIndex = soldierIndex;
-    report.hostageGameObjectId = entry.hostageGameObjectId;
-    report.hostageType = entry.hostageType;
-    report.requestType = requestType;
-    report.moverNameId = entry.moverNameId;
-    report.expectedNameId = entry.expectedNameId;
-    report.playerTookHostage = entry.playerTookHostage;
-    report.armedAtTickMs = GetTickCount64();
-    report.source = source;
-    report.escapeOrderSlot = escapeOrderSlot;
-    report.noticeObjectId = noticeObjectId;
-    report.trapSelf = entry.trapSelf;
-    report.callbackData = entry.callbackData;
-    report.callbackData40 = entry.callbackData40;
-    return report;
+    if (!g_SelectedReport.active) return;
+    Log("[LostHostage] ClearSelectedReport reason=%s soldierIndex=%u hostageObjId=0x%04X type=%s source=%s slot=%d\n",
+        reason, static_cast<unsigned>(g_SelectedReport.soldierIndex),
+        static_cast<unsigned>(g_SelectedReport.hostageObjId),
+        HostageTypeName(g_SelectedReport.hostageType),
+        SourceName(g_SelectedReport.source),
+        g_SelectedReport.escapeSlot);
+    g_SelectedReport = {};
 }
 
-// Clears the selected radio pending record.
-// Params: reason (const char*)
-static void ClearSelectedRadioPending_NoLock(const char* reason)
-{
-    if (g_SelectedRadioPending.active)
-    {
-        Log(
-            "[LostHostage] Cleared selected radio pending: reason=%s soldierIndex=%u hostageGameObjectId=0x%04X hostageType=%s source=%s slot=%d noticeObjectId=0x%04X\n",
-            reason ? reason : "unknown",
-            static_cast<unsigned>(g_SelectedRadioPending.soldierIndex),
-            static_cast<unsigned>(g_SelectedRadioPending.hostageGameObjectId),
-            HostageTypeName(g_SelectedRadioPending.hostageType),
-            PendingSourceName(g_SelectedRadioPending.source),
-            g_SelectedRadioPending.escapeOrderSlot,
-            static_cast<unsigned>(g_SelectedRadioPending.noticeObjectId));
-    }
 
-    g_SelectedRadioPending = {};
-}
+// ============================================================
+// Hooks
+// ============================================================
 
-// Hooked version of TrapExecLostHostageCallback::ExecCallback.
-// Params: self (void*), trapInfo (void*)
 static void __fastcall hkExecCallback(void* self, void* trapInfo)
 {
-    if (!g_OrigExecCallback)
-        return;
+    if (!g_OrigExecCallback) return;
+    if (MissionCodeGuard::ShouldBypassHooks()) { g_OrigExecCallback(self, trapInfo); return; }
 
-    if (MissionCodeGuard::ShouldBypassHooks())
+    int            mapRequest = -1;
+    std::uint16_t  moverObjectId = 0xFFFFu;
+    int            moverNameId = -1;
+    int            expectedNameId = -1;
+    std::uintptr_t cbData = 0;
+    std::uintptr_t cbData40 = 0;
+
+    const bool readOk =
+        ReadInt(reinterpret_cast<std::uintptr_t>(trapInfo) + 0xD0ull, mapRequest) &&
+        ReadU16(reinterpret_cast<std::uintptr_t>(trapInfo) + 0x68ull, moverObjectId);
+
+    if (readOk)
     {
-        g_OrigExecCallback(self, trapInfo);
-        return;
-    }
+        ReadTrapPointers(self, cbData, cbData40);
+        ReadExpectedNameId(self, expectedNameId);
+        TryGetNameId(moverObjectId, moverNameId);
 
-    LostHostageTrapEval eval{};
-    if (EvaluateLostHostageTrap(self, trapInfo, eval))
-    {
-        if (eval.mapRequest != 4)
-        {
-            Log(
-                "[LostHostageTrap] self=%p callbackData=%p callbackData40=%p request=%d moverGameObjectId=0x%04X moverNameId=%d expectedNameId=%d nameMatch=%s\n",
-                self,
-                reinterpret_cast<void*>(eval.callbackData),
-                reinterpret_cast<void*>(eval.callbackData40),
-                eval.mapRequest,
-                static_cast<unsigned>(eval.moverGameObjectId),
-                eval.moverNameId,
-                eval.expectedNameId,
-                YesNo(eval.moverNameMatchesExpected));
-        }
+        const bool nameMatch = (moverNameId != -1 && moverNameId == expectedNameId);
 
-        if (eval.mapRequest == 2 && eval.moverGameObjectId != 0xFFFFu)
+        if (mapRequest != 4)
+            Log("[LostHostageTrap] request=%d moverObjId=0x%04X moverNameId=%d expectedNameId=%d nameMatch=%s\n",
+                mapRequest, static_cast<unsigned>(moverObjectId), moverNameId, expectedNameId, YesNo(nameMatch));
+
+        if (mapRequest == 2 && moverObjectId != 0xFFFFu)
         {
-            LostHostageInfo hostageInfo{};
-            if (TryMatchTrackedLostHostage(
-                eval.moverGameObjectId,
-                eval.moverNameId,
-                eval.expectedNameId,
-                hostageInfo))
+            TrackedHostage hostage{};
+            const bool found = FindTrackedHostage(moverObjectId, moverNameId, expectedNameId, hostage);
+
+            if (found)
             {
-                Log(
-                    "[LostHostageTrap] MATCH tracked hostage: moverGameObjectId=0x%04X hostageType=%s trackedRaw=0x%04X trackedNameId=%d nameMatch=%s\n",
-                    static_cast<unsigned>(eval.moverGameObjectId),
-                    HostageTypeName(hostageInfo.hostageType),
-                    static_cast<unsigned>(hostageInfo.rawGameObjectId),
-                    hostageInfo.nameId,
-                    YesNo(eval.moverNameMatchesExpected));
-
-                std::lock_guard<std::mutex> lock(g_LostHostageMutex);
-
-                const int slot = RegisterEscapedHostage_NoLock(hostageInfo, eval, self);
-
-                Log(
-                    "[LostHostage] Registered escaped hostage slot=%d hostageGameObjectId=0x%04X hostageType=%s callbackData40=%p\n",
-                    slot,
-                    static_cast<unsigned>(hostageInfo.rawGameObjectId),
-                    HostageTypeName(hostageInfo.hostageType),
-                    reinterpret_cast<void*>(eval.callbackData40));
+                std::lock_guard<std::mutex> lock(g_Mutex);
+                const int slot = RecordEscapedHostage(hostage, moverNameId, expectedNameId, self, cbData, cbData40);
+                Log("[LostHostage] Escape recorded slot=%d objectId=0x%04X type=%s playerTook=%s\n",
+                    slot, static_cast<unsigned>(hostage.objectId), HostageTypeName(hostage.type), YesNo(hostage.playerTookIt));
             }
             else
             {
-                Log(
-                    "[LostHostageTrap] Ignored untracked hostage: gameObjectId=0x%04X moverNameId=%d expectedNameId=%d nameMatch=%s\n",
-                    static_cast<unsigned>(eval.moverGameObjectId),
-                    eval.moverNameId,
-                    eval.expectedNameId,
-                    YesNo(eval.moverNameMatchesExpected));
+                Log("[LostHostage] Escape ignored (untracked) moverObjId=0x%04X\n",
+                    static_cast<unsigned>(moverObjectId));
             }
         }
     }
@@ -771,462 +484,304 @@ static void __fastcall hkExecCallback(void* self, void* trapInfo)
     g_OrigExecCallback(self, trapInfo);
 }
 
-// Hooked version of NoticeControllerImpl::AddNoticeInfo.
-// Params: self (void*), soldierIndex (uint32_t), noticeInfoBlob (const void*)
-static bool __fastcall hkAddNoticeInfo(
-    void* self,
-    std::uint32_t soldierIndex,
-    const void* noticeInfoBlob)
+static bool __fastcall hkAddNoticeInfo(void* self, std::uint32_t soldierIndex, const void* noticeBlob)
 {
-    if (!g_OrigAddNoticeInfo)
-        return false;
+    if (!g_OrigAddNoticeInfo) return false;
+    if (MissionCodeGuard::ShouldBypassHooks()) return g_OrigAddNoticeInfo(self, soldierIndex, noticeBlob);
 
-    if (MissionCodeGuard::ShouldBypassHooks())
-        return g_OrigAddNoticeInfo(self, soldierIndex, noticeInfoBlob);
+    std::uint8_t  noticeType = 0xFFu;
+    std::uint16_t noticeObjId = 0xFFFFu;
+    int           slot = -1;
+    char          hexDump[16 * 3] = {};
 
-    std::uint8_t newNoticeType = 0xFFu;
-    std::uint16_t noticeObjectId = 0xFFFFu;
-    int escapeSlot = -1;
-    char blobHex16[16 * 3] = {};
-    std::uint32_t currentNoticeTypeBefore = 0;
-    const bool hasCurrentBefore = TryGetCurrentNoticeType(self, soldierIndex, currentNoticeTypeBefore);
+    ParseNoticeBlob(noticeBlob, noticeType, noticeObjId, slot);
+    if (noticeBlob)
+        BuildHexDump(reinterpret_cast<std::uintptr_t>(noticeBlob), hexDump, sizeof(hexDump));
 
-    TryParseEscapeNoticeBlob(noticeInfoBlob, newNoticeType, noticeObjectId, escapeSlot);
-    if (noticeInfoBlob)
-        BuildNoticeBlobHex16(reinterpret_cast<std::uintptr_t>(noticeInfoBlob), blobHex16, sizeof(blobHex16));
-    else
-        std::snprintf(blobHex16, sizeof(blobHex16), "<null>");
+    std::uint32_t noticeBefore = 0;
+    const bool hadBefore = ReadCurrentNoticeType(self, soldierIndex, noticeBefore);
 
-    const bool accepted = g_OrigAddNoticeInfo(self, soldierIndex, noticeInfoBlob);
-    if (!accepted)
-        return false;
+    const bool accepted = g_OrigAddNoticeInfo(self, soldierIndex, noticeBlob);
+    if (!accepted) return false;
 
-    if (newNoticeType != NOTICE_TYPE_ESCAPE_OBJECT &&
-        newNoticeType != NOTICE_TYPE_ESCAPE_PRELUDE)
+    if (noticeType != NOTICE_ESCAPE_OBJECT && noticeType != NOTICE_ESCAPE_PRELUDE)
+        return true;
+
+    std::uint32_t noticeAfter = 0;
+    const bool hasAfter = ReadCurrentNoticeType(self, soldierIndex, noticeAfter);
+
+    Log("[LostHostageNotice] soldierIndex=%u noticeBefore=%s0x%X noticeAfter=%s0x%X newType=0x%02X blob=[%s]\n",
+        static_cast<unsigned>(soldierIndex),
+        hadBefore ? "" : "?", static_cast<unsigned>(noticeBefore),
+        hasAfter ? "" : "?", static_cast<unsigned>(noticeAfter),
+        static_cast<unsigned>(noticeType), hexDump);
+
+    if (noticeType != NOTICE_ESCAPE_OBJECT) return true;
+
+    std::lock_guard<std::mutex> lock(g_Mutex);
+
+    if (slot < 0)
     {
+        Log("[LostHostage] AddNoticeInfo: bad slot soldierIndex=%u noticeObjId=0x%04X\n",
+            static_cast<unsigned>(soldierIndex), static_cast<unsigned>(noticeObjId));
         return true;
     }
 
-    std::uint32_t currentNoticeTypeAfter = 0;
-    const bool hasCurrentAfter = TryGetCurrentNoticeType(self, soldierIndex, currentNoticeTypeAfter);
-
-    Log(
-        "[LostHostageNotice] soldierIndex=%u accepted=YES currentBefore=%s0x%X currentAfter=%s0x%X newNotice=0x%02X blob16=[%s]\n",
-        static_cast<unsigned>(soldierIndex),
-        hasCurrentBefore ? "" : "?",
-        static_cast<unsigned>(currentNoticeTypeBefore),
-        hasCurrentAfter ? "" : "?",
-        static_cast<unsigned>(currentNoticeTypeAfter),
-        static_cast<unsigned>(newNoticeType),
-        blobHex16);
-
-    if (newNoticeType == NOTICE_TYPE_ESCAPE_OBJECT)
+    if (static_cast<std::size_t>(slot) >= g_EscapedHostages.size() || !g_EscapedHostages[slot].active)
     {
-        std::lock_guard<std::mutex> lock(g_LostHostageMutex);
-
-        if (escapeSlot < 0)
-        {
-            Log(
-                "[LostHostage] NOTICE21 ignored: soldierIndex=%u noticeObjectId=0x%04X did not decode to valid slot\n",
-                static_cast<unsigned>(soldierIndex),
-                static_cast<unsigned>(noticeObjectId));
-            return true;
-        }
-
-        const std::size_t slotIndex = static_cast<std::size_t>(escapeSlot);
-        if (slotIndex >= g_EscapedHostagesInOrder.size())
-        {
-            Log(
-                "[LostHostage] NOTICE21 ignored: soldierIndex=%u slot=%d noticeObjectId=0x%04X has no escaped entry yet\n",
-                static_cast<unsigned>(soldierIndex),
-                escapeSlot,
-                static_cast<unsigned>(noticeObjectId));
-            return true;
-        }
-
-        const EscapedHostageEntry& entry = g_EscapedHostagesInOrder[slotIndex];
-        if (!entry.valid)
-        {
-            Log(
-                "[LostHostage] NOTICE21 ignored: soldierIndex=%u slot=%d noticeObjectId=0x%04X entry invalid\n",
-                static_cast<unsigned>(soldierIndex),
-                escapeSlot,
-                static_cast<unsigned>(noticeObjectId));
-            return true;
-        }
-
-        const PendingLostHostageReport report = MakePendingReportFromEntry(
-            soldierIndex,
-            entry,
-            NOTICE_TYPE_ESCAPE_OBJECT,
-            PENDING_SOURCE_NOTICE21,
-            escapeSlot,
-            noticeObjectId);
-
-        StorePendingReportForSoldier_NoLock(report);
-
-        Log(
-            "[LostHostage] NOTICE21 selected soldierIndex=%u slot=%d noticeObjectId=0x%04X hostageGameObjectId=0x%04X hostageType=%s\n",
-            static_cast<unsigned>(soldierIndex),
-            escapeSlot,
-            static_cast<unsigned>(noticeObjectId),
-            static_cast<unsigned>(entry.hostageGameObjectId),
-            HostageTypeName(entry.hostageType));
+        Log("[LostHostage] AddNoticeInfo: no escaped entry for slot=%d soldierIndex=%u\n",
+            slot, static_cast<unsigned>(soldierIndex));
+        return true;
     }
+
+    const EscapedHostage& escaped = g_EscapedHostages[slot];
+    const PendingReport report = BuildPendingReport(soldierIndex, escaped, NOTICE_ESCAPE_OBJECT, SOURCE_NOTICE, slot, noticeObjId);
+    g_PendingBySoldier[soldierIndex] = report;
+
+    Log("[LostHostage] Pending stored soldierIndex=%u slot=%d noticeObjId=0x%04X hostageObjId=0x%04X type=%s playerTook=%s\n",
+        static_cast<unsigned>(soldierIndex), slot, static_cast<unsigned>(noticeObjId),
+        static_cast<unsigned>(escaped.objectId), HostageTypeName(escaped.type), YesNo(escaped.playerTookIt));
 
     return true;
 }
 
-// Hooked version of RadioActionImpl::State_RadioRequest.
-// This is where we map the actual speaker soldier to the notice21 result.
-// Params: self (void*), actionIndex (int), stateProc (int)
 static void __fastcall hkStateRadioRequest(void* self, int actionIndex, int stateProc)
 {
-    if (!g_OrigStateRadioRequest)
-        return;
+    if (!g_OrigRadioRequest) return;
+    if (MissionCodeGuard::ShouldBypassHooks()) { g_OrigRadioRequest(self, actionIndex, stateProc); return; }
 
-    if (MissionCodeGuard::ShouldBypassHooks())
+    g_OrigRadioRequest(self, actionIndex, stateProc);
+
+    // From the logs: stateProc=0 is when byte12 flips to 0x02, meaning the
+    // radio is actually about to transmit. All other stateProc values fire too
+    // early or too late relative to ConvertRadioTypeToSpeechLabel being called.
+    if (stateProc != 0) return;
+
+    // Let the discovery helper inspect the same shared RadioRequest event.
+    LostHostageDiscovery_OnRadioRequest(self, actionIndex, stateProc);
+
+    std::uint32_t soldierIndex = 0xFFFFFFFFu;
+    std::uint8_t  radioType = 0xFFu;
+    if (!ReadRadioEntry(self, actionIndex, soldierIndex, radioType)) return;
+    if (radioType != RADIO_PRISONER_GONE) return;
+
+    std::lock_guard<std::mutex> lock(g_Mutex);
+
+    auto it = g_PendingBySoldier.find(soldierIndex);
+    if (it == g_PendingBySoldier.end())
     {
-        g_OrigStateRadioRequest(self, actionIndex, stateProc);
-        return;
-    }
-
-    RadioRequestEntryView before{};
-    const bool hasBefore = TryReadRadioRequestEntry(self, actionIndex, before);
-
-    Log(
-        "[RadioRequest] ENTER self=%p actionIndex=%d stateProc=%d\n",
-        self,
-        actionIndex,
-        stateProc);
-
-    if (hasBefore)
-    {
-        Log(
-            "[RadioRequest] BEFORE self=%p actionIndex=%d obj=%p speakerSoldierIndex=%u word0C=0x%04X word0E=0x%04X byte10=0x%02X byte12=0x%02X byte13=0x%02X byte15=0x%02X\n",
-            self,
-            actionIndex,
-            reinterpret_cast<void*>(before.objectPtr),
-            static_cast<unsigned>(before.gameObjectId),
-            static_cast<unsigned>(before.word0C),
-            static_cast<unsigned>(before.word0E),
-            static_cast<unsigned>(before.byte10),
-            static_cast<unsigned>(before.byte12),
-            static_cast<unsigned>(before.byte13),
-            static_cast<unsigned>(before.byte15));
-    }
-
-    g_OrigStateRadioRequest(self, actionIndex, stateProc);
-
-    RadioRequestEntryView after{};
-    const bool hasAfter = TryReadRadioRequestEntry(self, actionIndex, after);
-
-    if (hasAfter)
-    {
-        Log(
-            "[RadioRequest] AFTER self=%p actionIndex=%d obj=%p speakerSoldierIndex=%u word0C=0x%04X word0E=0x%04X byte10=0x%02X byte12=0x%02X byte13=0x%02X byte15=0x%02X\n",
-            self,
-            actionIndex,
-            reinterpret_cast<void*>(after.objectPtr),
-            static_cast<unsigned>(after.gameObjectId),
-            static_cast<unsigned>(after.word0C),
-            static_cast<unsigned>(after.word0E),
-            static_cast<unsigned>(after.byte10),
-            static_cast<unsigned>(after.byte12),
-            static_cast<unsigned>(after.byte13),
-            static_cast<unsigned>(after.byte15));
-    }
-
-    Log(
-        "[RadioRequest] LEAVE self=%p actionIndex=%d stateProc=%d\n",
-        self,
-        actionIndex,
-        stateProc);
-
-    // We only care when this request is a prisoner-gone radio.
-    // The logs you posted showed byte10 == 0x1A for the correct request.
-    if (!hasAfter || after.byte10 != RADIO_TYPE_PRISONER_GONE)
-        return;
-
-    // Based on your logs:
-    // gameObjectId=0x00000006  -> soldierIndex 6
-    // gameObjectId=0x0000002C  -> soldierIndex 44
-    const std::uint32_t speakerSoldierIndex = after.gameObjectId;
-
-    std::lock_guard<std::mutex> lock(g_LostHostageMutex);
-
-    const auto it = g_PendingReportsBySoldierIndex.find(speakerSoldierIndex);
-    if (it == g_PendingReportsBySoldierIndex.end())
-    {
-        Log(
-            "[LostHostage] RadioRequest no soldier pending: speakerSoldierIndex=%u radioType=0x%02X stateProc=%d\n",
-            static_cast<unsigned>(speakerSoldierIndex),
-            static_cast<unsigned>(after.byte10),
-            stateProc);
+        Log("[LostHostage] RadioRequest: no pending for soldierIndex=%u\n", static_cast<unsigned>(soldierIndex));
         return;
     }
 
-    g_SelectedRadioPending = it->second;
-    g_SelectedRadioPending.source = PENDING_SOURCE_RADIOREQUEST;
-    g_PendingReportsBySoldierIndex.erase(it);
+    g_SelectedReport = it->second;
+    g_SelectedReport.source = SOURCE_RADIO;
+    g_PendingBySoldier.erase(it);
 
-    Log(
-        "[LostHostage] RadioRequest selected pending: speakerSoldierIndex=%u hostageGameObjectId=0x%04X hostageType=%s slot=%d noticeObjectId=0x%04X stateProc=%d\n",
-        static_cast<unsigned>(g_SelectedRadioPending.soldierIndex),
-        static_cast<unsigned>(g_SelectedRadioPending.hostageGameObjectId),
-        HostageTypeName(g_SelectedRadioPending.hostageType),
-        g_SelectedRadioPending.escapeOrderSlot,
-        static_cast<unsigned>(g_SelectedRadioPending.noticeObjectId),
-        stateProc);
+    Log("[LostHostage] RadioRequest: selected report soldierIndex=%u hostageObjId=0x%04X type=%s slot=%d playerTook=%s\n",
+        static_cast<unsigned>(g_SelectedReport.soldierIndex),
+        static_cast<unsigned>(g_SelectedReport.hostageObjId),
+        HostageTypeName(g_SelectedReport.hostageType),
+        g_SelectedReport.escapeSlot,
+        YesNo(g_SelectedReport.playerTookIt));
 }
 
-// Hooked version of CpRadioService::ConvertRadioTypeToSpeechLabel.
-// Params: radioType (uint8_t)
 static std::uint32_t __fastcall hkConvertRadioTypeToSpeechLabel(std::uint8_t radioType)
 {
-    if (!g_OrigConvertRadioTypeToSpeechLabel)
-        return 0;
+    if (!g_OrigConvertLabel) return 0;
+    if (MissionCodeGuard::ShouldBypassHooks()) return g_OrigConvertLabel(radioType);
 
-    if (MissionCodeGuard::ShouldBypassHooks())
-        return g_OrigConvertRadioTypeToSpeechLabel(radioType);
+    const std::uint32_t defaultLabel = g_OrigConvertLabel(radioType);
 
-    const std::uint32_t baseLabel = g_OrigConvertRadioTypeToSpeechLabel(radioType);
-
-    if (radioType != RADIO_TYPE_PRISONER_GONE)
-        return baseLabel;
-
-    PendingLostHostageReport pending{};
-    bool hasPending = false;
-
+    if (radioType == RADIO_PRISONER_GONE)
     {
-        std::lock_guard<std::mutex> lock(g_LostHostageMutex);
-        if (g_SelectedRadioPending.active)
+        PendingReport report{};
+        bool hasReport = false;
+
         {
-            pending = g_SelectedRadioPending;
-            hasPending = true;
+            std::lock_guard<std::mutex> lock(g_Mutex);
+            if (g_SelectedReport.active)
+            {
+                report = g_SelectedReport;
+                hasReport = true;
+                ClearSelectedReport("label consumed");
+            }
+        }
+
+        if (hasReport)
+        {
+            const std::uint32_t overrideLabel = PickSpeechLabel(report.hostageType, report.playerTookIt);
+            if (overrideLabel)
+            {
+                Log("[LostHostageRadio] Override radioType=0x%02X default=0x%08X override=0x%08X soldierIndex=%u source=%s hostageObjId=0x%04X type=%s slot=%d playerTook=%s\n",
+                    static_cast<unsigned>(radioType), static_cast<unsigned>(defaultLabel), static_cast<unsigned>(overrideLabel),
+                    static_cast<unsigned>(report.soldierIndex), SourceName(report.source),
+                    static_cast<unsigned>(report.hostageObjId), HostageTypeName(report.hostageType),
+                    report.escapeSlot, YesNo(report.playerTookIt));
+
+                return overrideLabel;
+            }
         }
     }
 
-    if (!hasPending)
-        return baseLabel;
-
-    const std::uint32_t overrideLabel =
-        GetLostHostageOverrideLabel(
-            pending.hostageType,
-            pending.playerTookHostage);
-
-    if (overrideLabel == 0)
-        return baseLabel;
-
-    Log(
-        "[LostHostageRadio] Override ConvertRadioTypeToSpeechLabel: radioType=0x%02X baseLabel=0x%08X overrideLabel=0x%08X soldierIndex=%u source=%s hostageGameObjectId=0x%04X hostageType=%s slot=%d noticeObjectId=0x%04X playerTook=%s\n",
-        static_cast<unsigned>(radioType),
-        static_cast<unsigned>(baseLabel),
-        static_cast<unsigned>(overrideLabel),
-        static_cast<unsigned>(pending.soldierIndex),
-        PendingSourceName(pending.source),
-        static_cast<unsigned>(pending.hostageGameObjectId),
-        HostageTypeName(pending.hostageType),
-        pending.escapeOrderSlot,
-        static_cast<unsigned>(pending.noticeObjectId),
-        YesNo(pending.playerTookHostage));
-
-    {
-        std::lock_guard<std::mutex> lock(g_LostHostageMutex);
-        ClearSelectedRadioPending_NoLock("radio override consumed");
-    }
-
-    return overrideLabel;
+    return LostHostageDiscovery_OnConvertRadioTypeToSpeechLabel(radioType, defaultLabel);
 }
 
-// Registers one hostage to track for escape reports.
-// Params: gameObjectId (uint32_t), hostageType (0=male, 1=female, 2=child)
-void Add_LostHostage(std::uint32_t gameObjectId, int hostageType)
+
+// ============================================================
+// Public API
+// ============================================================
+
+void Add_LostHostageTrap(std::uint32_t gameObjectId, int hostageType)
 {
-    if (hostageType < 0 || hostageType > 2)
+    if (hostageType < HOSTAGE_MALE || hostageType > HOSTAGE_CHILD)
     {
-        Log("[LostHostage] Add ignored: invalid hostageType=%d for gameObjectId=0x%08X\n",
-            hostageType,
-            gameObjectId);
+        Log("[LostHostage] Add_LostHostage: invalid type=%d for objectId=0x%08X\n", hostageType, gameObjectId);
         return;
     }
 
-    const std::uint16_t rawGameObjectId = static_cast<std::uint16_t>(gameObjectId);
-
+    const std::uint16_t rawId = static_cast<std::uint16_t>(gameObjectId);
     int nameId = -1;
-    TryGetNameIdWithGameObjectId(rawGameObjectId, nameId);
+    TryGetNameId(rawId, nameId);
 
-    LostHostageInfo info{};
-    info.rawGameObjectId = rawGameObjectId;
-    info.hostageType = hostageType;
-    info.nameId = nameId;
+    TrackedHostage h{};
+    h.objectId = rawId;
+    h.type = hostageType;
+    h.nameId = nameId;
+    h.playerTookIt = false;
 
+    std::lock_guard<std::mutex> lock(g_Mutex);
+    g_HostagesByObjectId[rawId] = h;
+    if (nameId != -1)
+        g_HostagesByNameId[nameId] = h;
+
+    Log("[LostHostage] Add_LostHostage: tracking objectId=0x%04X type=%s nameId=%d\n",
+        static_cast<unsigned>(rawId), HostageTypeName(hostageType), nameId);
+}
+
+void Remove_LostHostageTrap(std::uint32_t gameObjectId)
+{
+    const std::uint16_t rawId = static_cast<std::uint16_t>(gameObjectId);
+
+    std::lock_guard<std::mutex> lock(g_Mutex);
+
+    auto it = g_HostagesByObjectId.find(rawId);
+    if (it != g_HostagesByObjectId.end())
     {
-        std::lock_guard<std::mutex> lock(g_LostHostageMutex);
-        g_TrackedLostHostagesByRawId[rawGameObjectId] = info;
-
-        if (nameId != -1)
-            g_TrackedLostHostagesByNameId[nameId] = info;
+        const int nameId = it->second.nameId;
+        g_HostagesByObjectId.erase(it);
+        if (nameId != -1) g_HostagesByNameId.erase(nameId);
     }
 
-    Log(
-        "[LostHostage] Added tracked hostage: inputGameObjectId=0x%08X rawGameObjectId=0x%04X hostageType=%s nameId=%d\n",
-        gameObjectId,
-        static_cast<unsigned>(rawGameObjectId),
-        HostageTypeName(hostageType),
-        nameId);
+    for (EscapedHostage& e : g_EscapedHostages)
+        if (e.active && e.objectId == rawId) e.active = false;
+
+    for (auto it2 = g_PendingBySoldier.begin(); it2 != g_PendingBySoldier.end();)
+        it2 = (it2->second.hostageObjId == rawId) ? g_PendingBySoldier.erase(it2) : std::next(it2);
+
+    if (g_SelectedReport.active && g_SelectedReport.hostageObjId == rawId)
+        ClearSelectedReport("hostage removed");
+
+    Log("[LostHostage] Remove_LostHostage: objectId=0x%04X\n", static_cast<unsigned>(rawId));
 }
 
-// Removes one tracked hostage.
-// Params: gameObjectId (uint32_t)
-void Remove_LostHostage(std::uint32_t gameObjectId)
+void Clear_LostHostagesTrap()
 {
-    const std::uint16_t rawGameObjectId = static_cast<std::uint16_t>(gameObjectId);
+    std::lock_guard<std::mutex> lock(g_Mutex);
+    g_HostagesByObjectId.clear();
+    g_HostagesByNameId.clear();
+    g_EscapedHostages.clear();
+    g_PendingBySoldier.clear();
+    g_SelectedReport = {};
+    Log("[LostHostage] Clear_LostHostages\n");
+}
 
+void PlayerTookHostage(std::uint32_t gameObjectId, bool playerTookIt)
+{
+    const std::uint16_t rawId = static_cast<std::uint16_t>(gameObjectId);
+
+    std::lock_guard<std::mutex> lock(g_Mutex);
+
+    auto it = g_HostagesByObjectId.find(rawId);
+    if (it == g_HostagesByObjectId.end())
     {
-        std::lock_guard<std::mutex> lock(g_LostHostageMutex);
-
-        const auto it = g_TrackedLostHostagesByRawId.find(rawGameObjectId);
-        if (it != g_TrackedLostHostagesByRawId.end())
-        {
-            const int nameId = it->second.nameId;
-            g_TrackedLostHostagesByRawId.erase(it);
-
-            if (nameId != -1)
-                g_TrackedLostHostagesByNameId.erase(nameId);
-        }
-
-        for (EscapedHostageEntry& entry : g_EscapedHostagesInOrder)
-        {
-            if (entry.valid && entry.hostageGameObjectId == rawGameObjectId)
-                entry.valid = false;
-        }
-
-        for (auto it = g_PendingReportsBySoldierIndex.begin(); it != g_PendingReportsBySoldierIndex.end();)
-        {
-            if (it->second.hostageGameObjectId == rawGameObjectId)
-                it = g_PendingReportsBySoldierIndex.erase(it);
-            else
-                ++it;
-        }
-
-        if (g_SelectedRadioPending.active &&
-            g_SelectedRadioPending.hostageGameObjectId == rawGameObjectId)
-        {
-            ClearSelectedRadioPending_NoLock("removed hostage");
-        }
+        Log("[LostHostage] PlayerTookHostage: objectId=0x%08X not tracked\n", gameObjectId);
+        return;
     }
 
-    Log(
-        "[LostHostage] Removed tracked hostage: inputGameObjectId=0x%08X rawGameObjectId=0x%04X\n",
-        gameObjectId,
-        static_cast<unsigned>(rawGameObjectId));
-}
+    it->second.playerTookIt = playerTookIt;
 
-// Clears all tracked hostages.
-// Params: none
-void Clear_LostHostages()
-{
+    const int nameId = it->second.nameId;
+    if (nameId != -1)
     {
-        std::lock_guard<std::mutex> lock(g_LostHostageMutex);
-        g_TrackedLostHostagesByRawId.clear();
-        g_TrackedLostHostagesByNameId.clear();
-        g_EscapedHostagesInOrder.clear();
-        g_PendingReportsBySoldierIndex.clear();
-        g_SelectedRadioPending = {};
+        auto itName = g_HostagesByNameId.find(nameId);
+        if (itName != g_HostagesByNameId.end())
+            itName->second.playerTookIt = playerTookIt;
     }
 
-    Log("[LostHostage] Cleared all tracked hostages\n");
+    for (EscapedHostage& e : g_EscapedHostages)
+        if (e.active && e.objectId == rawId) e.playerTookIt = playerTookIt;
+
+    for (auto& kv : g_PendingBySoldier)
+        if (kv.second.hostageObjId == rawId) kv.second.playerTookIt = playerTookIt;
+
+    if (g_SelectedReport.active && g_SelectedReport.hostageObjId == rawId)
+        g_SelectedReport.playerTookIt = playerTookIt;
+
+    Log("[LostHostage] PlayerTookHostage: objectId=0x%08X playerTook=%s\n", gameObjectId, YesNo(playerTookIt));
 }
 
-// Sets whether the hostage was taken by the player.
-// Params: playerTookHostage (bool)
-void SetLostHostageFromPlayer(bool playerTookHostage)
-{
-    g_LostHostagePlayerTookHostage = playerTookHostage;
-
-    Log(
-        "[LostHostage] Player-took-hostage mode set: %s\n",
-        YesNo(playerTookHostage));
-}
-
-// Installs the lost-hostage hooks.
-// Params: none
 bool Install_LostHostage_Hooks()
 {
-    void* trapTarget = ResolveGameAddress(ABS_ExecCallback);
-    void* convertTarget = ResolveGameAddress(ABS_ConvertRadioTypeToSpeechLabel);
-    void* addNoticeInfoTarget = ResolveGameAddress(ABS_AddNoticeInfo);
-    void* stateRadioRequestTarget = ResolveGameAddress(ABS_StateRadioRequest);
+    void* addrExec = ResolveGameAddress(ADDR_ExecCallback);
+    void* addrConvert = ResolveGameAddress(ADDR_ConvertRadioTypeToLabel);
+    void* addrNotice = ResolveGameAddress(ADDR_AddNoticeInfo);
+    void* addrRadio = ResolveGameAddress(ADDR_StateRadioRequest);
 
-    Log("======== LOSTHOSTAGE BUILD MARKER: RadioActionImpl::State_RadioRequest mapping build loaded ========\n");
+    Log("======== LOSTHOSTAGE BUILD MARKER ========\n");
 
-    if (!trapTarget || !convertTarget || !addNoticeInfoTarget || !stateRadioRequestTarget)
+    if (!addrExec || !addrConvert || !addrNotice || !addrRadio)
     {
-        Log("[LostHostage] Install: target resolve failed trap=%p convert=%p addNoticeInfo=%p stateRadioRequest=%p\n",
-            trapTarget,
-            convertTarget,
-            addNoticeInfoTarget,
-            stateRadioRequestTarget);
+        Log("[LostHostage] Install failed: exec=%p convert=%p notice=%p radio=%p\n",
+            addrExec, addrConvert, addrNotice, addrRadio);
         return false;
     }
 
-    ResolveLostHostageHelpers();
+    LoadGetNameIdFunction();
 
-    const bool okTrap = CreateAndEnableHook(
-        trapTarget,
-        reinterpret_cast<void*>(&hkExecCallback),
-        reinterpret_cast<void**>(&g_OrigExecCallback));
+    const bool okExec = CreateAndEnableHook(addrExec, reinterpret_cast<void*>(&hkExecCallback), reinterpret_cast<void**>(&g_OrigExecCallback));
+    const bool okConvert = CreateAndEnableHook(addrConvert, reinterpret_cast<void*>(&hkConvertRadioTypeToSpeechLabel), reinterpret_cast<void**>(&g_OrigConvertLabel));
+    const bool okNotice = CreateAndEnableHook(addrNotice, reinterpret_cast<void*>(&hkAddNoticeInfo), reinterpret_cast<void**>(&g_OrigAddNoticeInfo));
+    const bool okRadio = CreateAndEnableHook(addrRadio, reinterpret_cast<void*>(&hkStateRadioRequest), reinterpret_cast<void**>(&g_OrigRadioRequest));
 
-    const bool okConvert = CreateAndEnableHook(
-        convertTarget,
-        reinterpret_cast<void*>(&hkConvertRadioTypeToSpeechLabel),
-        reinterpret_cast<void**>(&g_OrigConvertRadioTypeToSpeechLabel));
+    Log("[LostHostage] Hook ExecCallback:   %s\n", okExec ? "OK" : "FAIL");
+    Log("[LostHostage] Hook ConvertLabel:   %s\n", okConvert ? "OK" : "FAIL");
+    Log("[LostHostage] Hook AddNoticeInfo:  %s\n", okNotice ? "OK" : "FAIL");
+    Log("[LostHostage] Hook RadioRequest:   %s target=%p orig=%p\n",
+        okRadio ? "OK" : "FAIL", addrRadio, reinterpret_cast<void*>(g_OrigRadioRequest));
 
-    const bool okAddNoticeInfo = CreateAndEnableHook(
-        addNoticeInfoTarget,
-        reinterpret_cast<void*>(&hkAddNoticeInfo),
-        reinterpret_cast<void**>(&g_OrigAddNoticeInfo));
-
-    const bool okStateRadioRequest = CreateAndEnableHook(
-        stateRadioRequestTarget,
-        reinterpret_cast<void*>(&hkStateRadioRequest),
-        reinterpret_cast<void**>(&g_OrigStateRadioRequest));
-
-    Log("[LostHostage] Install TrapExecLostHostageCallback: %s\n", okTrap ? "OK" : "FAIL");
-    Log("[LostHostage] Install CpRadioService::ConvertRadioTypeToSpeechLabel: %s\n", okConvert ? "OK" : "FAIL");
-    Log("[LostHostage] Install NoticeControllerImpl::AddNoticeInfo: %s\n", okAddNoticeInfo ? "OK" : "FAIL");
-    Log("[LostHostage] Install RadioActionImpl::State_RadioRequest: %s target=%p orig=%p\n",
-        okStateRadioRequest ? "OK" : "FAIL",
-        stateRadioRequestTarget,
-        reinterpret_cast<void*>(g_OrigStateRadioRequest));
-
-    return okTrap && okConvert && okAddNoticeInfo && okStateRadioRequest;
+    return okExec && okConvert && okNotice && okRadio;
 }
 
-// Removes the lost-hostage hooks and clears current-run state.
-// Params: none
 bool Uninstall_LostHostage_Hooks()
 {
-    DisableAndRemoveHook(ResolveGameAddress(ABS_ExecCallback));
-    DisableAndRemoveHook(ResolveGameAddress(ABS_ConvertRadioTypeToSpeechLabel));
-    DisableAndRemoveHook(ResolveGameAddress(ABS_AddNoticeInfo));
-    DisableAndRemoveHook(ResolveGameAddress(ABS_StateRadioRequest));
+    DisableAndRemoveHook(ResolveGameAddress(ADDR_ExecCallback));
+    DisableAndRemoveHook(ResolveGameAddress(ADDR_ConvertRadioTypeToLabel));
+    DisableAndRemoveHook(ResolveGameAddress(ADDR_AddNoticeInfo));
+    DisableAndRemoveHook(ResolveGameAddress(ADDR_StateRadioRequest));
 
     g_OrigExecCallback = nullptr;
-    g_OrigConvertRadioTypeToSpeechLabel = nullptr;
+    g_OrigConvertLabel = nullptr;
     g_OrigAddNoticeInfo = nullptr;
-    g_OrigStateRadioRequest = nullptr;
+    g_OrigRadioRequest = nullptr;
 
-    {
-        std::lock_guard<std::mutex> lock(g_LostHostageMutex);
-        g_TrackedLostHostagesByRawId.clear();
-        g_TrackedLostHostagesByNameId.clear();
-        g_EscapedHostagesInOrder.clear();
-        g_PendingReportsBySoldierIndex.clear();
-        g_SelectedRadioPending = {};
-    }
+    std::lock_guard<std::mutex> lock(g_Mutex);
+    g_HostagesByObjectId.clear();
+    g_HostagesByNameId.clear();
+    g_EscapedHostages.clear();
+    g_PendingBySoldier.clear();
+    g_SelectedReport = {};
 
-    Log("[LostHostage] removed\n");
+    Log("[LostHostage] Uninstall_LostHostage_Hooks\n");
     return true;
 }

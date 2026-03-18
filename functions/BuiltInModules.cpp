@@ -43,6 +43,9 @@ bool Uninstall_CallSignExtra_Hook();
 bool Install_LostHostage_Hooks();
 bool Uninstall_LostHostage_Hooks();
 
+bool Install_LostHostageDiscovery_Hooks();
+bool Uninstall_LostHostageDiscovery_Hooks();
+
 namespace
 {
     class LuaBridgeModule final : public IFeatureModule
@@ -263,11 +266,12 @@ namespace
 		bool Install(HMODULE hGame) override
 		{
 			UNREFERENCED_PARAMETER(hGame);
-			return Install_LostHostage_Hooks();
+			return Install_LostHostage_Hooks() && Install_LostHostageDiscovery_Hooks();
 		}
 		void Uninstall() override
 		{
 			Uninstall_LostHostage_Hooks();
+            Uninstall_LostHostageDiscovery_Hooks();
 		}
 	};
 }

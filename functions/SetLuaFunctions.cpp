@@ -16,6 +16,7 @@
 #include <State_EnterStandHoldup1.h>
 #include <GetVoiceParamWithCallSign.h>
 #include "LostHostageHook.h"
+#include "StepRadioDiscovery.h"
 
 extern "C" {
     #include "lua.h"
@@ -542,7 +543,9 @@ static int __cdecl l_SetLostHostage(lua_State* L)
 
     const int hostageType = GetLuaInt(L, 2);
 
-    Add_LostHostage(gameObjectId, hostageType);
+    Add_LostHostageTrap(gameObjectId, hostageType);
+    Add_LostHostageDiscovery(gameObjectId, hostageType);
+
     return 0;
 }
 
@@ -553,7 +556,8 @@ static int __cdecl l_RemoveLostHostage(lua_State* L)
     const std::uint32_t gameObjectId =
         static_cast<std::uint32_t>(GetLuaInt64(L, 1));
 
-    Remove_LostHostage(gameObjectId);
+    Remove_LostHostageTrap(gameObjectId);
+    Remove_LostHostageDiscovery(gameObjectId);
     return 0;
 }
 
@@ -562,14 +566,17 @@ static int __cdecl l_RemoveLostHostage(lua_State* L)
 static int __cdecl l_ClearLostHostages(lua_State* L)
 {
     UNREFERENCED_PARAMETER(L);
-    Clear_LostHostages();
+    Clear_LostHostagesTrap();
+    Clear_LostHostageDiscovery();
     return 0;
 }
 
 static int __cdecl l_SetLostHostageFromPlayer(lua_State* L)
 {
-    const bool playerTookHostage = GetLuaBool(L, 1);
-    SetLostHostageFromPlayer(playerTookHostage);
+    const std::uint32_t gameObjectId =
+        static_cast<std::uint32_t>(GetLuaInt64(L, 1));
+    const bool playerTookHostage = GetLuaBool(L, 2);
+    PlayerTookHostage(gameObjectId, playerTookHostage);
     return 0;
 }
 static luaL_Reg g_VFrameWorkLib[] =
@@ -601,13 +608,13 @@ static luaL_Reg g_VFrameWorkLib[] =
     { "RemoveVIPImportant",                     l_RemoveVIPImportant },
     { "ClearVIPImportant",                      l_ClearVIPImportant },
 	{ "HoldUpReactionCowardlyReaction",         l_HoldUpReactionCowardlyReactions },
-    { "AddCallSignPatrolSoldier",                l_AddCallSignExtraSoldier },
-    { "RemoveCallSignPatrolSoldier",             l_RemoveCallSignExtraSoldier },
-    { "ClearCallSignPatrolSoldiers",             l_ClearCallSignExtraSoldiers },
+    { "AddCallSignPatrolSoldier",               l_AddCallSignExtraSoldier },
+    { "RemoveCallSignPatrolSoldier",            l_RemoveCallSignExtraSoldier },
+    { "ClearCallSignPatrolSoldiers",            l_ClearCallSignExtraSoldiers },
     { "SetLostHostage",                         l_SetLostHostage },
     { "RemoveLostHostage",                      l_RemoveLostHostage },
     { "ClearLostHostages",                      l_ClearLostHostages },
-    { "SetLostHostageFromPlayer",              l_SetLostHostageFromPlayer },
+    { "SetLostHostageFromPlayer",               l_SetLostHostageFromPlayer },
     { nullptr, nullptr }
 };
 
