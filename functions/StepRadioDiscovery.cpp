@@ -24,7 +24,6 @@ namespace
 
     static constexpr std::uint16_t LHD_INVALID_TARGET_ID = 0xFFFFu;
     static constexpr std::uint32_t LHD_INVALID_SOLDIER_ID = 0xFFFFFFFFu;
-    static constexpr std::size_t   LHD_MAX_SOLDIERS = 256u;
     static constexpr std::size_t   LHD_TRACKED_SLOT_COUNT = 3u;
 
     static constexpr std::uint8_t LHD_RADIO_TYPE_HOSTAGE_FOUND_A = 0x12u;
@@ -44,7 +43,7 @@ namespace
         std::uint16_t rawGameObjectId = LHD_INVALID_TARGET_ID;
         int           hostageType = -1;
         std::uint32_t speechLabel = 0u;
-    };
+    }; 
 
     struct LostHostageDiscoveryRadioRequestEntryView
     {
@@ -69,8 +68,8 @@ namespace
     };
 
     static std::unordered_map<std::uint16_t, LostHostageDiscoveryInfo> g_LHD_TrackedHostagesByRawId;
-    static std::array<std::uint16_t, LHD_MAX_SOLDIERS> g_LHD_LastCandidateTargetBySoldier;
-    static std::array<std::uint16_t, LHD_MAX_SOLDIERS> g_LHD_LastConfirmedTargetBySoldier;
+    std::unordered_map<std::uint32_t, std::uint16_t> g_LHD_LastCandidateTargetBySoldier;
+    std::unordered_map<std::uint32_t, std::uint16_t> g_LHD_LastConfirmedTargetBySoldier;
     static std::mutex g_LHD_Mutex;
     static thread_local std::deque<LostHostageDiscoverySelectedRadio> g_LHD_SelectedRadioQueue;
 }
@@ -169,8 +168,8 @@ static bool LostHostageDiscovery_IsHostageDiscoveryRadioType(std::uint8_t radioT
 
 static void LostHostageDiscovery_ResetRuntimeState_NoLock()
 {
-    g_LHD_LastCandidateTargetBySoldier.fill(LHD_INVALID_TARGET_ID);
-    g_LHD_LastConfirmedTargetBySoldier.fill(LHD_INVALID_TARGET_ID);
+    g_LHD_LastCandidateTargetBySoldier.clear();
+    g_LHD_LastConfirmedTargetBySoldier.clear();
     g_LHD_SelectedRadioQueue.clear();
 }
 
@@ -227,14 +226,21 @@ static std::uint16_t LostHostageDiscovery_ChooseCandidateIdFromTracker(
 
 static std::uint16_t LostHostageDiscovery_GetCurrentTargetForSoldier_NoLock(std::uint32_t soldierIndex)
 {
-    if (soldierIndex >= LHD_MAX_SOLDIERS)
-        return LHD_INVALID_TARGET_ID;
+    const auto itConfirmed = g_LHD_LastConfirmedTargetBySoldier.find(soldierIndex);
+    if (itConfirmed != g_LHD_LastConfirmedTargetBySoldier.end() &&
+        itConfirmed->second != LHD_INVALID_TARGET_ID)
+    {
+        return itConfirmed->second;
+    }
 
-    const std::uint16_t confirmed = g_LHD_LastConfirmedTargetBySoldier[soldierIndex];
-    if (confirmed != LHD_INVALID_TARGET_ID)
-        return confirmed;
+    const auto itCandidate = g_LHD_LastCandidateTargetBySoldier.find(soldierIndex);
+    if (itCandidate != g_LHD_LastCandidateTargetBySoldier.end() &&
+        itCandidate->second != LHD_INVALID_TARGET_ID)
+    {
+        return itCandidate->second;
+    }
 
-    return g_LHD_LastCandidateTargetBySoldier[soldierIndex];
+    return LHD_INVALID_TARGET_ID;
 }
 
 static bool LostHostageDiscovery_TryGetTrackedHostageInfo_NoLock(
@@ -332,12 +338,18 @@ static void __fastcall hkLostHostageDiscovery_CheckSightNoticeHostage(
     const std::uint16_t chosenCandidate =
         LostHostageDiscovery_ChooseCandidateIdFromTracker(beforeIds, afterIds);
 
-    if (chosenCandidate == LHD_INVALID_TARGET_ID || soldierIndex >= LHD_MAX_SOLDIERS)
+    if (chosenCandidate == LHD_INVALID_TARGET_ID)
         return;
 
     std::lock_guard<std::mutex> lock(g_LHD_Mutex);
 
-    if (g_LHD_LastCandidateTargetBySoldier[soldierIndex] != chosenCandidate)
+    const auto it = g_LHD_LastCandidateTargetBySoldier.find(soldierIndex);
+    const std::uint16_t previous =
+        (it != g_LHD_LastCandidateTargetBySoldier.end())
+        ? it->second
+        : LHD_INVALID_TARGET_ID;
+
+    if (previous != chosenCandidate)
     {
         LHD_LOG(
             "CheckSightNoticeHostage soldier=%u candidate=0x%04X before=[0x%04X,0x%04X,0x%04X] after=[0x%04X,0x%04X,0x%04X]",
@@ -369,7 +381,7 @@ static void __fastcall hkLostHostageDiscovery_StepRadioDiscovery(
         return;
     }
 
-    if ((step == 0 || step == 4) && info != nullptr && soldierIndex < LHD_MAX_SOLDIERS)
+    if ((step == 0 || step == 4) && info != nullptr)
     {
         std::uint16_t targetId = LHD_INVALID_TARGET_ID;
         std::uint16_t auxId = LHD_INVALID_TARGET_ID;
@@ -383,7 +395,13 @@ static void __fastcall hkLostHostageDiscovery_StepRadioDiscovery(
         {
             std::lock_guard<std::mutex> lock(g_LHD_Mutex);
 
-            if (g_LHD_LastConfirmedTargetBySoldier[soldierIndex] != targetId)
+            const auto it = g_LHD_LastConfirmedTargetBySoldier.find(soldierIndex);
+            const std::uint16_t previous =
+                (it != g_LHD_LastConfirmedTargetBySoldier.end())
+                ? it->second
+                : LHD_INVALID_TARGET_ID;
+
+            if (previous != targetId)
             {
                 LHD_LOG(
                     "StepRadioDiscovery step=%d soldier=%u target=0x%04X aux=0x%04X flags=0x%02X",
@@ -403,7 +421,6 @@ static void __fastcall hkLostHostageDiscovery_StepRadioDiscovery(
 
 void LostHostageDiscovery_OnRadioRequest(void* self, int actionIndex, int stateProc)
 {
-    // Only arm on the actual transmit phase.
     if (stateProc != 0)
         return;
 
@@ -415,11 +432,8 @@ void LostHostageDiscovery_OnRadioRequest(void* self, int actionIndex, int stateP
     if (!LostHostageDiscovery_IsHostageDiscoveryRadioType(after.byte10))
         return;
 
-    if (after.speakerSoldierIndex == LHD_INVALID_SOLDIER_ID ||
-        after.speakerSoldierIndex >= LHD_MAX_SOLDIERS)
-    {
+    if (after.speakerSoldierIndex == LHD_INVALID_SOLDIER_ID)
         return;
-    }
 
     std::lock_guard<std::mutex> lock(g_LHD_Mutex);
 
@@ -449,7 +463,6 @@ void LostHostageDiscovery_OnRadioRequest(void* self, int actionIndex, int stateP
     pending.radioType = after.byte10;
     pending.overrideLabel = hostageInfo.speechLabel;
 
-    // Avoid stacking the exact same pending event twice in a row.
     if (!g_LHD_SelectedRadioQueue.empty())
     {
         const auto& back = g_LHD_SelectedRadioQueue.back();
