@@ -7,7 +7,9 @@
 #include "CustomHeadRegistry.h"
 
 #include <cstdint>
+#include <unordered_set>
 
+#include "../equip/DevelopArrayGrow.h"
 #include "AddressSet.h"
 #include "HookUtils.h"
 #include "log.h"
@@ -34,6 +36,8 @@ namespace
     static SetSupplyCBoxInfo_t g_OrigSetSupplyCBoxInfo = nullptr;
     static bool                g_InstalledSetSupplyCBox = false;
 
+
+    static std::unordered_set<std::uint32_t> g_UnresolvedSuitClickLogged;
 
     constexpr std::uint32_t kEquipKindMissionPrepSuit = 0x80;
 
@@ -112,6 +116,22 @@ namespace
             if (outfit::TryGetOutfitByVariantSelector(
                     s.selectorCode, &entry, &variantIdx) && entry)
             {
+                const outfit::OutfitEntry* rowEntry = nullptr;
+                if (outfit::TryGetOutfitByFlowIndex(s.selectedId, &rowEntry)
+                    && rowEntry && rowEntry != entry)
+                {
+                    Log("[OutfitItemSelector] WARN stale variant cell: selector "
+                        "0x%02X resolves to developId=%u but the clicked row is "
+                        "developId=%u - trusting the row (the selector byte was "
+                        "rotated to another outfit)\n",
+                        static_cast<unsigned>(s.selectorCode),
+                        static_cast<unsigned>(entry->developId),
+                        static_cast<unsigned>(rowEntry->developId));
+                    entry = nullptr;
+                }
+            }
+            if (entry)
+            {
                 if (activateVariant)
                 {
                     outfit::ClearCrateDeliveredVariant();
@@ -127,30 +147,38 @@ namespace
         const outfit::OutfitEntry* byFlow = nullptr;
         if (outfit::TryGetOutfitByFlowIndex(s.selectedId, &byFlow) && byFlow)
         {
+            const std::uint16_t flowDevId = byFlow->developId;
             if (activateVariant)
             {
                 outfit::ClearCrateDeliveredVariant();
                 outfit::ConsumePendingSupplyDropVariantIdx();
                 outfit::ConsumePendingSupplyDropDevelopId();
-                if (byFlow->bound)
+                if (!byFlow->bound
+                    && outfit::BindOutfit(flowDevId, true, "equip-click"))
+                    outfit::TryGetOutfitByFlowIndex(s.selectedId, &byFlow);
+                if (byFlow && byFlow->bound)
                     outfit::SetActiveVariant(byFlow->partsType, 0);
             }
-            return byFlow->developId;
+            return flowDevId;
         }
 
 
         const outfit::OutfitEntry* byDev = nullptr;
         if (outfit::TryGetOutfitByDevelopId(s.selectedId, &byDev) && byDev)
         {
+            const std::uint16_t devDevId = byDev->developId;
             if (activateVariant)
             {
                 outfit::ClearCrateDeliveredVariant();
                 outfit::ConsumePendingSupplyDropVariantIdx();
                 outfit::ConsumePendingSupplyDropDevelopId();
-                if (byDev->bound)
+                if (!byDev->bound
+                    && outfit::BindOutfit(devDevId, true, "equip-click"))
+                    outfit::TryGetOutfitByDevelopId(s.selectedId, &byDev);
+                if (byDev && byDev->bound)
                     outfit::SetActiveVariant(byDev->partsType, 0);
             }
-            return byDev->developId;
+            return devDevId;
         }
 
         return 0;
@@ -197,6 +225,36 @@ namespace
                         "unequipping\n", tag, static_cast<unsigned>(devId));
                 }
             }
+            if (devId == 0 && isSuitClick)
+            {
+                const std::uint32_t sig =
+                    (static_cast<std::uint32_t>(s.selectedId) << 8)
+                    | static_cast<std::uint32_t>(s.selectorCode);
+                if (g_UnresolvedSuitClickLogged.insert(sig).second)
+                {
+                    const outfit::OutfitEntry* byFlow = nullptr;
+                    const outfit::OutfitEntry* byDev  = nullptr;
+                    const bool haveFlow =
+                        outfit::TryGetOutfitByFlowIndex(s.selectedId, &byFlow)
+                        && byFlow;
+                    const bool haveDev =
+                        outfit::TryGetOutfitByDevelopId(s.selectedId, &byDev)
+                        && byDev;
+                    Log("[OutfitItemSelector:%s] suit click matched no "
+                        "registered outfit: flowIndex=%u selector=0x%02X "
+                        "equipKind=0x%X byFlow=%s byDevelop=%s - no partsType "
+                        "is activated and no pending developId is published, "
+                        "so the engine falls back to the vanilla suit "
+                        "(partsType 0x00)\n",
+                        tag,
+                        static_cast<unsigned>(s.selectedId),
+                        static_cast<unsigned>(s.selectorCode),
+                        static_cast<unsigned>(s.equipKind),
+                        haveFlow ? "hit" : "miss",
+                        haveDev ? "hit" : "miss");
+                }
+            }
+
             if (!published && isSuitClick)
                 outfit::ClearPendingOutfitDevelopId();
 
@@ -298,7 +356,8 @@ namespace
             outfit::NoteOutfitOrdered(entry->developId);
 
         constexpr std::uint16_t kCustomFlowFirst = 922;
-        constexpr std::uint16_t kCustomFlowLast  = 1023;
+        constexpr std::uint16_t kCustomFlowLast  =
+            static_cast<std::uint16_t>(equip::kMaxFlowSlots - 1);
         std::uint8_t newSelector = 0;
         const char*  why         = nullptr;
         if (resolves

@@ -15,10 +15,38 @@ bool g_HookBatchMode = false;
 
 bool Install_SetLuaFunctions_Hook();
 
+namespace equip
+{
+    void PreApplyDevelopArrayGrowPatches();
+}
+
+extern "C" IMAGE_DOS_HEADER __ImageBase;
+
 namespace
 {
     static std::atomic_bool gStarted{ false };
     static std::atomic_bool gConsoleReady{ false };
+
+    static void LogOwnBuildStamp()
+    {
+        const auto* base = reinterpret_cast<const std::uint8_t*>(&__ImageBase);
+        const auto* dos  = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        const auto* nt   = reinterpret_cast<const IMAGE_NT_HEADERS*>(
+            base + dos->e_lfanew);
+        const DWORD stamp = nt->FileHeader.TimeDateStamp;
+
+        const __time64_t t = static_cast<__time64_t>(stamp);
+        tm utc{};
+        if (_gmtime64_s(&utc, &t) == 0)
+            Log("[DLL] V_FrameWork.dll link stamp 0x%08X "
+                "(%04d-%02d-%02d %02d:%02d:%02d UTC)\n",
+                static_cast<unsigned>(stamp),
+                utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday,
+                utc.tm_hour, utc.tm_min, utc.tm_sec);
+        else
+            Log("[DLL] V_FrameWork.dll link stamp 0x%08X\n",
+                static_cast<unsigned>(stamp));
+    }
 }
 
 
@@ -45,6 +73,7 @@ static DWORD WINAPI InitThread(LPVOID)
     InitLog();
 
     LogDebug("[DLL] InitThread started.\n");
+    LogOwnBuildStamp();
 
     HMODULE hGame = GetModuleHandleW(nullptr);
 
@@ -88,6 +117,7 @@ static void UninstallAll(bool processTerminating)
     if (processTerminating)
     {
         V_FrameWorkState::SaveOnProcessExit();
+        V_FrameWorkState::AbandonFlusherThread();
 
 #ifdef _DEBUG
         Log("[DLL] DLL_PROCESS_DETACH: process terminating, skipping "
@@ -133,6 +163,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved)
             return TRUE;
 
         ResolveAddressSet(GetModuleHandleW(nullptr));
+        equip::PreApplyDevelopArrayGrowPatches();
 
         HANDLE hThread = CreateThread(nullptr, 0, InitThread, nullptr, 0, nullptr);
         if (hThread)

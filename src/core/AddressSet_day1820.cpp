@@ -372,6 +372,16 @@ namespace AddressSetRuntime
             0x1468F0540ull, // SoundControllerImpl_CallVoice
             0x14930D910ull, // MbDvcCassetteTapeCallbackImpl_SeekMusic
             0x14742D6D0ull, // EquipSystem_GetGunInfoById
+            0x1460257C0ull, // Reticle_InitHandGunAsset
+            0x149CD4AA0ull, // TimeCigaretteActionPluginImpl_HideTimeCigaretteUi
+            0x143173d10ull, // Fox_EntityInfoMapTeardown
+            0x142AC6D10ull, // WeaponEnhanceLangIdArray
+            0x149581170ull, // WeaponEnhance_GetIndexForRegist
+            0x140fa0260ull, // WeaponEnhance_GetMessageIdArray
+            0x1495812F0ull, // WeaponEnhance_GetLangIdById
+            0x1495814B0ull, // WeaponEnhance_GetLangIdBound
+            0x140b3b690ull, // BulletEffectController_CreateEffect
+            0x1416A2160ull, // ItemSelectorCallbackImpl_AddRecord
         };
         return value;
     }
@@ -779,6 +789,16 @@ namespace AddressSetRuntime
             0x1484DA340ull, // SoundControllerImpl_CallVoice
             0x149CD3550ull, // MbDvcCassetteTapeCallbackImpl_SeekMusic
             0x14961D670ull, // EquipSystem_GetGunInfoById
+            0x147C34E20ull, // Reticle_InitHandGunAsset
+            0x14A630E60ull, // TimeCigaretteActionPluginImpl_HideTimeCigaretteUi
+            0x1431f89d0ull, // Fox_EntityInfoMapTeardown
+            0x142AC6D10ull, // WeaponEnhanceLangIdArray
+            0x14A0267B0ull, // WeaponEnhance_GetIndexForRegist
+            0x140fa0350ull, // WeaponEnhance_GetMessageIdArray
+            0x14A026A20ull, // WeaponEnhance_GetLangIdById
+            0x14A026BE0ull, // WeaponEnhance_GetLangIdBound
+            0x140b3b210ull, // BulletEffectController_CreateEffect
+            0x1416A22B0ull, // ItemSelectorCallbackImpl_AddRecord
         };
 
         return value;

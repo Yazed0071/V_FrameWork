@@ -13,6 +13,8 @@
 #include <vector>
 
 #include "AddressSet.h"
+#include "DevelopArrayGrow.h"
+#include "FoxHashes.h"
 #include "HookUtils.h"
 #include "log.h"
 #include "V_FrameWorkState.h"
@@ -22,6 +24,7 @@
 #include "../outfit/OutfitRegistry.h"
 #include "../outfit/CustomHeadRegistry.h"
 #include "../outfit/EquipDevelopControllerImpl_GetSuitDevelopInfoIndex.h"
+#include "../outfit/ShadowState.h"
 #include "EquipDevelop_SetEquipUndeveloped.h"
 
 namespace equip { int MenuGridRowCap(); }
@@ -50,6 +53,8 @@ namespace
         std::int32_t numberValue = 0;
         std::string stringValue;
         bool boolValue = false;
+        bool wide = false;
+        std::uint64_t wideValue = 0;
     };
 
     struct NamedFieldSpec
@@ -96,7 +101,7 @@ namespace
     std::unordered_map<std::uint32_t, std::uint32_t> g_ManagedBaseByDevelopId;
 
     constexpr int kMenuRootBufferCap = 120;
-    constexpr int kMenuFamilyCap     = 512;
+    constexpr int kMenuFamilyCap     = 1024;
 
     #define kMenuRootRenderCap (MenuRootRenderCap())
     std::unordered_map<int, int> g_NativeRootsByType;
@@ -105,9 +110,16 @@ namespace
     std::unordered_set<std::string> g_PlacementWarnLogged;
 
     std::unordered_set<std::string> g_ParkedKeys;
-    std::unordered_set<std::string> g_RotateFailedOnce;
+    std::unordered_map<std::string, int> g_RotateFailCount;
+    constexpr int      kMaxRotateFailsPerKey = 2;
     std::atomic<bool>  g_AnyParkedKeys{ false };
+    std::atomic<bool>  g_AnyPendingReg{ false };
     std::atomic<bool>  g_RotationInProgress{ false };
+    std::atomic<bool>  g_RotateRequested{ false };
+    std::atomic<bool>  g_GateRefreshRequested{ false };
+    std::atomic<bool>  g_RotateDeferLogged{ false };
+    std::atomic<int>   g_MenuFillDepth{ 0 };
+    std::atomic<int>   g_RotateTabHint{ -1 };
     volatile DWORD     g_LastVisPredicateTick = 0;
     std::size_t        g_RotateInCursor  = 0;
     std::size_t        g_RotateOutCursor = 0;
@@ -115,7 +127,7 @@ namespace
     std::unordered_map<std::string, std::uint64_t> g_PageInStamp;
     std::unordered_map<std::string, std::uint64_t> g_PageOutStamp;
     constexpr DWORD    kMenuOpenGapMs        = 5000;
-    constexpr int      kMaxSwapsPerRotation  = 8;
+    constexpr int      kMaxSwapsPerRotation  = 32;
 
     std::unordered_map<std::string, PendingDevelopRequest> g_RequestByKey;
 
@@ -273,7 +285,7 @@ namespace
         std::uint8_t sideGrade = 0;
         bool         seen      = false;
     };
-    constexpr std::size_t kNativeFlowCap = 1024;
+    constexpr std::size_t kNativeFlowCap = equip::kMaxFlowSlots;
     NativeFlowInfo g_NativeFlow[kNativeFlowCap] = {};
     std::unordered_map<std::uint32_t, std::uint32_t> g_NativeBaseByDevelopId;
 
@@ -340,9 +352,11 @@ namespace
         void* controller = EquipDevelop_ResolveDevelopController();
         if (!controller)
             return;
-        out.reserve(1024);
-        for (std::uint32_t i = 0; i < 0x400; ++i)
+        out.reserve(equip::kMaxFlowSlots);
+        for (std::uint32_t i = 0; i < equip::NativeFlowBound(); ++i)
         {
+            if (i == equip::kFlowSentinel)
+                continue;
             NativeRecordSnap s;
             if (!ReadRecordSnap(controller, static_cast<std::uint16_t>(i), s)
                 || s.developId == 0)
@@ -947,6 +961,39 @@ namespace
         return ok;
     }
 
+    static bool TryReadWideFieldByName(
+        lua_State* L,
+        int tableIndex,
+        const char* fieldName,
+        std::uint64_t& outValue)
+    {
+        outValue = 0;
+
+        const int absIndex = AbsIndex(L, tableIndex);
+
+        PushFieldKey(L, fieldName);
+        g_Deps.LuaGetTable(L, absIndex);
+
+        const bool ok = IsLuaNumber(L, -1);
+        if (ok)
+            outValue = GetLuaInt64(L, -1);
+
+        g_Deps.LuaSetTop(L, -2);
+        return ok;
+    }
+
+    static bool IsLangIdConstField(const char* name)
+    {
+        if (!name || name[0] != 'p' || name[1] == '\0' || name[2] == '\0'
+            || name[3] != '\0')
+            return false;
+        if (name[1] == '1' && name[2] >= '0' && name[2] <= '9')
+            return true;
+        if (name[1] == '2' && (name[2] == '0' || name[2] == '1'))
+            return true;
+        return false;
+    }
+
     static bool TryReadStringFieldByName(
         lua_State* L,
         int tableIndex,
@@ -1020,6 +1067,19 @@ namespace
         g_Deps.LuaSetTable(L, absIndex);
     }
 
+    static void SetWideField(lua_State* L, int tableIndex, const char* key,
+                             std::uint64_t value)
+    {
+        const int absIndex = AbsIndex(L, tableIndex);
+
+        PushFieldKey(L, key);
+        if (g_lua_pushnumber)
+            g_lua_pushnumber(L, static_cast<lua_Number>(value));
+        else
+            g_Deps.PushLuaNumber(L, static_cast<float>(value));
+        g_Deps.LuaSetTable(L, absIndex);
+    }
+
     static bool AreStockDevelopTablesReady_NoLock()
     {
         return g_ObservedAnyDevelopId && g_ObservedAnyFlowIndex;
@@ -1041,6 +1101,17 @@ namespace
         if (!FindFirstEmptyRecordIndex(controller, firstEmpty))
             return true;
         return firstEmpty >= kVanillaDevelopRowCount;
+    }
+
+    static void RequestRotationIfBandHasRoom()
+    {
+        void* controller = EquipDevelop_ResolveDevelopController();
+        if (!controller)
+            return;
+        std::uint16_t freeIdx = 0;
+        if (FindFirstEmptyRecordIndex(controller, freeIdx)
+            && freeIdx >= kVanillaDevelopRowCount)
+            g_RotateRequested.store(true, std::memory_order_release);
     }
 
     static void EnsureAllocatorSeeded_NoLock()
@@ -1097,15 +1168,22 @@ namespace
                 g_PendingRequests.begin(), g_PendingRequests.end(),
                 [&](const PendingDevelopRequest& r) { return r.key == key; }),
             g_PendingRequests.end());
+        g_AnyPendingReg.store(!g_PendingRequests.empty(),
+                              std::memory_order_relaxed);
 
         if (g_SwapInProgress.load(std::memory_order_relaxed))
             return;
         auto itReg = g_KeyRegistry.find(key);
-        if (itReg == g_KeyRegistry.end() || itReg->second.flowIndex == 0)
+        if (itReg == g_KeyRegistry.end())
             return;
         if (g_GradeByDevelopId.find(itReg->second.developId)
             != g_GradeByDevelopId.end())
             return;
+        if (itReg->second.flowIndex == 0)
+        {
+            V_FrameWorkState::ReleaseSessionFlowIndex(key.c_str());
+            return;
+        }
         const std::uint16_t idx = itReg->second.flowIndex;
         itReg->second.flowIndex = 0;
         if (static_cast<std::uint32_t>(idx) + 1 == g_NextFlowIndex)
@@ -1244,6 +1322,33 @@ namespace
         req.flowFields = flowFields;
         req.hasDynamicGate = hasDynamicGate;
         g_PendingRequests.push_back(std::move(req));
+        g_AnyPendingReg.store(true, std::memory_order_relaxed);
+    }
+
+    static void PublishSummaryDisplay(
+        std::uint16_t developId,
+        const std::vector<FieldValue>& constFields)
+    {
+        std::uint64_t nameHash = 0;
+        std::uint64_t iconHash = 0;
+        for (const FieldValue& f : constFields)
+        {
+            if (f.name == "p06")
+            {
+                if (f.type == FieldValue::Type::String)
+                    nameHash = FoxHashes::StrCode64(f.stringValue);
+                else if (f.type == FieldValue::Type::Number)
+                    nameHash = static_cast<std::uint64_t>(
+                        static_cast<std::uint32_t>(f.numberValue));
+            }
+            else if (f.name == "p08"
+                     && f.type == FieldValue::Type::String)
+            {
+                iconHash = FoxHashes::PathCode64Ext(f.stringValue);
+            }
+        }
+        if (nameHash != 0 || iconHash != 0)
+            outfit::SetOutfitSummaryDisplay(developId, nameHash, iconHash);
     }
 
     static void ObserveDevelopId(std::uint32_t developId)
@@ -1283,16 +1388,34 @@ namespace
         {
             const NamedFieldSpec& spec = specs[i];
 
-            std::int32_t numericValue = 0;
-            if (TryReadIntFieldByName(L, tableIndex, spec.canonicalName, numericValue) ||
-                (spec.aliasName && TryReadIntFieldByName(L, tableIndex, spec.aliasName, numericValue)))
+            if (IsLangIdConstField(spec.canonicalName))
             {
-                FieldValue value{};
-                value.name = spec.canonicalName;
-                value.type = FieldValue::Type::Number;
-                value.numberValue = numericValue;
-                outFields.push_back(value);
-                continue;
+                std::uint64_t wideValue = 0;
+                if (TryReadWideFieldByName(L, tableIndex, spec.canonicalName, wideValue) ||
+                    (spec.aliasName && TryReadWideFieldByName(L, tableIndex, spec.aliasName, wideValue)))
+                {
+                    FieldValue value{};
+                    value.name = spec.canonicalName;
+                    value.type = FieldValue::Type::Number;
+                    value.wide = true;
+                    value.wideValue = wideValue;
+                    outFields.push_back(value);
+                    continue;
+                }
+            }
+            else
+            {
+                std::int32_t numericValue = 0;
+                if (TryReadIntFieldByName(L, tableIndex, spec.canonicalName, numericValue) ||
+                    (spec.aliasName && TryReadIntFieldByName(L, tableIndex, spec.aliasName, numericValue)))
+                {
+                    FieldValue value{};
+                    value.name = spec.canonicalName;
+                    value.type = FieldValue::Type::Number;
+                    value.numberValue = numericValue;
+                    outFields.push_back(value);
+                    continue;
+                }
             }
 
             std::string stringValue;
@@ -1438,7 +1561,9 @@ namespace
 
         for (const FieldValue& field : fields)
         {
-            if (field.type == FieldValue::Type::Number)
+            if (field.wide)
+                SetWideField(L, tableIndex, field.name.c_str(), field.wideValue);
+            else if (field.type == FieldValue::Type::Number)
                 SetIntField(L, tableIndex, field.name.c_str(), field.numberValue);
             else if (field.type == FieldValue::Type::String)
                 SetStringField(L, tableIndex, field.name.c_str(), field.stringValue);
@@ -1466,6 +1591,11 @@ namespace
 
     static bool FindFirstEmptyRecordIndex(void* controller,
                                           std::uint16_t& outIndex);
+    static bool ReadRecordDevelopId(void* controller, std::uint16_t flowIndex,
+                                    std::uint16_t& outDevelopId);
+    static bool FindRecordIndexByDevelopId(void* controller,
+                                           std::uint16_t developId,
+                                           std::uint16_t& outIndex);
 
     static bool ShouldLogPark(const std::string& key)
     {
@@ -1497,7 +1627,16 @@ namespace
             return false;
         }
         if (appendIdx < kVanillaDevelopRowCount)
+        {
+            static std::atomic<std::uint32_t> s_HoleLogged{ 0xFFFFFFFFu };
+            if (s_HoleLogged.exchange(appendIdx,
+                                      std::memory_order_relaxed) != appendIdx)
+                Log("[EquipDevelop] inject held: first empty develop row %u "
+                    "is inside the vanilla band (native table still "
+                    "populating) - pending registrations retry on later "
+                    "passes\n", appendIdx);
             return false;
+        }
 
         std::int32_t devType = 0;
         std::uint32_t baseDevelopId = 0;
@@ -1809,6 +1948,7 @@ namespace
         for (const FieldValue& f : req.flowFields)
             if (f.type == FieldValue::Type::Number && f.name == "p62")
                 defaultDeveloped = (f.numberValue != 0);
+        EquipDevelop_SetDevelopInitiallyAvailable(developId, defaultDeveloped);
 
         const bool developed =
             V_FrameWorkState::ResolveDevelopedFlag(req.key.c_str(), defaultDeveloped);
@@ -1837,6 +1977,34 @@ namespace
 
         g_OrigRegFlwDev(L);
         ObserveFlowIndex(flowIndex);
+
+        {
+            std::uint16_t landedDev = 0;
+            if (ReadRecordDevelopId(recController, flowIndex, landedDev)
+                && landedDev != developId)
+            {
+                std::uint16_t actualIdx = 0;
+                if (FindRecordIndexByDevelopId(recController, developId,
+                                               actualIdx))
+                {
+                    Log("[EquipDevelop] WARN key=%s: develop record landed at "
+                        "row %u instead of the bookkept row %u - bookkeeping "
+                        "resynced to the real row\n",
+                        req.key.c_str(), actualIdx, flowIndex);
+                    flowIndex = actualIdx;
+                }
+                else
+                {
+                    Log("[EquipDevelop] WARN key=%s: develop record not found "
+                        "after registration (row %u holds developId %u) - the "
+                        "native register landed it on the reserved sentinel "
+                        "row; the key stays pending and retries later\n",
+                        req.key.c_str(), flowIndex, landedDev);
+                    g_Deps.LuaSetTop(L, 0);
+                    return false;
+                }
+            }
+        }
 
         if (developed)
             outfit::MarkDeveloped(flowIndex);
@@ -1899,6 +2067,8 @@ namespace
         if (!InjectDevelopPairWithIds(L, req, developId, flowIndex))
             return false;
 
+        outfit::SetOutfitFlowIndexByDevelopId(developId, flowIndex);
+
         if (outDevelopId)
             *outDevelopId = developId;
         if (outFlowIndex)
@@ -1920,7 +2090,17 @@ namespace
                 return;
 
             if (!CanInjectRowsNow_NoLock())
+            {
+                static std::atomic<bool> s_StallLogged{ false };
+                if (!g_PendingRequests.empty()
+                    && !s_StallLogged.exchange(true,
+                                               std::memory_order_relaxed))
+                    Log("[EquipDevelop] %zu pending develop registration(s) "
+                        "held: rows cannot be injected yet (native table "
+                        "still populating or no room below the custom "
+                        "band)\n", g_PendingRequests.size());
                 return;
+            }
 
             if (g_PendingRequests.empty())
                 return;
@@ -1958,6 +2138,7 @@ namespace
                 completedKeys.push_back(req.key);
         }
 
+        std::size_t leftover = 0;
         {
             std::lock_guard<std::recursive_mutex> lock(g_StateMutex);
 
@@ -1977,7 +2158,29 @@ namespace
                     g_PendingRequests.end());
             }
 
+            leftover = g_PendingRequests.size();
+            g_AnyPendingReg.store(leftover != 0, std::memory_order_relaxed);
             g_IsFlushingPending = false;
+        }
+
+        static std::atomic<std::size_t> s_LeftoverLogged{ 0 };
+        if (leftover == 0)
+        {
+            s_LeftoverLogged.store(0, std::memory_order_relaxed);
+        }
+        else if (s_LeftoverLogged.exchange(leftover,
+                                           std::memory_order_relaxed)
+                 != leftover)
+        {
+            std::uint16_t firstEmpty = 0xFFFF;
+            void* controller = EquipDevelop_ResolveDevelopController();
+            if (!controller
+                || !FindFirstEmptyRecordIndex(controller, firstEmpty))
+                firstEmpty = 0xFFFF;
+            Log("[EquipDevelop] %zu develop registration(s) still pending "
+                "after a flush pass (first empty row %u; 0xFFFF = none) - "
+                "they retry on later registrations and menu opens\n",
+                leftover, firstEmpty);
         }
     }
 
@@ -2014,6 +2217,7 @@ namespace
 
         if (g_OrigRegCstDev)
             g_OrigRegCstDev(L);
+        equip::InvalidateDevelopLookupIndex();
 
         FlushPendingRegistrations(L);
     }
@@ -2065,6 +2269,7 @@ namespace
 
         if (g_OrigRegFlwDev)
             g_OrigRegFlwDev(L);
+        equip::InvalidateDevelopLookupIndex();
 
         FlushPendingRegistrations(L);
     }
@@ -2080,6 +2285,7 @@ namespace
                 + static_cast<std::size_t>(flowIndex) * kDevelopRecordStride;
             for (std::size_t i = 0; i < kDevelopRecordStride; ++i)
                 rec[i] = 0;
+            equip::InvalidateDevelopLookupIndex();
             return true;
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
@@ -2106,13 +2312,13 @@ namespace
         }
     }
 
-    constexpr std::uint32_t kDevelopRecordSlotCount = 0x400;
-
     static bool FindFirstEmptyRecordIndex(void* controller,
                                           std::uint16_t& outIndex)
     {
-        for (std::uint32_t i = 0; i < kDevelopRecordSlotCount; ++i)
+        for (std::uint32_t i = 0; i < equip::NativeFlowBound(); ++i)
         {
+            if (i == equip::kFlowSentinel)
+                continue;
             std::uint16_t dev = 0;
             if (!ReadRecordDevelopId(controller,
                                      static_cast<std::uint16_t>(i), dev))
@@ -2132,8 +2338,10 @@ namespace
     {
         if (developId == 0)
             return false;
-        for (std::uint32_t i = 0; i < kDevelopRecordSlotCount; ++i)
+        for (std::uint32_t i = 0; i < equip::NativeFlowBound(); ++i)
         {
+            if (i == equip::kFlowSentinel)
+                continue;
             std::uint16_t dev = 0;
             if (!ReadRecordDevelopId(controller,
                                      static_cast<std::uint16_t>(i), dev))
@@ -2215,6 +2423,10 @@ namespace EquipDevelopAdd
                 g_ParkedKeys.insert(key);
                 g_AnyParkedKeys.store(true, std::memory_order_relaxed);
             }
+            V_FrameWorkState::ReleaseSessionFlowIndex(key.c_str());
+            RequestRotationIfBandHasRoom();
+            PublishSummaryDisplay(
+                static_cast<std::uint16_t>(dev32), constFields);
             if (g_MenuCapRefusalLogged.insert(key).second)
                 Log("[EquipDevelop] PARKED key=%s (developId %d): no free "
                     "develop record slot right now - it will page into the "
@@ -2243,6 +2455,7 @@ namespace EquipDevelopAdd
 
         QueueOrUpdatePendingRequest(key, constFields, flowFields, hasDynamicGate);
 
+        PublishSummaryDisplay(developId, constFields);
 
         FlushPendingRegistrations(L);
 
@@ -2428,6 +2641,7 @@ namespace EquipDevelopAdd
                 g_ParkedKeys.insert(inKey);
                 g_AnyParkedKeys.store(true, std::memory_order_relaxed);
             }
+            V_FrameWorkState::ReleaseSessionFlowIndex(inKey.c_str());
             bool rolledBack = false;
             if (haveOutReq && ZeroDevelopRecord(controller, outIdx))
             {
@@ -2523,8 +2737,11 @@ namespace EquipDevelopAdd
         std::uint16_t idx = freeIdx;
         if (!InjectDevelopPairWithIds(L, inReq, inDev, idx))
         {
-            std::lock_guard<std::recursive_mutex> lock(g_StateMutex);
-            g_ParkedDevelopIds.insert(inDev);
+            {
+                std::lock_guard<std::recursive_mutex> lock(g_StateMutex);
+                g_ParkedDevelopIds.insert(inDev);
+            }
+            V_FrameWorkState::ReleaseSessionFlowIndex(inKey.c_str());
             return false;
         }
 
@@ -2643,6 +2860,7 @@ namespace EquipDevelopAdd
                     std::string key;
                     std::uint32_t root = 0;
                     int side = 0, grade = 0;
+                    int devType = 0;
                     bool developed = false;
                     std::uint64_t outStamp = 0;
                 };
@@ -2650,7 +2868,9 @@ namespace EquipDevelopAdd
                 for (const std::string& k : std::vector<std::string>(
                          g_ParkedKeys.begin(), g_ParkedKeys.end()))
                 {
-                    if (g_RotateFailedOnce.count(k))
+                    auto itFail = g_RotateFailCount.find(k);
+                    if (itFail != g_RotateFailCount.end()
+                        && itFail->second >= kMaxRotateFailsPerKey)
                         continue;
                     if (rotatedOut.count(k))
                         continue;
@@ -2668,6 +2888,7 @@ namespace EquipDevelopAdd
                         itReq->second, reqByDev, itDev->second);
                     c.side  = RequestFlowNumber(itReq->second, "p51");
                     c.grade = RequestFlowNumber(itReq->second, "p52");
+                    c.devType = RequestConstNumber(itReq->second, "p02");
                     c.developed = V_FrameWorkState::GetDevelopedByDevelopId(
                         static_cast<std::int32_t>(itDev->second));
                     auto itOut = g_PageOutStamp.find(k);
@@ -2677,10 +2898,24 @@ namespace EquipDevelopAdd
                 }
                 if (ready.empty())
                     break;
+                const int tabHint =
+                    g_RotateTabHint.load(std::memory_order_relaxed);
+                if (tabHint >= 0)
+                {
+                    bool anyHint = false;
+                    for (const InCand& c : ready)
+                        if (c.devType == tabHint) { anyHint = true; break; }
+                    if (anyHint)
+                        ready.erase(
+                            std::remove_if(ready.begin(), ready.end(),
+                                [&](const InCand& c)
+                                { return c.devType != tabHint; }),
+                            ready.end());
+                }
                 std::sort(ready.begin(), ready.end(),
                     [](const InCand& a, const InCand& b)
                     {
-                        if (a.developed != b.developed) return a.developed;
+                        if (a.developed != b.developed) return !a.developed;
                         if (a.outStamp != b.outStamp) return a.outStamp < b.outStamp;
                         if (a.root  != b.root)  return a.root  < b.root;
                         if (a.side  != b.side)  return a.side  < b.side;
@@ -2724,7 +2959,7 @@ namespace EquipDevelopAdd
                 {
                     std::lock_guard<std::recursive_mutex> lock(g_StateMutex);
                     g_PageInStamp[inKey] = ++g_PageStampCounter;
-                    g_RotateFailedOnce.clear();
+                    g_RotateFailCount.erase(inKey);
                 }
                 ++swapped;
                 continue;
@@ -2753,10 +2988,19 @@ namespace EquipDevelopAdd
                     std::string key;
                     int side = 0, grade = 0;
                     bool pinned = false;
+                    bool developed = false;
                     int devType = 0;
                     std::uint64_t rowKey = 0;
                     std::uint64_t inStamp = 0;
                 };
+                std::unordered_set<std::uint32_t> wornDevs;
+                for (std::size_t s = 0; s < outfit::shadow::kMaxSlots; ++s)
+                {
+                    outfit::shadow::Slot sh;
+                    if (outfit::shadow::Get(s, &sh) && sh.developId != 0)
+                        wornDevs.insert(sh.developId);
+                }
+
                 std::unordered_map<std::uint64_t, int> rowOccupancy;
                 std::vector<std::pair<std::uint32_t, OutCand>> residents;
                 for (const auto& kv : g_KeyRegistry)
@@ -2780,11 +3024,12 @@ namespace EquipDevelopAdd
                     c.side  = (itS != g_SideByDevelopId.end()) ? itS->second : 0;
                     c.devType = RequestConstNumber(itReq->second, "p02");
                     c.pinned =
-                        V_FrameWorkState::GetDevelopedByDevelopId(
-                            static_cast<std::int32_t>(dev))
-                        || EquipDevelop_IsDevelopTimerActive(
-                               kv.second.flowIndex)
-                        || HasResidentChildren_NoLock(dev);
+                        EquipDevelop_IsDevelopTimerActive(
+                            kv.second.flowIndex)
+                        || HasResidentChildren_NoLock(dev)
+                        || wornDevs.count(dev) != 0;
+                    c.developed = V_FrameWorkState::GetDevelopedByDevelopId(
+                        static_cast<std::int32_t>(dev));
                     const std::uint32_t root = FamilyRootForRequest_NoLock(
                         itReq->second, reqByDev, dev);
                     c.rowKey = (static_cast<std::uint64_t>(root) << 8)
@@ -2834,7 +3079,7 @@ namespace EquipDevelopAdd
                             | static_cast<std::uint64_t>(s.side & 0xFF));
                     }
                 }
-                std::vector<std::pair<std::uint32_t, const OutCand*>> pools[8];
+                std::vector<std::pair<std::uint32_t, const OutCand*>> pools[16];
                 for (const auto& kv : tipByRoot)
                 {
                     if (kv.second.pinned || kv.first == stickyInRoot)
@@ -2846,7 +3091,8 @@ namespace EquipDevelopAdd
                     const bool prot = readyRoots.count(kv.first) != 0;
                     const bool sameTab = (kv.second.devType == inType);
                     const int poolIdx =
-                        (sameTab ? 0 : 4)
+                        (sameTab ? 0 : 8)
+                        + (kv.second.developed ? 0 : 4)
                         + ((freesRow && !prot) ? 0
                            : (!prot)           ? 1
                            : (freesRow)        ? 2
@@ -2855,7 +3101,7 @@ namespace EquipDevelopAdd
                 }
                 std::vector<std::pair<std::uint32_t, const OutCand*>>* pool =
                     nullptr;
-                const int poolLimit = bandFull ? 8 : 4;
+                const int poolLimit = bandFull ? 16 : 4;
                 for (int p = 0; p < poolLimit; ++p)
                     if (!pools[p].empty()) { pool = &pools[p]; break; }
                 if (pool)
@@ -2865,7 +3111,7 @@ namespace EquipDevelopAdd
                         {
                             if (a.second->inStamp != b.second->inStamp)
                                 return a.second->inStamp < b.second->inStamp;
-                            return a.first < b.first;
+                            return a.first > b.first;
                         });
                     outKey =
                         (*pool)[g_RotateOutCursor++ % pool->size()].second->key;
@@ -2873,16 +3119,12 @@ namespace EquipDevelopAdd
                 }
             }
             if (!haveOut)
-            {
-                std::lock_guard<std::recursive_mutex> lock(g_StateMutex);
-                g_RotateFailedOnce.insert(inKey);
-                continue;
-            }
+                break;
 
             if (!SwapDevelopRowCore(L, outKey, inKey))
             {
                 std::lock_guard<std::recursive_mutex> lock(g_StateMutex);
-                g_RotateFailedOnce.insert(inKey);
+                ++g_RotateFailCount[inKey];
                 continue;
             }
             rotatedIn.insert(inKey);
@@ -2891,7 +3133,7 @@ namespace EquipDevelopAdd
                 std::lock_guard<std::recursive_mutex> lock(g_StateMutex);
                 g_PageInStamp[inKey]   = ++g_PageStampCounter;
                 g_PageOutStamp[outKey] = ++g_PageStampCounter;
-                g_RotateFailedOnce.clear();
+                g_RotateFailCount.erase(inKey);
             }
             ++swapped;
         }
@@ -2915,8 +3157,10 @@ namespace EquipDevelopAdd
                 std::string map;
                 map.reserve(1200);
                 char buf[24];
-                for (std::uint32_t i = 922; i < 1024; ++i)
+                for (std::uint32_t i = 922; i < equip::NativeFlowBound(); ++i)
                 {
+                    if (i == equip::kFlowSentinel)
+                        continue;
                     std::uint16_t dev = 0;
                     if (!ReadRecordDevelopId(
                             controller, static_cast<std::uint16_t>(i), dev)
@@ -2928,20 +3172,17 @@ namespace EquipDevelopAdd
                 Log("[EquipDevelop] band after rotation: %s\n", map.c_str());
             }
         }
+        if (swapped && parkedLeft != 0)
+            RequestRotationIfBandHasRoom();
     }
 
-    void MaybeRotateDevelopWindow(std::uint16_t predicateIdx)
+    static void TryRunPendingRotation()
     {
-        if (!g_AnyParkedKeys.load(std::memory_order_relaxed))
+        if (!g_RotateRequested.load(std::memory_order_acquire))
             return;
-        const DWORD now  = GetTickCount();
-        const DWORD last = g_LastVisPredicateTick;
-        g_LastVisPredicateTick = now;
         if (g_RotationInProgress.load(std::memory_order_relaxed))
             return;
-        if (predicateIdx > 1)
-            return;
-        if (last != 0 && (now - last) < kMenuOpenGapMs)
+        if (g_MenuFillDepth.load(std::memory_order_relaxed) != 0)
             return;
         const unsigned long luaTid = V_FrameWork_LuaOwnerThreadId();
         if (luaTid == 0 || GetCurrentThreadId() != luaTid)
@@ -2951,9 +3192,74 @@ namespace EquipDevelopAdd
         lua_State* L = V_FrameWork_AnyLuaState();
         if (!L || !EnsureLuaReady())
             return;
+        g_RotateRequested.store(false, std::memory_order_relaxed);
         g_RotationInProgress.store(true, std::memory_order_relaxed);
         RotateDevelopWindow(L);
         g_RotationInProgress.store(false, std::memory_order_relaxed);
+    }
+
+    void MaybeRotateDevelopWindow(std::uint16_t predicateIdx)
+    {
+        if (!g_AnyParkedKeys.load(std::memory_order_relaxed))
+            return;
+        if (predicateIdx > 1)
+            return;
+        const DWORD now  = GetTickCount();
+        const DWORD last = g_LastVisPredicateTick;
+        g_LastVisPredicateTick = now;
+        if (last != 0 && (now - last) < kMenuOpenGapMs)
+            return;
+        g_RotateRequested.store(true, std::memory_order_release);
+        const unsigned long luaTid = V_FrameWork_LuaOwnerThreadId();
+        if (luaTid != 0 && GetCurrentThreadId() != luaTid
+            && !g_RotateDeferLogged.exchange(true))
+            Log("[EquipDevelop] develop-window rotation requested off the Lua "
+                "thread (menu-build tid %lu, Lua owner %lu) - deferred to the "
+                "game-thread pump.\n",
+                GetCurrentThreadId(), luaTid);
+        TryRunPendingRotation();
+    }
+
+    void NoteMenuTabHint(int typeId)
+    {
+        g_RotateTabHint.store(typeId, std::memory_order_relaxed);
+    }
+
+    void NoteMenuFillEnter()
+    {
+        g_MenuFillDepth.fetch_add(1, std::memory_order_acquire);
+    }
+
+    void NoteMenuFillLeave()
+    {
+        g_MenuFillDepth.fetch_sub(1, std::memory_order_release);
+    }
+
+    void PumpDevelopMenuWork()
+    {
+        equip::SyncDevelopFlagsWithSave();
+        if (g_RotateRequested.load(std::memory_order_relaxed))
+            TryRunPendingRotation();
+        if (g_GateRefreshRequested.load(std::memory_order_relaxed))
+            MaybeRefreshDynamicGates();
+        if (g_AnyPendingReg.load(std::memory_order_relaxed))
+        {
+            static DWORD s_LastPumpFlushTick = 0;
+            const DWORD now = GetTickCount();
+            if (now - s_LastPumpFlushTick >= 2000)
+            {
+                s_LastPumpFlushTick = now;
+                if (g_MenuFillDepth.load(std::memory_order_relaxed) == 0
+                    && ResolveLuaApi())
+                {
+                    const unsigned long luaTid = V_FrameWork_LuaOwnerThreadId();
+                    lua_State* L = V_FrameWork_AnyLuaState();
+                    if (luaTid != 0 && GetCurrentThreadId() == luaTid
+                        && L && EnsureLuaReady())
+                        FlushPendingRegistrations(L);
+                }
+            }
+        }
     }
 
     bool TryGetFlowIndexForDevelopId(std::uint16_t developId, std::uint16_t& outFlowIndex)
@@ -2990,11 +3296,15 @@ namespace EquipDevelopAdd
             return;
         const unsigned long luaTid = V_FrameWork_LuaOwnerThreadId();
         if (luaTid == 0 || GetCurrentThreadId() != luaTid)
+        {
+            g_GateRefreshRequested.store(true, std::memory_order_release);
             return;
+        }
         const DWORD now = GetTickCount();
         if (now - g_LastGateRefreshTick < kGateRefreshThrottleMs)
             return;
         g_LastGateRefreshTick = now;
+        g_GateRefreshRequested.store(false, std::memory_order_relaxed);
         RefreshDynamicGatesImpl();
     }
 

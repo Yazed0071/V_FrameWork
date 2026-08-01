@@ -2,10 +2,13 @@
 #include "EquipDevelop_SetEquipUndeveloped.h"
 
 #include <Windows.h>
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -14,6 +17,7 @@
 #include "log.h"
 #include "LuaApi.h"
 #include "V_FrameWorkState.h"
+#include "DevelopArrayGrow.h"
 #include "EquipDevelop_AddToEquipDevelopTable.h"
 #include "../outfit/EquipDevelopControllerImpl_GetSuitDevelopInfoIndex.h"
 
@@ -36,7 +40,7 @@ namespace
 
     constexpr std::uint16_t kInvalidDevelopIndex = 0x400;
 
-    constexpr std::size_t kDevelopedBitsOffset = 0x1e008;
+#define kDevelopedBitsOffset (equip::DevFlagsPtrOffsetBase20())
     constexpr std::uint8_t kNewBitUndeveloped = 0x2;
     constexpr std::uint8_t kNewBitDeveloped   = 0x8;
     constexpr std::uint8_t kAllNewBits        = kNewBitUndeveloped | kNewBitDeveloped;
@@ -50,9 +54,11 @@ namespace
     static SetEquipDeveloped_t   g_OrigSetEquipDeveloped   = nullptr;
     static SetEquipUndeveloped_t g_OrigSetEquipUndeveloped = nullptr;
     static bool g_DevelopSyncArmed = false;
+    static std::atomic<bool> g_RestorePending{ false };
 
     std::mutex                                       g_DevelopParentMutex;
     std::unordered_map<std::uint32_t, std::uint32_t> g_DevelopParent;
+    std::unordered_set<std::uint32_t>                g_InitiallyAvailable;
 
     static GetEquipDevelopIndex_t NativeGetIndex()
     {
@@ -240,7 +246,9 @@ namespace
 
     static void SyncFlagFromNativeDevelop(void* controller, std::uint16_t index, bool developed)
     {
-        if (!controller || index >= kInvalidDevelopIndex)
+        if (!controller || !equip::IsValidFlowIndex(index))
+            return;
+        if (!EquipDevelopAdd::IsManagedFlowIndex(index))
             return;
         auto getIndex = NativeGetIndex();
         if (!getIndex)
@@ -258,6 +266,13 @@ namespace
                 return;
             }
         }
+
+        if (EquipDevelopAdd::IsManagedFlowIndex(index))
+            Log("[EquipDevelop] flow index %u is one of ours but no managed "
+                "developId maps back to it - the %s is NOT written to the state "
+                "file and the row will read back undeveloped after a reload\n",
+                static_cast<unsigned>(index),
+                developed ? "develop" : "undevelop");
     }
 
     static bool IsDevelopIdDeveloped(void* controller, GetEquipDevelopIndex_t getIndex,
@@ -272,7 +287,7 @@ namespace
         __try
         {
             const std::uint16_t index = getIndex(controller, developId);
-            if (index >= kInvalidDevelopIndex)
+            if (!equip::IsValidFlowIndex(index))
                 return false;
             std::uint8_t* bits = *reinterpret_cast<std::uint8_t**>(
                 reinterpret_cast<std::uint8_t*>(controller) + kDevelopedBitsOffset);
@@ -292,7 +307,7 @@ namespace
         __try
         {
             const std::uint16_t childIndex = getIndex(controller, childDevelopId);
-            if (childIndex < kInvalidDevelopIndex)
+            if (equip::IsValidFlowIndex(childIndex))
                 setEnable(controller, childIndex, enable);
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
@@ -337,7 +352,7 @@ namespace
 
     static std::int32_t ManagedDevelopIdAtIndex(void* controller, std::uint16_t index)
     {
-        if (!controller || index >= kInvalidDevelopIndex)
+        if (!controller || !equip::IsValidFlowIndex(index))
             return 0;
         auto getIndex = NativeGetIndex();
         if (!getIndex)
@@ -374,30 +389,21 @@ namespace
 
     static void __fastcall hkSetEquipDeveloped(void* controller, std::uint16_t index)
     {
-        if (g_DevelopSyncArmed && IsManagedDevelopReplay(controller, index))
+        if (EquipDevelop_ShouldSuppressNativeDevelop(controller, index))
             return;
         if (g_OrigSetEquipDeveloped)
             g_OrigSetEquipDeveloped(controller, index);
-        if (g_DevelopSyncArmed)
-        {
-            SyncFlagFromNativeDevelop(controller, index, true);
-            SyncDevelopPrereqGates(controller, NativeGetIndex());
-            AnnounceNewlyDevelopable(controller, NativeGetIndex());
-        }
+        EquipDevelop_NotifyNativeDevelopChanged(controller, index, true);
     }
 
     static void __fastcall hkSetEquipUndeveloped(void* controller, std::uint16_t index, char notify)
     {
         if (g_OrigSetEquipUndeveloped)
             g_OrigSetEquipUndeveloped(controller, index, notify);
-        if (g_DevelopSyncArmed)
-        {
-            SyncFlagFromNativeDevelop(controller, index, false);
-            SyncDevelopPrereqGates(controller, NativeGetIndex());
-        }
+        EquipDevelop_NotifyNativeDevelopChanged(controller, index, false);
     }
 
-    static void* ResolveController()
+    static void* ResolveControllerRaw()
     {
         auto getQuark = reinterpret_cast<GetQuarkSystemTable_t>(
             ResolveGameAddress(gAddr.GetQuarkSystemTable));
@@ -422,6 +428,13 @@ namespace
         }
     }
 
+    static void* ResolveController()
+    {
+        void* controller = ResolveControllerRaw();
+        equip::EnsureDevelopBlockArmed(controller);
+        return controller;
+    }
+
     static bool CallNativeUndevelop(void* controller, std::uint32_t developId,
                                     std::uint16_t& outIndex)
     {
@@ -439,7 +452,7 @@ namespace
         {
             const std::uint16_t index = getIndex(controller, developId);
             outIndex = index;
-            if (index >= kInvalidDevelopIndex)
+            if (!equip::IsValidFlowIndex(index))
                 return false;
 
             setUndeveloped(controller, index, 1);
@@ -458,25 +471,16 @@ namespace
         if (!getIndex)
             return false;
 
-        __try
-        {
-            const std::uint16_t index = getIndex(controller, developId);
-            if (index >= kInvalidDevelopIndex)
-                return false;
-            std::uint8_t* bits = *reinterpret_cast<std::uint8_t**>(
-                reinterpret_cast<std::uint8_t*>(controller) + kDevelopedBitsOffset);
-            if (!bits)
-                return false;
-            if (developed)
-                bits[index] |= 1u;
-            else
-                bits[index] &= static_cast<std::uint8_t>(~1u);
-            return true;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
+        const std::uint16_t index = SafeGetIndex(getIndex, controller, developId);
+        if (!equip::IsValidFlowIndex(index))
             return false;
-        }
+        std::uint8_t b = 0;
+        if (!equip::DevFlagsTryReadByte(controller, index, b))
+            return false;
+        b = developed ? static_cast<std::uint8_t>(b | 1u)
+                      : static_cast<std::uint8_t>(b & ~1u);
+        equip::DevFlagsWriteByte(controller, index, b);
+        return true;
     }
 
     static bool PokeNewBit(void* controller, GetEquipDevelopIndex_t getIndex,
@@ -484,39 +488,32 @@ namespace
     {
         if (!getIndex)
             return false;
-        __try
-        {
-            const std::uint16_t index = getIndex(controller, developId);
-            if (index >= kInvalidDevelopIndex)
-                return false;
-            std::uint8_t* bits = *reinterpret_cast<std::uint8_t**>(
-                reinterpret_cast<std::uint8_t*>(controller) + kDevelopedBitsOffset);
-            if (!bits)
-                return false;
-            if (isNew)
-            {
-                const std::uint8_t show  = developed ? kNewBitDeveloped : kNewBitUndeveloped;
-                const std::uint8_t other = developed ? kNewBitUndeveloped : kNewBitDeveloped;
-                bits[index] |= show;
-                bits[index] &= static_cast<std::uint8_t>(~other);
-            }
-            else
-            {
-                bits[index] &= static_cast<std::uint8_t>(~kAllNewBits);
-            }
-            return true;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
+        const std::uint16_t index = SafeGetIndex(getIndex, controller, developId);
+        if (!equip::IsValidFlowIndex(index))
             return false;
+        std::uint8_t b = 0;
+        if (!equip::DevFlagsTryReadByte(controller, index, b))
+            return false;
+        if (isNew)
+        {
+            const std::uint8_t show  = developed ? kNewBitDeveloped : kNewBitUndeveloped;
+            const std::uint8_t other = developed ? kNewBitUndeveloped : kNewBitDeveloped;
+            b |= show;
+            b &= static_cast<std::uint8_t>(~other);
         }
+        else
+        {
+            b &= static_cast<std::uint8_t>(~kAllNewBits);
+        }
+        equip::DevFlagsWriteByte(controller, index, b);
+        return true;
     }
 
     using IsEquipDevelopable_t = std::uint8_t (__fastcall*)(void* controller, std::uint16_t index);
 
     static bool IsDevelopRequirementsMet(void* controller, std::uint16_t index)
     {
-        if (!controller || index >= kInvalidDevelopIndex)
+        if (!controller || !equip::IsValidFlowIndex(index))
             return false;
         auto fn = reinterpret_cast<IsEquipDevelopable_t>(
             ResolveGameAddress(gAddr.EquipDevCtrl_IsEquipDevelopable));
@@ -542,11 +539,29 @@ namespace
                     candidates.push_back(developId);
             });
 
+        candidates.erase(
+            std::remove_if(candidates.begin(), candidates.end(),
+                [](std::int32_t developId)
+                {
+                    return V_FrameWorkState::GetDevReqAnnouncedByDevelopId(developId);
+                }),
+            candidates.end());
+
         for (std::int32_t developId : candidates)
         {
+            {
+                std::lock_guard<std::mutex> lock(g_DevelopParentMutex);
+                if (g_InitiallyAvailable.count(
+                        static_cast<std::uint32_t>(developId)) != 0)
+                {
+                    V_FrameWorkState::SetDevReqAnnouncedByDevelopId(developId, true);
+                    continue;
+                }
+            }
+
             const std::uint16_t index =
                 SafeGetIndex(getIndex, controller, static_cast<std::uint32_t>(developId));
-            if (index >= kInvalidDevelopIndex)
+            if (!equip::IsValidFlowIndex(index))
                 continue;
             if (outfit::IsDevelopHidden(index))
                 continue;
@@ -564,6 +579,7 @@ namespace
                 continue;
 
             FireDevRequirementsMet(hudCdm, developId);
+            V_FrameWorkState::SetDevReqAnnouncedByDevelopId(developId, true);
             V_FrameWorkState::SetNewByDevelopId(developId, false);
         }
     }
@@ -579,43 +595,44 @@ namespace
     {
         *outIndex = 0xFFFF;
         *outBitBefore = -1;
-        __try
+
+        const std::uint16_t index = SafeGetIndex(getIndex, controller, developId);
+        *outIndex = index;
+        if (!equip::IsValidFlowIndex(index))
+            return 0;
+        std::uint8_t b = 0;
+        if (!equip::DevFlagsTryReadByte(controller, index, b))
+            return 0;
+        const int bit = (b & 1u) ? 1 : 0;
+        *outBitBefore = bit;
+
+        if (wantDeveloped)
         {
-            const std::uint16_t index = getIndex(controller, developId);
-            *outIndex = index;
-            if (index >= kInvalidDevelopIndex)
-                return 0;
-            std::uint8_t* bits = *reinterpret_cast<std::uint8_t**>(
-                reinterpret_cast<std::uint8_t*>(controller) + kDevelopedBitsOffset);
-            if (!bits)
-                return 0;
-            const int bit = (bits[index] & 1u) ? 1 : 0;
-            *outBitBefore = bit;
-
-            if (wantDeveloped)
+            if (bit == 0)
             {
-                if (bit == 0)
-                {
-                    bits[index] |= 1u;
-                    return 3;
-                }
-                return 1;
-            }
-
-            if (bit == 1)
-            {
-                if (setUndeveloped)
-                    setUndeveloped(controller, index,  1);
-                else
-                    bits[index] &= static_cast<std::uint8_t>(~1u);
-                return 2;
+                equip::DevFlagsWriteByte(controller, index,
+                                         static_cast<std::uint8_t>(b | 1u));
+                return 3;
             }
             return 1;
         }
-        __except (EXCEPTION_EXECUTE_HANDLER)
+
+        if (bit == 1)
         {
-            return 0;
+            if (setUndeveloped)
+            {
+                __try { setUndeveloped(controller, index, 1); }
+                __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+            }
+            else
+            {
+                equip::DevFlagsWriteByte(
+                    controller, index,
+                    static_cast<std::uint8_t>(b & ~1u));
+            }
+            return 2;
         }
+        return 1;
     }
 }
 
@@ -640,7 +657,7 @@ bool EquipDevelop_UndevelopByDevelopId(std::uint32_t developId)
 
     std::uint16_t index = kInvalidDevelopIndex;
     const bool ok = CallNativeUndevelop(controller, developId, index);
-    if (index >= kInvalidDevelopIndex)
+    if (!equip::IsValidFlowIndex(index))
         return false;
 
     if (!ok)
@@ -681,7 +698,7 @@ bool EquipDevelop_DevelopByDevelopId(std::uint32_t developId)
     __try
     {
         index = getIndex(controller, developId);
-        if (index < kInvalidDevelopIndex)
+        if (equip::IsValidFlowIndex(index))
         {
             setDeveloped(controller, index);
             ok = true;
@@ -692,7 +709,7 @@ bool EquipDevelop_DevelopByDevelopId(std::uint32_t developId)
         ok = false;
     }
 
-    if (index >= kInvalidDevelopIndex)
+    if (!equip::IsValidFlowIndex(index))
         return false;
 
     if (!ok)
@@ -752,7 +769,7 @@ namespace
                     continue;
                 const std::int32_t storedIndex = static_cast<std::int32_t>(raw) - 1;
                 if (storedIndex < kFirstCustomFlowIndex ||
-                    storedIndex >= static_cast<std::int32_t>(kInvalidDevelopIndex))
+                    !equip::IsValidFlowIndex(static_cast<std::uint32_t>(storedIndex)))
                     continue;
 
                 const std::int32_t developId =
@@ -764,7 +781,7 @@ namespace
 
                 const std::uint16_t currentIndex =
                     getIndex(controller, static_cast<std::uint32_t>(developId));
-                if (currentIndex >= kInvalidDevelopIndex)
+                if (!equip::IsValidFlowIndex(currentIndex))
                     continue;
                 if (static_cast<std::int32_t>(currentIndex) == storedIndex)
                     continue;
@@ -870,29 +887,62 @@ void EquipDevelop_DrainPendingUndevelops()
     ReconcileInFlightDevelopTimers(controller, getIndex);
 
 #ifdef _DEBUG
-    for (const auto& row : managed)
     {
-        const std::uint16_t idx = SafeGetIndex(getIndex, controller,
-            static_cast<std::uint32_t>(row.developId));
-        if (idx >= kInvalidDevelopIndex)
+        unsigned mapped = 0, parkedUndeveloped = 0;
+        unsigned parkedDeveloped = 0, fobFlagged = 0;
+        for (const auto& row : managed)
         {
-            if (row.developed)
-                Log("[FobDiag] developId=%d WARNING: DEVELOPED but holds no "
-                    "develop record - it should have claimed a slot before "
-                    "any undeveloped item.\n", row.developId);
-            else
-                Log("[FobDiag] developId=%d parked (undeveloped - no record "
-                    "needed; pages in on R&D open)\n", row.developId);
-            continue;
+            const std::uint16_t idx = SafeGetIndex(getIndex, controller,
+                static_cast<std::uint32_t>(row.developId));
+            if (!equip::IsValidFlowIndex(idx))
+            {
+                if (row.developed)
+                {
+                    ++parkedDeveloped;
+                    Log("[FobDiag] developId=%d parked (developed - windowed "
+                        "out of the R&D list; pages back in on its tab's R&D "
+                        "open)\n", row.developId);
+                }
+                else
+                {
+                    ++parkedUndeveloped;
+                }
+                continue;
+            }
+            ++mapped;
+            const std::uint8_t fobByte =
+                SafeReadDevRecordByte(controller, idx, 0x58);
+            if ((fobByte >> 7) & 1)
+            {
+                ++fobFlagged;
+                Log("[FobDiag] developId=%d index=%u recByte58=0x%02X fobBit7=1 "
+                    "- this row carries the FOB/online develop bit\n",
+                    row.developId, static_cast<unsigned>(idx),
+                    static_cast<unsigned>(fobByte));
+            }
         }
-        const std::uint8_t fobByte = SafeReadDevRecordByte(controller, idx, 0x58);
-        Log("[FobDiag] developId=%d index=%u recByte58=0x%02X fobBit7=%d\n",
-            row.developId, static_cast<unsigned>(idx),
-            static_cast<unsigned>(fobByte), (fobByte >> 7) & 1);
+        if (fobFlagged || parkedDeveloped)
+            Log("[FobDiag] develop sync: %u mapped, %u parked-undeveloped, "
+                "%u parked-developed, %u carrying the FOB bit\n",
+                mapped, parkedUndeveloped, parkedDeveloped, fobFlagged);
     }
 #endif
 
     g_DevelopSyncArmed = true;
+}
+
+void EquipDevelop_RequestDevelopRestore()
+{
+    g_RestorePending.store(true, std::memory_order_relaxed);
+}
+
+void EquipDevelop_DrainIfRestorePending()
+{
+    bool expected = true;
+    if (!g_RestorePending.compare_exchange_strong(expected, false,
+                                                  std::memory_order_relaxed))
+        return;
+    EquipDevelop_DrainPendingUndevelops();
 }
 
 void EquipDevelop_SetDevelopParent(std::uint32_t developId, std::uint32_t baseDevelopId)
@@ -906,8 +956,39 @@ void EquipDevelop_SetDevelopParent(std::uint32_t developId, std::uint32_t baseDe
         g_DevelopParent[developId] = baseDevelopId;
 }
 
+void EquipDevelop_SetDevelopInitiallyAvailable(std::uint32_t developId,
+                                               bool initiallyAvailable)
+{
+    if (developId == 0)
+        return;
+    std::lock_guard<std::mutex> lock(g_DevelopParentMutex);
+    if (initiallyAvailable)
+        g_InitiallyAvailable.insert(developId);
+    else
+        g_InitiallyAvailable.erase(developId);
+}
+
+bool EquipDevelop_ShouldSuppressNativeDevelop(void* controller, std::uint16_t index)
+{
+    return g_DevelopSyncArmed && IsManagedDevelopReplay(controller, index);
+}
+
+void EquipDevelop_NotifyNativeDevelopChanged(void* controller, std::uint16_t index,
+                                             bool developed)
+{
+    if (!g_DevelopSyncArmed)
+        return;
+    SyncFlagFromNativeDevelop(controller, index, developed);
+    SyncDevelopPrereqGates(controller, NativeGetIndex());
+    if (developed)
+        AnnounceNewlyDevelopable(controller, NativeGetIndex());
+}
+
 void EquipDevelop_InstallDevelopSyncHooks()
 {
+    if (equip::DevelopArrayGrowActive())
+        return;
+
     void* dev   = ResolveGameAddress(gAddr.EquipDevelopCtrl_SetEquipDeveloped);
     void* undev = ResolveGameAddress(gAddr.EquipDevelopCtrl_SetEquipUndeveloped);
 
@@ -922,7 +1003,9 @@ void EquipDevelop_InstallDevelopSyncHooks()
             reinterpret_cast<void**>(&g_OrigSetEquipUndeveloped));
 
     if (!okDev || !okUndev)
-        Log("[EquipDevelop] develop-sync hooks FAILED: SetEquipDeveloped=%s SetEquipUndeveloped=%s\n",
+        Log("[EquipDevelop] develop-sync hooks FAILED: SetEquipDeveloped=%s "
+            "SetEquipUndeveloped=%s - a develop will not be written to the "
+            "state file and will read back undeveloped after a reload\n",
             okDev ? "OK" : "FAIL", okUndev ? "OK" : "FAIL");
 }
 
@@ -932,7 +1015,8 @@ bool EquipDevelop_IsDevelopedByDevelopId(std::uint32_t developId)
         return false;
 
     if (V_FrameWorkState::IsManagedDevelopId(static_cast<std::int32_t>(developId)))
-        return V_FrameWorkState::GetDevelopedByDevelopId(static_cast<std::int32_t>(developId));
+        return V_FrameWorkState::GetDevelopedByDevelopId(
+            static_cast<std::int32_t>(developId));
 
     void* controller = ResolveController();
     if (!controller)
@@ -946,7 +1030,7 @@ bool EquipDevelop_IsDevelopedByDevelopId(std::uint32_t developId)
     __try
     {
         const std::uint16_t index = getIndex(controller, developId);
-        if (index >= kInvalidDevelopIndex)
+        if (!equip::IsValidFlowIndex(index))
             return false;
 
         std::uint8_t* bits = *reinterpret_cast<std::uint8_t**>(
@@ -1086,7 +1170,7 @@ bool EquipDevelop_IsDevelopableByDevelopId(std::uint32_t developId)
     __try
     {
         const std::uint16_t index = getIndex(controller, developId);
-        if (index >= kInvalidDevelopIndex)
+        if (!equip::IsValidFlowIndex(index))
             return false;
         std::uint8_t* bits = *reinterpret_cast<std::uint8_t**>(
             reinterpret_cast<std::uint8_t*>(controller) + kDevelopedBitsOffset);
@@ -1174,7 +1258,7 @@ int EquipDevelop_BeginFobListSuppress()
     {
         const std::uint16_t index =
             SafeGetIndex(getIndex, controller, static_cast<std::uint32_t>(id));
-        if (index >= kInvalidDevelopIndex)
+        if (!equip::IsValidFlowIndex(index))
             continue;
         std::uint8_t saved = 0;
         if (SafeSuppressOne(controller, index, &saved))

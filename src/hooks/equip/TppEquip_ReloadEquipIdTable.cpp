@@ -239,9 +239,95 @@ namespace
 #endif
     }
 
+    static bool DiagReadHash(const std::uint8_t* p, std::uint64_t& out)
+    {
+        __try
+        {
+            out = *reinterpret_cast<const std::uint64_t*>(p);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
+    static void DiagDumpEquipOccupancy()
+    {
+        static int   s_dumps = 0;
+        static DWORD s_lastTick = 0;
+        if (s_dumps >= 6)
+            return;
+        const DWORD now = GetTickCount();
+        if (s_lastTick != 0 && (now - s_lastTick) < 4000u)
+            return;
+        s_lastTick = now;
+        const int myN = ++s_dumps;
+
+        auto* infoList = static_cast<std::uint8_t*>(
+            ResolveGameAddress(gAddr.EquipIdTable_InfoList));
+        if (!infoList)
+        {
+            Log("[ZetaDiag] #%d: EquipIdTable_InfoList unresolved for this build\n",
+                myN);
+            return;
+        }
+
+        std::vector<EquipIdRow> vfw;
+        {
+            std::lock_guard<std::mutex> lock(g_Mutex);
+            vfw = g_Rows;
+        }
+
+        Log("[ZetaDiag] ===== equip-id dump #%d: %zu V_FrameWork custom rows "
+            "(native state AFTER the game/Zeta push, BEFORE V_FrameWork "
+            "re-stamps) =====\n", myN, vfw.size());
+
+        int ours = 0, foreign = 0, empty = 0, ext = 0;
+        for (const auto& r : vfw)
+        {
+            const std::int32_t idx =
+                EquipIdCompression::ComputeCompressed(r.equipId);
+            if (!EquipIdCompression::IsCompressedInBounds(idx))
+            {
+                ++ext;
+                Log("[ZetaDiag]   equipId=0x%X EXTENDED (DLL-side, not native)\n",
+                    r.equipId);
+                continue;
+            }
+            std::uint64_t cur = 0;
+            const bool ok = DiagReadHash(
+                infoList + static_cast<size_t>(idx) * kRowStride, cur);
+            const char* verdict;
+            if (!ok)                     { verdict = "SEH-unreadable"; }
+            else if (cur == 0)           { verdict = "EMPTY(push dropped it)"; ++empty; }
+            else if (cur == r.partsHash) { verdict = "OURS"; ++ours; }
+            else                         { verdict = "FOREIGN<-collision (Zeta/vanilla holds this slot)"; ++foreign; }
+            Log("[ZetaDiag]   equipId=0x%X slot=0x%X ourParts=%016llX "
+                "native=%016llX %s\n",
+                r.equipId, idx,
+                static_cast<unsigned long long>(r.partsHash),
+                static_cast<unsigned long long>(cur), verdict);
+        }
+
+        int wbOcc = 0;
+        for (std::int32_t i = EquipIdCompression::kWeaponBandFirst;
+             i <= EquipIdCompression::kWeaponBandLastUsable; ++i)
+        {
+            std::uint64_t cur = 0;
+            if (DiagReadHash(infoList + static_cast<size_t>(i) * kRowStride, cur)
+                && cur != 0)
+                ++wbOcc;
+        }
+        Log("[ZetaDiag] #%d summary: OURS=%d FOREIGN-collisions=%d EMPTY=%d "
+            "EXTENDED=%d | weapon band 0x230-0x288 occupied=%d/89\n",
+            myN, ours, foreign, empty, ext, wbOcc);
+    }
+
     static int __fastcall hkReloadEquipIdTable(lua_State* L)
     {
         const int ret = g_OrigReloadEquipIdTable ? g_OrigReloadEquipIdTable(L) : 0;
+        DiagDumpEquipOccupancy();
         ReapplyAll();
         return ret;
     }

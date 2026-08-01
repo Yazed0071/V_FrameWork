@@ -3,6 +3,7 @@
 #include "EquipDevelopControllerImpl_GetSuitDevelopInfoIndex.h"
 #include "OutfitRegistry.h"
 #include "CustomHeadRegistry.h"
+#include "../equip/DevelopArrayGrow.h"
 
 #include <algorithm>
 #include <atomic>
@@ -16,6 +17,7 @@
 #include "log.h"
 #include "../equip/EquipDevelop_SetEquipUndeveloped.h"
 #include "../equip/EquipDevelop_AddToEquipDevelopTable.h"
+#include "../equip/MenuPerf.h"
 
 namespace
 {
@@ -37,13 +39,13 @@ namespace
         std::uint8_t (__fastcall*)(void* self, std::uint32_t playerType,
                                    std::uint32_t devIndex);
 
+
     static EdcGetSuitIndex_t  g_OrigEdcGetSuitIndex     = nullptr;
     static EdcGetFaceIndex_t  g_OrigEdcGetFaceIndex     = nullptr;
     static IsEquipVisile_t    g_OrigIsEquipVisile       = nullptr;
     static EdcGetSuitCamoType_t g_OrigEdcGetSuitCamoType = nullptr;
     static EdcGetSuitLevel_t    g_OrigEdcGetSuitLevel    = nullptr;
     static EdcIsEquipSuit_t     g_OrigEdcIsEquipSuit     = nullptr;
-
     static bool g_InstalledEdcGetSuitIndex = false;
     static bool g_InstalledEdcGetFaceIndex = false;
     static bool g_InstalledIsEquipVisile   = false;
@@ -51,15 +53,20 @@ namespace
     static bool g_InstalledGetSuitLevel    = false;
     static bool g_InstalledIsEquipSuit     = false;
 
-    constexpr std::size_t kDevelopHiddenCap = 0x800;
+    constexpr std::size_t kDevelopHiddenCap = 0x10000;
     static std::uint8_t g_DevelopHiddenBits[kDevelopHiddenCap] = {};
 
     static void* g_CachedEDC = nullptr;
 
     constexpr std::uint32_t kDevelopIndexSentinel = 0x400;
-    constexpr std::uint32_t kEdcRowCapacity       = 0x400;
 
-    constexpr std::size_t kDevelopedBitsOffset = 0x1e008;
+    static std::uint32_t kEdcRowCapacityLive()
+    {
+        return equip::NativeFlowBound();
+    }
+    #define kEdcRowCapacity kEdcRowCapacityLive()
+
+#define kDevelopedBitsOffset (equip::DevFlagsPtrOffsetBase20())
 
     std::mutex                  g_PendingDevelopedMutex;
     std::vector<std::uint16_t>  g_PendingDeveloped;
@@ -140,6 +147,7 @@ namespace
     static std::uint32_t __fastcall hkEdcGetSuitIndex(
         void* self, std::uint32_t camoType, std::uint32_t level)
     {
+        equip::MenuPerfScope _perf(equip::kPerf_GetSuitIdx);
         if (!g_CachedEDC && self)
         {
             g_CachedEDC = self;
@@ -407,6 +415,7 @@ namespace
     static std::uint8_t __fastcall hkEdcIsEquipSuit(
         void* self, std::uint32_t playerType, std::uint32_t devIndex)
     {
+        equip::MenuPerfScope _perf(equip::kPerf_IsEquipSuit);
         outfit::DrainPendingHeads();
         if (outfit::IsCustomHeadEquipId(static_cast<std::uint16_t>(devIndex)))
             return 0;
@@ -433,13 +442,14 @@ namespace
     static std::uint16_t __fastcall hkEdcGetBaseDevelopId(
         void* self, std::uint16_t idx)
     {
-        if (idx >= 0x400)
+        if (idx >= equip::NativeFlowBound())
         {
             static std::atomic<int> s_logged{ 0 };
             if (s_logged.fetch_add(1) < 4)
                 Log("[EquipDevelop] GetBaseDevelopId guarded: caller passed "
-                    "index %u (record array holds 0x400) - returned 0.\n",
-                    static_cast<unsigned>(idx));
+                    "index %u (record array holds %u) - returned 0.\n",
+                    static_cast<unsigned>(idx),
+                    equip::NativeFlowBound());
             return 0;
         }
         return g_OrigEdcGetBaseDevelopId
@@ -459,17 +469,13 @@ namespace
 
     static std::uint8_t __fastcall hkIsEquipVisile(void* self, std::uint16_t idx)
     {
-        EquipDevelopAdd::MaybeRotateDevelopWindow(idx);
-        outfit::DrainPendingHeads();
         if (!g_CachedEDC && self)
         {
             g_CachedEDC = self;
             DrainPendingDeveloped(self);
         }
 
-        EquipDevelopAdd::MaybeRefreshDynamicGates();
-
-        if (idx < kDevelopHiddenCap && g_DevelopHiddenBits[idx] != 0)
+        if (g_DevelopHiddenBits[idx] != 0)
             return 0;
 
         const DWORD now = GetTickCount();
@@ -516,6 +522,13 @@ namespace outfit
                 tVisile,
                 reinterpret_cast<void*>(&hkIsEquipVisile),
                 reinterpret_cast<void**>(&g_OrigIsEquipVisile));
+            if (!g_InstalledIsEquipVisile)
+                Log("[OutfitDevelopVisibility] ERROR: IsEquipVisile hook at %p "
+                    "was refused - another module (DevelopArrayGrow claims the "
+                    "same address) already owns it. The develop-menu hide filter "
+                    "now runs from that owner instead; if it does not, "
+                    "showInDevelopMenu=false is ignored and hidden rows appear "
+                    "in R&D.\n", tVisile);
         }
 
         if (void* tCamo = ResolveGameAddress(gAddr.EquipDevCtrl_GetSuitCamoType);
@@ -580,7 +593,6 @@ namespace outfit
         if (g_InstalledGetBaseDevelopId)
             DisableAndRemoveHook(
                 ResolveGameAddress(gAddr.EquipDevCtrl_GetBaseDevelopId));
-
         g_OrigEdcGetBaseDevelopId = nullptr;
         g_InstalledGetBaseDevelopId = false;
         g_OrigEdcGetSuitIndex  = nullptr;
@@ -602,6 +614,7 @@ namespace outfit
     {
         if (index < kDevelopHiddenCap)
             g_DevelopHiddenBits[index] = hidden ? 1 : 0;
+        equip::InvalidateDevelopVisibilityCache();
     }
 
     bool IsDevelopHidden(unsigned short index)

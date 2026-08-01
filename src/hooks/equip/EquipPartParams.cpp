@@ -3,6 +3,7 @@
 
 #include <Windows.h>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -10,6 +11,8 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "AddressSet.h"
@@ -26,6 +29,8 @@
 #include "TppEquip_ReloadEquipIdTable.h"
 #include "TppEquipConstRegistry.h"
 #include "../../core/V_FrameWorkState.h"
+
+namespace outfit { void EndBootRestoreScrub(const char* reason); }
 
 namespace
 {
@@ -768,6 +773,45 @@ namespace
     // bulletParamSetsBase (impl+0x80, 22 bytes) <- bullet buffer (impl+0x50, stride 14) byte 6
     static RefPool g_BulletBase = { { "bulletParamSetsBase", 0x80, 22, 0, 1024, {}, false, 0, {} }, 0x50, 14, 112, 6, false };
 
+    static void EnsureOnePoolRelocated(PartBuffer& pb)
+    {
+        if (!pb.active || pb.shadow.empty())
+            return;
+        void** loc = PartPtrLoc(pb);
+        if (!loc)
+            return;
+        std::uint8_t* cur = ReadPtrSEH(loc);
+        if (!cur || cur == pb.shadow.data())
+            return;
+        if (InitShadowSEH(loc, pb.shadow.data(),
+                          static_cast<size_t>(pb.stockCount) * pb.stride) == 1)
+            Log("[EquipParam] %s shadow re-established: an equip-table reload re-pointed "
+                "it to a fresh stock buffer, orphaning our custom rows - the reloaded "
+                "weapon's receiver/part params were reading as zero (single-shot, wrong "
+                "fire rate, null fire-sound root); stock rows re-synced, custom rows "
+                "preserved\n", pb.name);
+    }
+
+    static void EnsureShadowsRelocated()
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_Mutex);
+        EnsureOnePoolRelocated(g_RcvIdBuf);
+        EnsureOnePoolRelocated(g_Base.pb);
+        EnsureOnePoolRelocated(g_Wob.pb);
+        EnsureOnePoolRelocated(g_Sys.pb);
+        EnsureOnePoolRelocated(g_Snd.pb);
+        EnsureOnePoolRelocated(g_Magazine);
+        EnsureOnePoolRelocated(g_Bullet);
+        EnsureOnePoolRelocated(g_Muzzle);
+        EnsureOnePoolRelocated(g_Stock);
+        EnsureOnePoolRelocated(g_Sight);
+        EnsureOnePoolRelocated(g_Barrel);
+        EnsureOnePoolRelocated(g_UnderBarrel);
+        EnsureOnePoolRelocated(g_Option);
+        EnsureOnePoolRelocated(g_BarrelBase.pb);
+        EnsureOnePoolRelocated(g_BulletBase.pb);
+    }
+
     constexpr int kPoolDirectMax     = 253;
     constexpr int kPoolScratch1      = 254;
     constexpr int kPoolScratch0      = 255;
@@ -910,6 +954,30 @@ namespace
         if (!impl)
             return nullptr;
         return ReadPtrSEH(reinterpret_cast<void**>(impl + off));
+    }
+
+    static bool ReadSysTriadSEH(const std::uint8_t* sysPool, int idx,
+                                int* eqp, int* reticle, int* trigger)
+    {
+        __try
+        {
+            const std::uint8_t* sp = sysPool + static_cast<size_t>(idx) * 3;
+            *eqp     = sp[0] & 0x1f;
+            *reticle = sp[1] & 0x1f;
+            *trigger = sp[1] >> 5;
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    }
+
+    static bool ReadReceiverSysIndexSEH(const std::uint8_t* rbuf, int recvId, int* sysIdx)
+    {
+        __try
+        {
+            *sysIdx = rbuf[static_cast<size_t>(recvId - 1) * kReceiverStride + 4];
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
     }
 
     static int RcvRowIsZeroSEH(const std::uint8_t* buf, int idx0)
@@ -1821,6 +1889,24 @@ int __cdecl l_SetMagazine(lua_State* L)
     ReadNamedInt(L, 1, "totalCarry", totalCarry);
     ReadNamedInt(L, 1, "bulletId", bulletId);
 
+    if (capacity < 0 || capacity > 0x3FF)
+        Log("[EquipParam] SetMagazine ammoId=%d: capacity=%d exceeds the "
+            "native 10-bit field (max 1023) - clamped to the field range\n",
+            ammoId, capacity);
+    if (totalCarry > 0x3FFF)
+        Log("[EquipParam] SetMagazine ammoId=%d: totalCarry=%d exceeds the "
+            "native 14-bit field (max 16383) - clamped; use 0 for the "
+            "unlimited-carry sentinel\n",
+            ammoId, totalCarry);
+    if (eqpAmmoId < 0 || eqpAmmoId > 0xFFFF)
+        Log("[EquipParam] SetMagazine ammoId=%d: equipAmmoId=%d exceeds the "
+            "native field (0..65535) and wraps to %d\n",
+            ammoId, eqpAmmoId, eqpAmmoId & 0xFFFF);
+    if (bulletId < 0 || bulletId > 0xFF)
+        Log("[EquipParam] SetMagazine ammoId=%d: bulletId=%d exceeds the "
+            "native byte field (0..255) and wraps to %d\n",
+            ammoId, bulletId, bulletId & 0xFF);
+
     std::lock_guard<std::recursive_mutex> lock(g_Mutex);
 
     if (!EnsurePartShadow(g_Magazine))
@@ -1925,6 +2011,25 @@ int __cdecl l_SetBullet(lua_State* L)
     ReadNamedInt(L, 1, "blastId", u8v[6]);
     ReadNamedIntAlias(L, 1, "isLethal", "unk11", unk11);
     ReadNamedInt(L, 1, "eqpType", eqpType);
+
+    auto warnWidth = [&](const char* name, int v, int maxV)
+    {
+        if (v < 0 || v > maxV)
+            Log("[EquipParam] SetBullet bulletId=%d: %s=%d exceeds the native "
+                "field (0..%d) and wraps to %d in the engine row - clamp or "
+                "rescale the value\n",
+                bulletId, name, v, maxV, v & maxV);
+    };
+    warnWidth("bulletSpeed",    u16v[0], 0xFFFF);
+    warnWidth("npcBulletSpeed", u16v[1], 0xFFFF);
+    warnWidth("dropRate",       u16v[2], 0xFFFF);
+    if (bbKind == 1)  warnWidth("bulletParamSetsBase",    u8v[0], 0xFF);
+    if (npcKind == 1) warnWidth("npcBulletParamSetsBase", u8v[1], 0xFF);
+    warnWidth("bulletTrailEffect", u8v[2], 0xFF);
+    warnWidth("unk09",        u8v[3], 0xFF);
+    warnWidth("bulletType",   u8v[4], 0xFF);
+    warnWidth("ricochetSize", u8v[5], 0xFF);
+    warnWidth("blastId",      u8v[6], 0xFF);
 
     std::lock_guard<std::recursive_mutex> lock(g_Mutex);
 
@@ -2423,6 +2528,29 @@ int __cdecl l_SetReceiver(lua_State* L)
     int wob = ResolvePoolField(L, "receiverParamSetsWobbling", POOL_WOB);
     int sys = ResolvePoolField(L, "receiverParamSetsSystem", POOL_SYS);
     int snd = ResolvePoolField(L, "receiverParamSetsSound", POOL_SND);
+
+    if (sys > 0)
+    {
+        const std::uint8_t* sysPool = ImplBufPtr(0x68);
+        if (sysPool)
+        {
+            int e = 0, r = 0, t = 0;
+            if (ReadSysTriadSEH(sysPool, sys, &e, &r, &t))
+                Log("[EquipParam] SetReceiver receiverId=%d: resolved "
+                    "receiverParamSetsSystem eqpType=%d reticleUiId=%d triggerId=%d "
+                    "(triggerId 0 = single-shot; symbolic TppEquip.TRIGGER_*/RETICLE_UI_* "
+                    "are undeclared -> nil -> 0. Use literal numbers.)\n",
+                    receiverId, e, r, t);
+            int di = 0, de = 0, dr = 0, dt = 0;
+            if (hasMotionFrom && motionFrom > 0 && motionFrom <= kReceiverMaxId
+                && ReadReceiverSysIndexSEH(rbuf, motionFrom, &di)
+                && ReadSysTriadSEH(sysPool, di, &de, &dr, &dt))
+                Log("[EquipParam] SetReceiver receiverId=%d: motionFrom donor RC=%d "
+                    "uses eqpType=%d reticleUiId=%d triggerId=%d - copy these literal "
+                    "numbers into receiverParamSetsSystem for matching fire-mode/reticle\n",
+                    receiverId, motionFrom, de, dr, dt);
+        }
+    }
 
     if (base == -2 || wob == -2 || sys == -2 || snd == -2)
         return 0;
@@ -2993,9 +3121,12 @@ namespace
             {
                 lastMs = now;
                 Log("[EquipParam] SetUpGunInfoFromGunPartsDesc guarded a crash: "
-                    "equipId=%u has an empty gunBasic row (module missing "
-                    "SetGunBasic for that weapon?) - GunInfo left at defaults\n",
-                    equipId);
+                    "equipId=%u desc(rc=%d ba=%d ub=%d) - the original faulted "
+                    "mid-setup (likely an out-of-range base/wob/sys pool sub-index "
+                    "for this receiver); GunInfo left partial and its fire-sound root "
+                    "NULL, which the DefineWeaponFireSound guard now neutralizes\n",
+                    equipId, ReadByteAtSEH(desc, 0), ReadByteAtSEH(desc, 1),
+                    ReadByteAtSEH(desc, 10));
             }
             return 0;
         }
@@ -3109,6 +3240,7 @@ namespace
                                           void* a5, void* a6, void* a7,
                                           void* a8, void* a9)
     {
+        EnsureShadowsRelocated();
         FillCustomMotionEntriesEarly();
         std::uint8_t descSaved[12], descMask[12];
         const int substituted = SubstituteEmptyDesc(desc, descSaved, descMask);
@@ -3194,10 +3326,22 @@ namespace
                 int b[12];
                 for (int i = 0; i < 12; ++i)
                     b[i] = ReadByteAtSEH(gunInfo, 0x74 + i);
+                const int fr =
+                    ReadByteAtSEH(gunInfo, 0x68) | (ReadByteAtSEH(gunInfo, 0x69) << 8);
+                const unsigned trigWord =
+                    static_cast<unsigned>(ReadByteAtSEH(gunInfo, 0x88))
+                    | (static_cast<unsigned>(ReadByteAtSEH(gunInfo, 0x89)) << 8)
+                    | (static_cast<unsigned>(ReadByteAtSEH(gunInfo, 0x8a)) << 16)
+                    | (static_cast<unsigned>(ReadByteAtSEH(gunInfo, 0x8b)) << 24);
+                const int trig = (trigWord >> 10) & 0x7;
                 Log("[ChimeraMotion] rowbytes eq=%u rc=%d ub=%d ubRc=%d gunInfo+0x74..0x7f: "
-                    "%02X %02X %02X %02X | mt=%02X %02X row=%02X %02X | hw=%02X %02X %02X %02X\n",
+                    "%02X %02X %02X %02X | mt=%02X %02X row=%02X %02X | hw=%02X %02X %02X %02X "
+                    "|| fireRate(+0x68)=%d trigger(+0x88 bits10-12)=%d [+0x88 word=0x%08X] "
+                    "(fireRate is rpm*10; a full-auto AR ~ 6000. trigger 0=single/semi, "
+                    "non-0=auto/burst - this is the LIVE value the fire FSM reads)\n",
                     equipId, rc, ub, ubRc,
-                    b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11]);
+                    b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11],
+                    fr, trig, trigWord);
             }
 #endif
         }
@@ -3804,6 +3948,321 @@ namespace
         return static_cast<unsigned>(lo) | (static_cast<unsigned>(hi) << 8);
     }
 
+    static bool ReadAmmoRowSEH(void* self, int slot, unsigned& idx, int& b0B, int& b0C)
+    {
+        __try
+        {
+            std::uint8_t* p = static_cast<std::uint8_t*>(self);
+            void* p60 = *reinterpret_cast<void**>(p + 0x60);
+            if (!p60) return false;
+            void* map = *reinterpret_cast<void**>(static_cast<std::uint8_t*>(p60) + 0x10);
+            if (!map) return false;
+            const int base54 = *reinterpret_cast<int*>(p + 0x54);
+            idx = *reinterpret_cast<unsigned*>(
+                static_cast<std::uint8_t*>(map) +
+                static_cast<size_t>(base54 + slot) * 4);
+            if (idx == 0xFFFFFFFFu) return false;
+            void* p58 = *reinterpret_cast<void**>(p + 0x58);
+            if (!p58) return false;
+            void* rows = *reinterpret_cast<void**>(static_cast<std::uint8_t*>(p58) + 0x28);
+            if (!rows) return false;
+            std::uint8_t* row = static_cast<std::uint8_t*>(rows) +
+                                static_cast<size_t>(idx) * 0xE;
+            b0B = row[0xB];
+            b0C = row[0xC];
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
+    static thread_local int t_probeSlots = 0;
+    static thread_local unsigned t_probeSub[8] = { 0 };
+    static thread_local int t_probeBones[8] = { 0 };
+    static thread_local int t_probeC[8] = { 0 };
+    static thread_local unsigned t_probeAmmo[8] = { 0 };
+
+    static thread_local unsigned t_meshEq = 0;
+    static thread_local int t_meshCount = 0;
+    static thread_local unsigned t_meshHash[64] = { 0 };
+    static thread_local unsigned char t_meshFA[64] = { 0 };
+    static thread_local unsigned char t_meshFB[64] = { 0 };
+    static thread_local void* t_cylCtrl = nullptr;
+    static thread_local int t_cylSlot = 0;
+    static thread_local void* t_cylModel = nullptr;
+    static thread_local unsigned t_cylAmmo = 0;
+    static thread_local unsigned t_drivenHash = 0;
+    static thread_local int t_roundCount = 0;
+
+    static void FeedCylinderVisibilitySEH(void* self)
+    {
+        t_probeSlots = 0;
+        t_meshCount = 0;
+        t_cylCtrl = nullptr;
+        __try
+        {
+            std::uint8_t* p = static_cast<std::uint8_t*>(self);
+            void* ctrl = *reinterpret_cast<void**>(p + 0x30);
+            void* recsV = *reinterpret_cast<void**>(p + 0xE8);
+            void* p60 = *reinterpret_cast<void**>(p + 0x60);
+            void* p58 = *reinterpret_cast<void**>(p + 0x58);
+            if (!ctrl || !recsV || !p60 || !p58) return;
+            void* ctrlModels = *reinterpret_cast<void**>(static_cast<std::uint8_t*>(ctrl) + 0x58);
+            void* map = *reinterpret_cast<void**>(static_cast<std::uint8_t*>(p60) + 0x10);
+            void* rows = *reinterpret_cast<void**>(static_cast<std::uint8_t*>(p58) + 0x28);
+            if (!ctrlModels || !map || !rows) return;
+            const int slotCount = *reinterpret_cast<int*>(p + 0x50);
+            const int lim = slotCount < 0 ? 0 : (slotCount > 8 ? 8 : slotCount);
+            const int base54 = *reinterpret_cast<int*>(p + 0x54);
+            std::uint8_t* recs = static_cast<std::uint8_t*>(recsV);
+            for (int slot = 0; slot < lim; ++slot)
+            {
+                std::uint8_t* rec = recs + static_cast<size_t>(slot) * 0x14;
+                t_probeSub[slot] = (static_cast<unsigned>(rec[4]) |
+                                    (static_cast<unsigned>(rec[5]) << 8)) & 0x7FFu;
+                void* model = *reinterpret_cast<void**>(
+                    static_cast<std::uint8_t*>(ctrlModels) + static_cast<size_t>(slot) * 8);
+                const int bones = model
+                    ? *reinterpret_cast<std::int16_t*>(static_cast<std::uint8_t*>(model) + 0xF8)
+                    : -1;
+                t_probeBones[slot] = bones;
+                const unsigned idx = *reinterpret_cast<unsigned*>(
+                    static_cast<std::uint8_t*>(map) + static_cast<size_t>(base54 + slot) * 4);
+                int b0C = -1;
+                unsigned ammo = 0;
+                if (idx != 0xFFFFFFFFu)
+                {
+                    std::uint8_t* row = static_cast<std::uint8_t*>(rows) +
+                                        static_cast<size_t>(idx) * 0xE;
+                    b0C = row[0xC];
+                    ammo = *reinterpret_cast<std::uint16_t*>(row + 4);
+                }
+                t_probeC[slot] = b0C;
+                t_probeAmmo[slot] = ammo;
+                if ((b0C & 0x20) && bones > 0 && !t_cylCtrl)
+                {
+                    t_cylCtrl = ctrl;
+                    t_cylSlot = slot;
+                    t_cylModel = model;
+                    t_cylAmmo = ammo;
+                    const unsigned mc = *reinterpret_cast<std::uint16_t*>(
+                        static_cast<std::uint8_t*>(model) + 0x1E8);
+                    void* harr = *reinterpret_cast<void**>(static_cast<std::uint8_t*>(model) + 0x180);
+                    void* fa = *reinterpret_cast<void**>(static_cast<std::uint8_t*>(model) + 0x178);
+                    void* fb = *reinterpret_cast<void**>(static_cast<std::uint8_t*>(model) + 0x170);
+                    if (harr && mc)
+                    {
+                        const unsigned n = mc > 64 ? 64 : mc;
+                        for (unsigned i = 0; i < n; ++i)
+                        {
+                            t_meshHash[i] = *reinterpret_cast<std::uint32_t*>(
+                                static_cast<std::uint8_t*>(harr) + i * 4);
+                            t_meshFA[i] = fa ? *(static_cast<std::uint8_t*>(fa) + i) : 0xFF;
+                            t_meshFB[i] = fb ? *(static_cast<std::uint8_t*>(fb) + i) : 0xFF;
+                        }
+                        t_meshCount = static_cast<int>(n);
+                        t_meshEq = t_probeSub[slot];
+                    }
+                }
+            }
+            t_probeSlots = lim;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+        }
+    }
+
+    static void DriveMeshSEH(void* ctrl, unsigned slot, unsigned long long hash, int flag)
+    {
+        __try
+        {
+            void** vt = *reinterpret_cast<void***>(ctrl);
+            auto fn = reinterpret_cast<void(__fastcall*)(void*, unsigned, unsigned long long, int)>(
+                vt[0x100 / 8]);
+            fn(ctrl, slot, hash, flag);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+        }
+    }
+
+    struct RoundMeshList { unsigned hash[16]; int count; };
+    static std::mutex g_roundsMeshMx;
+    static std::map<void*, RoundMeshList> g_roundsMesh;
+    static void DriveCylinderRounds()
+    {
+        t_drivenHash = 0;
+        t_roundCount = 0;
+        if (!t_cylCtrl || t_meshCount <= 0) return;
+        RoundMeshList rl;
+        {
+            std::lock_guard<std::mutex> lock(g_roundsMeshMx);
+            auto it = g_roundsMesh.find(t_cylModel);
+            if (it != g_roundsMesh.end())
+            {
+                rl = it->second;
+            }
+            else
+            {
+                rl.count = 0;
+                for (int i = 0; i < t_meshCount && rl.count < 16; ++i)
+                    if (t_meshFA[i] == 0xFF)                 // hidden-by-default = a loaded-round mesh
+                        rl.hash[rl.count++] = t_meshHash[i];
+                g_roundsMesh[t_cylModel] = rl;
+            }
+        }
+        const int show = t_cylAmmo > 16u ? 16 : static_cast<int>(t_cylAmmo);
+        for (int i = 0; i < rl.count; ++i)
+            DriveMeshSEH(t_cylCtrl, static_cast<unsigned>(t_cylSlot),
+                         static_cast<unsigned long long>(rl.hash[i]), i < show ? 1 : 0);
+        t_roundCount = rl.count;
+        if (rl.count > 0) t_drivenHash = rl.hash[0];
+    }
+
+    struct CylBoneCandidate { unsigned hash; const char* name; };
+    static const CylBoneCandidate kCylBoneCandidates[] = {
+        { 0x69E02A5Eu, "SKL_002_CYLINDER" },
+        { 0x23E96556u, "SKL_001_CYLINDER" },
+        { 0xD7E97EC3u, "SKL_003_CYLINDER" },
+        { 0x23227DE0u, "SKL_004_CYLINDER" },
+        { 0xC0889846u, "SKL_005_CYLINDER" },
+        { 0x8D655BE1u, "SKL_006_CYLINDER" },
+        { 0xF7719044u, "WEAPON_CYLINDER" },
+        { 0x26A4DD2Fu, "CYLINDER" },
+    };
+
+    struct CylRotState
+    {
+        int boneIdx = -2;               // -2 = unresolved, -1 = no cylinder bone (skip), >=0 = bone index
+        unsigned chambers = 5;
+        unsigned prevAmmo = 0xFFFFFFFFu;
+        double target = 0.0;
+        double current = 0.0;
+        bool haveBase = false;
+        float base[16] = {};
+        float lastWritten[16] = {};
+    };
+    static std::mutex g_cylRotMx;
+    static std::map<void*, CylRotState> g_cylRot;
+
+    static int ResolveBoneIdxSEH(void* ctrl, unsigned slot, unsigned hash)
+    {
+        __try
+        {
+            void** vt = *reinterpret_cast<void***>(ctrl);
+            auto fn = reinterpret_cast<unsigned long long(__fastcall*)(
+                void*, unsigned long long, unsigned long long, unsigned long long)>(vt[0x140 / 8]);
+            return static_cast<int>(fn(ctrl, slot, static_cast<unsigned long long>(hash), 0));
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return -1;
+        }
+    }
+
+    static bool ReadMtx64SEH(void* model, int idx, float* out16)
+    {
+        __try
+        {
+            void* pose = *reinterpret_cast<void**>(static_cast<std::uint8_t*>(model) + 0xE0);
+            if (!pose) return false;
+            memcpy(out16, static_cast<std::uint8_t*>(pose) + static_cast<size_t>(idx) * 0x40, 0x40);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
+    static bool WriteMtx64SEH(void* model, int idx, const float* in16)
+    {
+        __try
+        {
+            void* pose = *reinterpret_cast<void**>(static_cast<std::uint8_t*>(model) + 0xE0);
+            if (!pose) return false;
+            memcpy(static_cast<std::uint8_t*>(pose) + static_cast<size_t>(idx) * 0x40, in16, 0x40);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
+    static void DriveCylinderRotation()
+    {
+        if (!t_cylCtrl || !t_cylModel) return;
+        std::lock_guard<std::mutex> lock(g_cylRotMx);
+        CylRotState& st = g_cylRot[t_cylModel];
+        if (st.boneIdx == -2)
+        {
+            st.boneIdx = -1;
+            for (const auto& cand : kCylBoneCandidates)
+            {
+                const int idx = ResolveBoneIdxSEH(
+                    t_cylCtrl, static_cast<unsigned>(t_cylSlot), cand.hash);
+                if (idx >= 0) { st.boneIdx = idx; break; }
+            }
+            st.chambers = (t_roundCount > 0) ? static_cast<unsigned>(t_roundCount) : 5u;
+#ifdef _DEBUG
+            static std::mutex mxL;
+            static std::set<void*> seen;
+            std::lock_guard<std::mutex> ll(mxL);
+            if (seen.insert(t_cylModel).second)
+                Log("[WeaponKey] CYL-ROT eq=%u model=%p cylBone=%d chambers=%u (%s) - %s\n",
+                    t_meshEq, t_cylModel, st.boneIdx, st.chambers,
+                    st.boneIdx >= 0 ? "resolved" : "NO cylinder bone",
+                    st.boneIdx >= 0 ? "spinning about local Z, 360/chambers per shot"
+                                    : "model has no SKL_00N_CYLINDER bone - rotation skipped");
+#endif
+        }
+        if (st.boneIdx < 0) return;
+
+        float cur[16];
+        if (!ReadMtx64SEH(t_cylModel, st.boneIdx, cur)) return;
+
+        const float basis = fabsf(cur[0]) + fabsf(cur[1]) + fabsf(cur[2]) +
+                            fabsf(cur[4]) + fabsf(cur[5]) + fabsf(cur[6]) +
+                            fabsf(cur[8]) + fabsf(cur[9]) + fabsf(cur[10]);
+        if (basis < 0.25f) return;
+
+        if (!st.haveBase || memcmp(cur, st.lastWritten, sizeof(cur)) != 0)
+        {
+            memcpy(st.base, cur, sizeof(cur));
+            st.haveBase = true;
+        }
+        if (st.prevAmmo == 0xFFFFFFFFu) st.prevAmmo = t_cylAmmo;
+        if (t_cylAmmo != st.prevAmmo && st.chambers > 0)
+        {
+            int delta = static_cast<int>(st.prevAmmo) - static_cast<int>(t_cylAmmo);
+            if (delta < 0) delta = -delta;
+            const double step = 6.283185307179586 / static_cast<double>(st.chambers);
+            st.target += step * static_cast<double>(delta);
+        }
+        st.prevAmmo = t_cylAmmo;
+        st.current += (st.target - st.current) * 0.35;
+        if (st.current >= 6.283185307179586 && st.target >= 6.283185307179586)
+        {
+            st.current -= 6.283185307179586;
+            st.target -= 6.283185307179586;
+        }
+        const float c = static_cast<float>(cos(st.current));
+        const float s = static_cast<float>(sin(st.current));
+        float m[16];
+        for (int j = 0; j < 4; ++j)
+        {
+            m[0 * 4 + j] =  c * st.base[0 * 4 + j] + s * st.base[1 * 4 + j];
+            m[1 * 4 + j] = -s * st.base[0 * 4 + j] + c * st.base[1 * 4 + j];
+            m[2 * 4 + j] = st.base[2 * 4 + j];
+            m[3 * 4 + j] = st.base[3 * 4 + j];
+        }
+        WriteMtx64SEH(t_cylModel, st.boneIdx, m);
+        memcpy(st.lastWritten, m, sizeof(m));
+    }
+
     static bool WritePtrAtSEH(void* base, size_t off, void* val)
     {
         __try
@@ -3868,20 +4327,49 @@ namespace
 
     using MtarGetAnimFileFn_t = void*(__fastcall*)(void*, unsigned long long);
 
+    static std::atomic<void*> g_EquipDataProvider{ nullptr };
+
+    static void CaptureEquipDataProvider(void* reoi)
+    {
+        if (!reoi || g_EquipDataProvider.load(std::memory_order_relaxed))
+            return;
+        void* provider = ReadPtrAtSEH(reoi, 0x68);
+        void* vt = provider ? ReadPtrAtSEH(provider, 0) : nullptr;
+        void* fn = vt ? ReadPtrAtSEH(vt, 0x10) : nullptr;
+        if (!fn)
+            return;
+        g_EquipDataProvider.store(provider, std::memory_order_relaxed);
+        Log("[WeaponKey] entry->mtar resolution armed: EquipDataSystemImpl "
+            "provider=%p vtbl=%p findByPathId(vtbl+0x10)=%p - this variant "
+            "fetches its own fox::Block, unlike the vtbl+0x28 form which "
+            "takes the block as a THIRD argument and was previously called "
+            "with two (searching whatever stale block the last call left in "
+            "R8, faulting inside fox::Block::GetFileForPathId)\n",
+            provider, vt, fn);
+    }
+
     static void* ResolveMtarForEntrySEH(unsigned long long entry)
     {
+        void* provider = g_EquipDataProvider.load(std::memory_order_relaxed);
+        if (!provider)
+        {
+            static std::atomic<bool> s_Warned{ false };
+            if (!s_Warned.exchange(true))
+                Log("[WeaponKey] entry->mtar resolution is OFF until the "
+                    "EquipDataSystemImpl provider is seen (first weapon "
+                    "Realize): cross-family clip fallback and mtar "
+                    "identification report not-found until then\n");
+            return nullptr;
+        }
         __try
         {
-            auto* obj = ResolveGameAddress(gAddr.Equip_MotionMtarResolver);
-            if (!obj)
-                return nullptr;
-            void* vt = *reinterpret_cast<void**>(obj);
+            void* vt = *reinterpret_cast<void**>(provider);
             if (!vt)
                 return nullptr;
-            void* fn = *reinterpret_cast<void**>(static_cast<char*>(vt) + 0x28);
+            void* fn = *reinterpret_cast<void**>(static_cast<char*>(vt) + 0x10);
             if (!fn)
                 return nullptr;
-            return reinterpret_cast<MtarGetAnimFileFn_t>(fn)(obj, entry);
+            return reinterpret_cast<MtarGetAnimFileFn_t>(fn)(provider, entry);
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
@@ -4029,6 +4517,32 @@ namespace
     static unsigned char __fastcall hkClipArchiveFallback(void* ctl, unsigned int slot,
                                                           unsigned long long clip)
     {
+
+        {
+            void* mdlArr = ReadPtrAtSEH(ctl, 0x58);
+            void* model = mdlArr ? ReadPtrAtSEH(mdlArr, static_cast<size_t>(slot) * 8) : nullptr;
+            if (!model)
+            {
+#ifdef _DEBUG
+                static std::mutex mxN;
+                static std::set<std::uint64_t> loggedN;
+                const std::uint64_t k =
+                    (reinterpret_cast<std::uint64_t>(ctl) << 8) | (slot & 0xFF);
+                bool isNewN;
+                {
+                    std::lock_guard<std::mutex> lk(mxN);
+                    isNewN = loggedN.size() < 32 && loggedN.insert(k).second;
+                }
+                if (isNewN)
+                    Log("[WeaponKey] clip-set SKIPPED - model[slot] is null ctl=%p slot=%u "
+                        "clip=%016llX (this part's fmdl did not load; SetMotionData would deref a "
+                        "null model and crash - the weapon has a missing/bad .parts model for this "
+                        "slot)\n",
+                        ctl, slot, clip);
+#endif
+                return 0;
+            }
+        }
         const unsigned char r = g_OrigClipSetByPath(ctl, slot, clip);
         if (r)
         {
@@ -4236,6 +4750,124 @@ namespace
         g_OrigHideMagazine(self, handle, which);
     }
 
+    static ClipSetFn_t g_OrigSetMotionByPathReal = nullptr;
+    static void* g_SetMotionByPathRealAddr = nullptr;
+
+    static unsigned char __fastcall hkSetMotionByPathSafe(void* ctl, unsigned int slot,
+                                                          unsigned long long clip)
+    {
+        void* mdlArr = ReadPtrAtSEH(ctl, 0x58);
+        void* model = mdlArr ? ReadPtrAtSEH(mdlArr, static_cast<size_t>(slot) * 8) : nullptr;
+        if (!model)
+            return 0;
+        __try
+        {
+            return g_OrigSetMotionByPathReal(ctl, slot, clip);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return 0;
+        }
+    }
+
+    using PartsVoidSetterFn_t =
+        void(__fastcall*)(void*, unsigned int, unsigned long long, unsigned long long);
+
+    static bool PartsSlotModelNullSEH(void* self, unsigned int index)
+    {
+        void* mdlArr = ReadPtrAtSEH(self, 0x58);
+        void* model = mdlArr ? ReadPtrAtSEH(mdlArr, static_cast<size_t>(index) * 8) : nullptr;
+        return model == nullptr;
+    }
+
+    static PartsVoidSetterFn_t g_OrigPartsThermo = nullptr;   // vtbl+0x1a0 SetThermoGraphy   0x140ADDDB0
+    static PartsVoidSetterFn_t g_OrigPartsB0 = nullptr;       // vtbl+0xb0                    0x140ADE4D0
+    static PartsVoidSetterFn_t g_OrigPartsVisMesh = nullptr;  // vtbl+0x100 SetVisibilityMesh 0x140ADE5C0
+
+    static void __fastcall hkPartsThermoSafe(void* self, unsigned int index,
+                                             unsigned long long a2, unsigned long long a3)
+    {
+        if (PartsSlotModelNullSEH(self, index))
+            return;
+        __try { g_OrigPartsThermo(self, index, a2, a3); }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+
+    static void __fastcall hkPartsB0Safe(void* self, unsigned int index,
+                                         unsigned long long a2, unsigned long long a3)
+    {
+        if (PartsSlotModelNullSEH(self, index))
+            return;
+        __try { g_OrigPartsB0(self, index, a2, a3); }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+
+    static void __fastcall hkPartsVisMeshSafe(void* self, unsigned int index,
+                                              unsigned long long a2, unsigned long long a3)
+    {
+        if (PartsSlotModelNullSEH(self, index))
+            return;
+        __try { g_OrigPartsVisMesh(self, index, a2, a3); }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+
+    struct PartsSlotGuardDef
+    {
+        uintptr_t en154Addr;
+        void* hook;
+        void** orig;
+        const char* label;
+    };
+
+    static void* g_PartsSlotGuardAddrs[3] = { nullptr, nullptr, nullptr };
+
+    static void InstallPartsSlotModelGuards()
+    {
+        if (gGameBuild != ::AddressSetRuntime::GameBuild::En_1_0_15_4)
+            return;
+        const PartsSlotGuardDef defs[3] = {
+            { 0x140adddb0ull, reinterpret_cast<void*>(&hkPartsThermoSafe),
+              reinterpret_cast<void**>(&g_OrigPartsThermo),  "SetThermoGraphy(vtbl+0x1a0)" },
+            { 0x140ade4d0ull, reinterpret_cast<void*>(&hkPartsB0Safe),
+              reinterpret_cast<void**>(&g_OrigPartsB0),      "partsSetter(vtbl+0xb0)" },
+            { 0x140ade5c0ull, reinterpret_cast<void*>(&hkPartsVisMeshSafe),
+              reinterpret_cast<void**>(&g_OrigPartsVisMesh), "SetVisibilityMesh(vtbl+0x100)" },
+        };
+        for (int i = 0; i < 3; ++i)
+        {
+            void* target = reinterpret_cast<void*>(ResolveGameAddress(defs[i].en154Addr));
+            if (!target)
+                continue;
+            if (CreateAndEnableHook(target, defs[i].hook, defs[i].orig))
+            {
+                g_PartsSlotGuardAddrs[i] = target;
+#ifdef _DEBUG
+                Log("[EquipParam] parts-slot model guard Install -> OK (%s target=%p; skips the "
+                    "setter when model[slot] is null so a weapon with an unloaded part model "
+                    "degrades instead of crashing)\n", defs[i].label, target);
+#endif
+            }
+            else
+                Log("[EquipParam] parts-slot model guard Install -> FAIL (%s target=%p)\n",
+                    defs[i].label, target);
+        }
+    }
+
+    static void RemovePartsSlotModelGuards()
+    {
+        for (int i = 0; i < 3; ++i)
+        {
+            if (g_PartsSlotGuardAddrs[i])
+            {
+                DisableAndRemoveHook(g_PartsSlotGuardAddrs[i]);
+                g_PartsSlotGuardAddrs[i] = nullptr;
+            }
+        }
+        g_OrigPartsThermo = nullptr;
+        g_OrigPartsB0 = nullptr;
+        g_OrigPartsVisMesh = nullptr;
+    }
+
     static void ArmClipArchiveFallback()
     {
         if (gGameBuild != ::AddressSetRuntime::GameBuild::En_1_0_15_4)
@@ -4293,43 +4925,49 @@ namespace
         "/Assets/tpp/pack/player/motion/equip/magazine/pl_mgzn_",
         "/Assets/tpp/pack/player/motion/equip/under_barrel/pl_ubrrl_" };
 
-    static void RecoverFamilyRoot(std::uint64_t pkg, int& cat, std::string& root)
+    static std::unordered_map<std::uint64_t, std::pair<int, std::string>>
+        g_FamilyRootByPkg;
+    static std::once_flag g_FamilyRootOnce;
+
+    static void BuildFamilyRootTable()
     {
-        static std::mutex mx;
-        static std::map<std::uint64_t, std::pair<int, std::string>> cache;
-        {
-            std::lock_guard<std::mutex> lock(mx);
-            auto it = cache.find(pkg);
-            if (it != cache.end())
-            {
-                cat = it->second.first;
-                root = it->second.second;
-                return;
-            }
-        }
-        cat = -1;
-        root.clear();
-        for (int c = 0; c < 4 && root.empty(); ++c)
+        g_FamilyRootByPkg.reserve(4 * 26 * 26 * 100);
+        for (int c = 0; c < 4; ++c)
         {
             std::string p = std::string(kPlayerPkgPrefixes[c]) + "aa00.fpk";
             const size_t off = std::strlen(kPlayerPkgPrefixes[c]);
-            for (char a = 'a'; a <= 'z' && root.empty(); ++a)
-                for (char b = 'a'; b <= 'z' && root.empty(); ++b)
-                    for (int d = 0; d < 100 && root.empty(); ++d)
+            for (char a = 'a'; a <= 'z'; ++a)
+                for (char b = 'a'; b <= 'z'; ++b)
+                    for (int d = 0; d < 100; ++d)
                     {
                         p[off] = a;
                         p[off + 1] = b;
                         p[off + 2] = static_cast<char>('0' + d / 10);
                         p[off + 3] = static_cast<char>('0' + d % 10);
-                        if (FoxHashes::PathCode64Ext(p) == pkg)
-                        {
-                            root.assign(p, off, 4);
-                            cat = c;
-                        }
+                        g_FamilyRootByPkg.emplace(
+                            FoxHashes::PathCode64Ext(p),
+                            std::make_pair(c, p.substr(off, 4)));
                     }
         }
-        std::lock_guard<std::mutex> lock(mx);
-        cache[pkg] = { cat, root };
+    }
+
+    static void WarmFamilyRootTable()
+    {
+        std::thread([] { std::call_once(g_FamilyRootOnce, BuildFamilyRootTable); })
+            .detach();
+    }
+
+    static void RecoverFamilyRoot(std::uint64_t pkg, int& cat, std::string& root)
+    {
+        std::call_once(g_FamilyRootOnce, BuildFamilyRootTable);
+        cat = -1;
+        root.clear();
+        auto it = g_FamilyRootByPkg.find(pkg);
+        if (it != g_FamilyRootByPkg.end())
+        {
+            cat = it->second.first;
+            root = it->second.second;
+        }
     }
 
     static std::set<std::uint64_t> g_ChimeraPackNames;
@@ -4945,11 +5583,41 @@ namespace
         }
     }
 
+    struct StallWatch
+    {
+        const char*   what;
+        std::uint32_t eq;
+        LARGE_INTEGER t0;
+
+        StallWatch(const char* label, std::uint32_t equipId)
+            : what(label), eq(equipId)
+        {
+            QueryPerformanceCounter(&t0);
+        }
+
+        ~StallWatch()
+        {
+            LARGE_INTEGER t1, f;
+            QueryPerformanceCounter(&t1);
+            QueryPerformanceFrequency(&f);
+            if (!f.QuadPart)
+                return;
+            const double ms =
+                (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)f.QuadPart;
+            if (ms < 16.0)
+                return;
+            Log("[WeaponKey] %s for eq=%u blocked the calling thread for %.0f ms "
+                "- a weapon realize that lands mid-gameplay stutters by that "
+                "much\n", what, eq, ms);
+        }
+    };
+
     static void __fastcall hkAddMtarBlockPackagePaths(void* arr, std::uint32_t equipId)
     {
         g_OrigAddMtarBlockPackagePaths(arr, equipId);
         if (!arr || equipId == 0 || equipId >= 0x800)
             return;
+        StallWatch _stall("motion pack mount", equipId);
         if (TppEquip_GetSubIdForEquipId(static_cast<int>(equipId)) == 0)
             return;
         const std::uint32_t t = GetEquipTypeForEquipId(equipId) & 0x1F;
@@ -4965,6 +5633,13 @@ namespace
         }
         bool donorPackOk = false, familyPackOk = false;
 #ifdef _DEBUG
+        static std::set<std::uint32_t> probeLogged;
+        bool firstProbe = false;
+        {
+            std::lock_guard<std::mutex> lock(g_WeaponKeyMutex);
+            firstProbe = probeLogged.insert(equipId).second;
+        }
+        if (firstProbe)
         {
             void* mlDbg = GetEquipMotionLoaderIface();
             void* mlvDbg = mlDbg ? ReadPtrAtSEH(mlDbg, 0) : nullptr;
@@ -5200,9 +5875,12 @@ namespace
         static std::mutex mx;
         static std::map<unsigned long long, int> cnt;
         std::lock_guard<std::mutex> lock(mx);
-        int& n = cnt[(static_cast<unsigned long long>(info.eq) << 8) | (slot & 0xFF)];
+
+        const unsigned long long key = (static_cast<unsigned long long>(info.eq) << 40) |
+                                       ((slot & 0xFF) << 32) | (c & 0xffffffffull);
+        int& n = cnt[key];
         ++n;
-        if (n <= 8)
+        if (n == 1)
         {
             void* models = ReadPtrAtSEH(ctl, 0x58);
             void* model = models ? ReadPtrAtSEH(models, static_cast<size_t>(slot) * 8) : nullptr;
@@ -5210,7 +5888,8 @@ namespace
                 ctl, slot, c & 0xffffffffull, model,
                 static_cast<long long>(static_cast<int>(r)), info.eq,
                 (static_cast<int>(r) < 0)
-                    ? "  <<< NO BONE BOUND - the whole bolt drive is skipped for this slot"
+                    ? "  <<< NO BONE BOUND (clip references this bone but the custom model has no "
+                      "bone by that name - if this is the cylinder, that is why it does not rotate)"
                     : "");
         }
         return r;
@@ -5235,6 +5914,27 @@ namespace
                     "pos=(%.5f %.5f %.5f) (matrix landed in the model's local pose buffer)\n",
                     ctl, slot, boneIdx, info.eq, addr,
                     haveNow ? now[0] : 0.0f, haveNow ? now[1] : 0.0f, haveNow ? now[2] : 0.0f);
+        }
+
+        if (info.eq == 96 && boneIdx == 2)
+        {
+            float mm[8] = { 0,0,0,0,0,0,0,0 };
+            if (CopyBoltBytesSEH(mm, reinterpret_cast<const void*>(mtx), sizeof(mm)))
+            {
+                const double ang = atan2(static_cast<double>(mm[1]), static_cast<double>(mm[0])) *
+                                   57.29577951308232;
+                static std::mutex mxR;
+                static int nr = 0;
+                std::lock_guard<std::mutex> lock(mxR);
+                if (nr < 40)
+                {
+                    ++nr;
+                    Log("[WeaponKey] CYL-ENGINE-ROT eq=96 bone2 engine-row0=(%.4f %.4f %.4f) "
+                        "row1=(%.4f %.4f %.4f) Zang=%.1fdeg (sweeps => vanilla clip already spins the "
+                        "cylinder; ~constant => only the DLL does)\n",
+                        mm[0], mm[1], mm[2], mm[4], mm[5], mm[6], ang);
+                }
+            }
         }
         if (haveNow)
         {
@@ -5796,6 +6496,38 @@ namespace
                 }
             }
         }
+        if (tracked)
+        {
+
+            void* baseC8 = ReadPtrAtSEH(self, 0xc8);
+            const unsigned e6 = ReadRecWord(base, 0, 6);
+            const unsigned c6 = baseC8 ? ReadRecWord(baseC8, 0, 6) : 0xFFFFFFFFu;
+            unsigned ai0 = 0xFFFFFFFFu;
+            int b0B = -1, b0C = -1;
+            ReadAmmoRowSEH(self, 0, ai0, b0B, b0C);
+            static std::mutex mxC;
+            static std::map<unsigned, unsigned> lastC;
+            static std::map<unsigned, int> cntC;
+            std::lock_guard<std::mutex> lock(mxC);
+            const unsigned packed = ((e6 & 0xFFFFu) << 16) | (c6 & 0xFFFFu);
+            int& n = cntC[eq];
+            unsigned& last = lastC[eq];
+            if (n < 40 && (packed != last || n < 2))
+            {
+                ++n;
+                last = packed;
+                Log("[WeaponKey] CYLINDER-DIAG eq=%u obj=%p | rec6[e8]=%04X (isCyl=%u vis6-11=%02X) | "
+                    "rec6[c8]=%04X (vis=%02X) | ammoRow +0xB=%02X +0xC=%02X (show 0x20 %s) - e8 is "
+                    "what the reader+positioner read; c8 is what SetAmmoToCylinder writes. During a "
+                    "loaded cylinder: e8 vis!=0 => rounds should place; e8 vis=0 while c8 vis!=0 => "
+                    "load state landing in a record the reader never reads (the desync); both 0 => "
+                    "SetAmmoToCylinder never populated it (dispatch/type gate)\n",
+                    eq, self,
+                    e6, e6 & 1u, (e6 >> 6) & 0x3Fu,
+                    c6, (c6 >> 6) & 0x3Fu,
+                    b0B & 0xFF, b0C & 0xFF, (b0C & 0x20) ? "SET" : "CLEAR");
+            }
+        }
         if (tracked && (pre10[0] & 0xFF) != 2)
         {
             static std::mutex mxA;
@@ -5811,6 +6543,48 @@ namespace
                     eq, self, pre10[0]);
         }
         const unsigned long long r = g_OrigPostPutMotion(self, b, c, d);
+        FeedCylinderVisibilitySEH(self);
+        DriveCylinderRounds();
+        DriveCylinderRotation();
+        if (t_probeSlots > 0 && t_drivenHash)
+        {
+            static std::mutex mxP;
+            static std::map<unsigned, int> cntP;
+            std::lock_guard<std::mutex> lock(mxP);
+            int& np = cntP[t_meshEq];
+            if (np < 4)
+            {
+                ++np;
+                Log("[WeaponKey] CYL-MESH eq=%u ammo=%u -> showing %u of %d hidden round meshes "
+                    "(round meshes are the hidden-by-default ones, flag 0xFF; first `ammo` shown, rest "
+                    "hidden - so the loaded count is exact and empties as you fire)\n",
+                    t_meshEq, t_cylAmmo,
+                    (t_cylAmmo > (unsigned)t_roundCount ? (unsigned)t_roundCount : t_cylAmmo),
+                    t_roundCount);
+            }
+        }
+        if (t_meshCount > 0)
+        {
+            static std::mutex mxM;
+            static std::map<unsigned, int> cntM;
+            std::lock_guard<std::mutex> lock(mxM);
+            int& nm = cntM[t_meshEq];
+            if (nm < 1)
+            {
+                ++nm;
+                bool amoPresent = false;
+                for (int i = 0; i < t_meshCount; ++i)
+                    if (t_meshHash[i] == 0x4E943DFCu) amoPresent = true;
+                Log("[WeaponKey] CYL-MESHDUMP eq=%u meshCount=%d MESH_AMO(0x4E943DFC)present=%d - the "
+                    "cylinder round mesh is named per-model (no universal hash); its 32-bit name-hash "
+                    "is one of these. Identify it (usually a mesh whose flag differs from the body "
+                    "meshes / your fmdl's ammo mesh) and I drive THAT hash by ammo:\n",
+                    t_meshEq, t_meshCount, amoPresent ? 1 : 0);
+                for (int i = 0; i < t_meshCount; ++i)
+                    Log("[WeaponKey]   mesh[%02d] hash=%08X flagA=%02X flagB=%02X\n",
+                        i, t_meshHash[i], t_meshFA[i], t_meshFB[i]);
+            }
+        }
         if (tracked)
         {
             for (int s = 0; s < 2; ++s)
@@ -5836,7 +6610,11 @@ namespace
         }
         return r;
 #else
-        return g_OrigPostPutMotion(self, b, c, d);
+        const unsigned long long r = g_OrigPostPutMotion(self, b, c, d);
+        FeedCylinderVisibilitySEH(self);
+        DriveCylinderRounds();
+        DriveCylinderRotation();
+        return r;
 #endif
     }
 
@@ -5980,30 +6758,36 @@ namespace
             if (pool && size > stride)
                 return -5;
             if (pool)
-                reinterpret_cast<void(__fastcall*)(void*)>(f.dtorPool)(old);
-            else
-                reinterpret_cast<void(__fastcall*)(void*)>(f.dtorHeap)(old);
-            ctlArr[idx] = nullptr;
-            void* fresh = nullptr;
-            if (pool)
             {
+
+                reinterpret_cast<void(__fastcall*)(void*)>(f.dtorPool)(old);
                 void* mem = pool + static_cast<std::size_t>(stride)
                                        * static_cast<unsigned>(idx);
                 reinterpret_cast<void*(__fastcall*)(void*, void*, std::uint64_t)>(
                     f.place)(mem, &p, size);
-                fresh = mem;
+                ctlArr[idx] = mem;
+                if (*reinterpret_cast<void**>(ctl + 0xd8))
+                {
+                    std::uint8_t* aux = *reinterpret_cast<std::uint8_t**>(ctl + 0xe8);
+                    if (aux)
+                        reinterpret_cast<void(__fastcall*)(void*, void*)>(f.aux)(
+                            mem, aux + static_cast<std::size_t>(idx) * 0x50);
+                }
+                return 0;
             }
-            else
-                fresh = reinterpret_cast<void*(__fastcall*)(void*)>(f.heap)(&p);
+
+            bool remapped = true;
+            void* fresh = reinterpret_cast<void*(__fastcall*)(void*)>(f.heap)(&p);
             if (!fresh)
             {
                 p.flags &= ~4u;
+                remapped = false;
                 fresh = reinterpret_cast<void*(__fastcall*)(void*)>(f.heap)(&p);
-                if (!fresh)
-                    return -6;
-                ctlArr[idx] = fresh;
-                return -7;
             }
+            if (!fresh)
+                return -6;
+            reinterpret_cast<void(__fastcall*)(void*)>(f.dtorHeap)(old);
+            ctlArr[idx] = fresh;
             if (*reinterpret_cast<void**>(ctl + 0xd8))
             {
                 std::uint8_t* aux = *reinterpret_cast<std::uint8_t**>(ctl + 0xe8);
@@ -6011,8 +6795,7 @@ namespace
                     reinterpret_cast<void(__fastcall*)(void*, void*)>(f.aux)(
                         fresh, aux + static_cast<std::size_t>(idx) * 0x50);
             }
-            ctlArr[idx] = fresh;
-            return 0;
+            return remapped ? 0 : -7;
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
@@ -6064,6 +6847,19 @@ namespace
         }
     }
 
+    static bool CallOrigCreateSlotSEH(void* ctl, std::uint32_t slot, void* info, std::uint8_t d)
+    {
+        __try
+        {
+            g_OrigPartsCtlCreateSlot(ctl, slot, info, d);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
     static void __fastcall hkPartsCtlCreateSlot(void* ctl, std::uint32_t slot,
                                                 void* info, std::uint8_t d)
     {
@@ -6071,7 +6867,18 @@ namespace
         int n = 0;
         if (ctl && info)
             n = SnapshotControlsSEH(ctl, before, 32);
-        g_OrigPartsCtlCreateSlot(ctl, slot, info, d);
+        if (!CallOrigCreateSlotSEH(ctl, slot, info, d))
+        {
+#ifdef _DEBUG
+            static std::atomic<int> budget{ 8 };
+            if (budget.fetch_sub(1) > 0)
+                Log("[WeaponKey] PartsCtlCreateSlot FAULTED (caught) ctl=%p slot=%u info=%p - a part "
+                    "could not build its control (missing/bad model asset); slot left uncreated to "
+                    "avoid a hard crash. The weapon has an unloaded .parts/fpk.\n",
+                    ctl, slot, info);
+#endif
+            return;
+        }
         if (n <= 0)
             return;
         RemapCreateFns f{};
@@ -6204,7 +7011,12 @@ namespace
         void* self, unsigned int a, unsigned int b)
     {
         FillCustomMotionEntries(self);
-        const unsigned long long r = g_OrigRealizedEquipRealize(self, a, b);
+        unsigned long long r = 0;
+        {
+            StallWatch _stall("the engine's own equip Realize", a);
+            r = g_OrigRealizedEquipRealize(self, a, b);
+        }
+        CaptureEquipDataProvider(self);
 #ifdef _DEBUG
         void* desc = CallDescProviderSEH(self);
         int d[6] = { -1, -1, -1, -1, -1, -1 };
@@ -6948,6 +7760,8 @@ namespace
 
     static void __fastcall hkSetupWeaponInfo(void* self, void* work, int slot)
     {
+        outfit::EndBootRestoreScrub("first SetupWeaponInfo - player is live");
+
         if (self)
             EnsureResolverMethodHook(self);
 
@@ -7402,6 +8216,75 @@ void Uninstall_WeaponKeyLog()
     g_OrigRealizedEquipRealize = nullptr;
 }
 
+namespace
+{
+    using BulletEffectSpawn_t = void(__fastcall*)(void*, unsigned long long, unsigned int,
+                                                  void*, unsigned int);
+    static BulletEffectSpawn_t g_OrigBulletEffectSpawn = nullptr;
+
+    static bool BulletEffectIndexInRangeSEH(void* emitter, unsigned int index)
+    {
+        __try
+        {
+            const unsigned char* base =
+                *reinterpret_cast<const unsigned char* const*>(
+                    reinterpret_cast<const unsigned char*>(emitter) + 0x50);
+            if (!base)
+                return false;
+            const unsigned long long count =
+                *reinterpret_cast<const unsigned long long*>(base - 8);
+            if (count == 0 || count > 0x1000)
+                return false;
+            return static_cast<unsigned long long>(index) < count;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
+    static void __fastcall hkBulletEffectSpawn(void* emitter, unsigned long long a2,
+                                               unsigned int index, void* a4, unsigned int a5)
+    {
+        if (emitter && index != 0 && !BulletEffectIndexInRangeSEH(emitter, index))
+        {
+            static std::atomic<bool> s_Warned{ false };
+            if (!s_Warned.exchange(true))
+                Log("[EquipParam] bullet trail/muzzle effect index %u is past this weapon's "
+                    "effect FilePtr array - skipping the effect instead of reading past the "
+                    "array end (the engine does no bounds check; a custom weapon whose "
+                    "donor-aliased fire params request an effect index its own equip row does "
+                    "not cover would otherwise GP-fault on the adjacent arena node)\n", index);
+            return;
+        }
+        g_OrigBulletEffectSpawn(emitter, a2, index, a4, a5);
+    }
+}
+
+bool Install_BulletEffectGuard()
+{
+    void* target = ResolveGameAddress(gAddr.BulletEffectController_CreateEffect);
+    if (!target)
+        return true;
+    const bool ok = CreateAndEnableHook(
+        target, &hkBulletEffectSpawn,
+        reinterpret_cast<void**>(&g_OrigBulletEffectSpawn));
+    if (!ok)
+        Log("[EquipParam] BulletEffect index guard Install -> FAIL (target=%p)\n", target);
+#ifdef _DEBUG
+    else
+        Log("[EquipParam] BulletEffect index guard Install -> OK (target=%p)\n", target);
+#endif
+    return ok;
+}
+
+void Uninstall_BulletEffectGuard()
+{
+    if (gAddr.BulletEffectController_CreateEffect && g_OrigBulletEffectSpawn)
+        DisableAndRemoveHook(ResolveGameAddress(gAddr.BulletEffectController_CreateEffect));
+    g_OrigBulletEffectSpawn = nullptr;
+}
+
 bool Install_GunInfoGuard()
 {
     void* target = ResolveGameAddress(gAddr.EquipSystem_SetUpGunInfoFromGunPartsDesc);
@@ -7429,11 +8312,14 @@ bool Install_GunInfoGuard()
                 "(target=%p)\n", g_AddMtarBlockPackagePathsAddr);
             g_AddMtarBlockPackagePathsAddr = nullptr;
         }
-#ifdef _DEBUG
         else
+        {
+            WarmFamilyRootTable();
+#ifdef _DEBUG
             Log("[EquipParam] AddMtarBlockPackagePaths mount hook Install -> OK "
                 "(target=%p)\n", g_AddMtarBlockPackagePathsAddr);
 #endif
+        }
     }
     if (gGameBuild == ::AddressSetRuntime::GameBuild::En_1_0_15_4)
     {
@@ -7512,6 +8398,29 @@ bool Install_GunInfoGuard()
                 g_PartsCtlCreateSlotAddr);
 #endif
     }
+    g_SetMotionByPathRealAddr =
+        reinterpret_cast<void*>(ResolveGameAddress(gAddr.SimplePartsControllerImpl_SetMotionDataByPath));
+    if (g_SetMotionByPathRealAddr)
+    {
+        const bool okS = CreateAndEnableHook(
+            g_SetMotionByPathRealAddr, &hkSetMotionByPathSafe,
+            reinterpret_cast<void**>(&g_OrigSetMotionByPathReal));
+        if (!okS)
+        {
+            Log("[EquipParam] SetMotionDataByPath model-guard detour Install -> FAIL "
+                "(target=%p)\n", g_SetMotionByPathRealAddr);
+            g_SetMotionByPathRealAddr = nullptr;
+        }
+#ifdef _DEBUG
+        else
+            Log("[EquipParam] SetMotionDataByPath model-guard detour Install -> OK "
+                "(target=%p; catches DIRECT reader/Realize callers the vtable hook misses - "
+                "skips the clip-set when model[slot] is null so a weapon whose part model "
+                "failed to load degrades instead of crashing in SetMotionData)\n",
+                g_SetMotionByPathRealAddr);
+#endif
+    }
+    InstallPartsSlotModelGuards();
     ArmClipArchiveFallback();
     return ok;
 }
@@ -7519,6 +8428,13 @@ bool Install_GunInfoGuard()
 void Uninstall_GunInfoGuard()
 {
     DisarmClipArchiveFallback();
+    RemovePartsSlotModelGuards();
+    if (g_SetMotionByPathRealAddr)
+    {
+        DisableAndRemoveHook(g_SetMotionByPathRealAddr);
+        g_SetMotionByPathRealAddr = nullptr;
+    }
+    g_OrigSetMotionByPathReal = nullptr;
     if (g_PartsCtlCreateSlotAddr)
     {
         DisableAndRemoveHook(g_PartsCtlCreateSlotAddr);
@@ -7620,6 +8536,21 @@ namespace
         }
     }
 
+    static bool RootTerminatedWithinSEH(const char* root, size_t maxLen)
+    {
+        __try
+        {
+            for (size_t i = 0; i < maxLen; ++i)
+                if (root[i] == '\0')
+                    return true;
+            return false;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
     static void __fastcall hkDefineFireSound(void* sys, unsigned int eqpType,
                                              unsigned __int64 r8, const char* root,
                                              char suffixSel, char buildSup,
@@ -7646,6 +8577,19 @@ namespace
                 }
             }
         }
+
+        const char* safeRoot = root;
+        if (!root || !RootTerminatedWithinSEH(root, 40))
+        {
+            safeRoot = "ar00";
+            static std::atomic<bool> s_BadRootWarned{ false };
+            if (!s_BadRootWarned.exchange(true))
+                Log("[EquipParam] DefineWeaponFireSound root is NULL or unterminated "
+                    "(eqpType=%u): substituting \"ar00\" so the game's strcat_s cannot "
+                    "overrun - the weapon's GunInfo setup faulted and was guarded, so "
+                    "its stats/sound are degraded but it no longer crashes\n", eqpType);
+        }
+
         const bool haveSup = found && !spec.supText.empty();
 
         bool handled = false;
@@ -7656,7 +8600,7 @@ namespace
             {
                 if (!haveSup)
                 {
-                    g_OrigDefineFireSound(sys, eqpType, r8, root, suffixSel,
+                    g_OrigDefineFireSound(sys, eqpType, r8, safeRoot, suffixSel,
                                           buildSup, outHashes);
                     origRan = true;
                 }
@@ -7675,7 +8619,7 @@ namespace
             }
         }
         if (!handled)
-            g_OrigDefineFireSound(sys, eqpType, r8, root, suffixSel, buildSup,
+            g_OrigDefineFireSound(sys, eqpType, r8, safeRoot, suffixSel, buildSup,
                                   outHashes);
         if (found && !spec.supText.empty())
         {
@@ -8261,6 +9205,30 @@ int __cdecl l_SetDamage(lua_State* L)
     ReadNamedInt(L, 1, "injurePart",   r.injurePart);
     ReadNamedInt(L, 1, "unk11", r.unk11);
     ReadNamedInt(L, 1, "unk12", r.unk12);
+
+    auto warnWidth = [&](const char* name, int v, int maxV)
+    {
+        if (v < 0 || v > maxV)
+            Log("[EquipParam] SetDamage damageId=%d: %s=%d exceeds the native "
+                "field (0..%d) and wraps to %d in the engine row - clamp or "
+                "rescale the value\n",
+                damageId, name, v, maxV, v & maxV);
+    };
+    warnWidth("lethalDamage",   r.lethalDamage,   0xFFFF);
+    warnWidth("staminaDamage",  r.staminaDamage,  0xFFFF);
+    warnWidth("impactForce",    r.impactForce,    0xFFFF);
+    warnWidth("lethalDamageUI", r.lethalDamageUI, 0xFFFF);
+    warnWidth("unk3", r.unk3, 0xFFFF);
+    warnWidth("unk4", r.unk4, 0xFFFF);
+    warnWidth("unk5", r.unk5, 0xFFFF);
+    warnWidth("unk6", r.unk6, 0xFFFF);
+    warnWidth("unk7", r.unk7, 0xFFFF);
+    warnWidth("unk8", r.unk8, 0xFFFF);
+    warnWidth("damageSource", r.damageSource, 0xFF);
+    warnWidth("injureType",   r.injureType,   0xF);
+    warnWidth("injurePart",   r.injurePart,   0xF);
+    warnWidth("unk11", r.unk11, 0xFF);
+    warnWidth("unk12", r.unk12, 0xFF);
 
     auto readFlag = [&](const char* name, const char* legacy) -> int
     {

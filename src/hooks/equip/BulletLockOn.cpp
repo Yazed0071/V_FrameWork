@@ -835,6 +835,10 @@ namespace
         std::uint32_t st1 = 0;
         float timer = 0.0f;
         float rate = -1.0f;
+        std::uint32_t liveRate = 0;
+        std::uint32_t liveTrig = 0;
+        std::uint32_t liveShot = 0;
+        std::uint32_t liveTrigWord = 0;
     };
 
     bool ReadDoFireDiagSEH(std::uint8_t* self, std::uint32_t rowIdx,
@@ -855,6 +859,10 @@ namespace
             d->flags8a = *reinterpret_cast<std::uint16_t*>(work + 0x8a);
             d->t7e = work[0x7e];
             d->t7f = work[0x7f];
+            d->liveRate = *reinterpret_cast<std::uint16_t*>(work + 0x68);
+            d->liveTrigWord = *reinterpret_cast<std::uint32_t*>(work + 0x88);
+            d->liveTrig = (d->liveTrigWord >> 10) & 0x7;
+            d->liveShot = work[0x7e];
             if (req)
                 d->fireBits = *reinterpret_cast<std::uint32_t*>(req + 0x54);
             const std::uint32_t rebased =
@@ -922,11 +930,14 @@ namespace
                 if (n <= 6)
                     Log("[WeaponKey] DoFire eq=%u obj=%p slot=%u hw=%u flags8A=0x%04X "
                         "ammo=%u state %u/%u -> %u/%u rate=%.4f "
-                        "(obj is the realized equip object whose record received the bolt "
-                        "state - compare with the reader ACTIVE lines to see whether the "
-                        "reader ever services this same object)\n",
+                        "|| LIVE gunInfo(work) fireRate(+0x68)=%u trigger(+0x88 bits10-12)=%u "
+                        "shotType(+0x7e)=%u [+0x88 word=0x%08X] "
+                        "(this is the gunInfo the shot ITSELF reads at trigger time - if trigger "
+                        "is 0 here but 3 in the rowbytes build dump, the live per-hw slot never "
+                        "got the custom receiver's fire-mode)\n",
                         pre.equipId, self, p3, pre.hw, pre.flags8a, pre.ammo,
-                        pre.st0, pre.st1, post.st0, post.st1, post.rate);
+                        pre.st0, pre.st1, post.st0, post.st1, post.rate,
+                        pre.liveRate, pre.liveTrig, pre.liveShot, pre.liveTrigWord);
             }
         }
 #endif
@@ -1387,20 +1398,20 @@ namespace equip
         if (c > 8) c = 8;
         spec.count = static_cast<std::uint32_t>(c);
         double t = lockTimeSec;
-        if (t < 0.05) t = 0.05;
-        if (t > 30.0) t = 30.0;
+        if (t < 0.001) t = 0.001;
+        if (t > 1.0e6) t = 1.0e6;
         spec.time = static_cast<float>(t);
         double turn = turnRateDeg;
-        if (turn < 1.0) turn = 1.0;
-        if (turn > 3600.0) turn = 3600.0;
+        if (turn < 0.0) turn = 0.0;
+        if (turn > 1.0e6) turn = 1.0e6;
         spec.turnRadPerSec = static_cast<float>(turn * 0.0174532925);
         double rMin = minRangeMeters;
         if (rMin < 0.0) rMin = 0.0;
-        if (rMin > 10000.0) rMin = 10000.0;
+        if (rMin > 1.0e6) rMin = 1.0e6;
         spec.minRange = static_cast<float>(rMin);
         double rMax = maxRangeMeters;
         if (rMax < 0.0) rMax = 0.0;
-        if (rMax > 10000.0) rMax = 10000.0;
+        if (rMax > 1.0e6) rMax = 1.0e6;
         spec.maxRange = static_cast<float>(rMax);
         if (lockedSpeed > 0.0 && baseSpeed > 0.0)
         {
@@ -1411,7 +1422,7 @@ namespace equip
         }
         double hs = homingStartMeters;
         if (hs < 0.0) hs = 0.0;
-        if (hs > 2000.0) hs = 2000.0;
+        if (hs > 1.0e6) hs = 1.0e6;
         spec.homingStartDist = static_cast<float>(hs);
 
         {

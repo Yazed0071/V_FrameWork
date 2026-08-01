@@ -856,6 +856,15 @@ namespace
             return g_OrigLoadBionicArmFv2(outPath, playerType,
                                           kBionicArmVanillaPartsTypeSubstitute, hand);
         }
+        if (static_cast<std::uint8_t>(effectivePartsType & 0xFF) < outfit::kCustomPartsTypeStart)
+        {
+            bool armEnable = true;
+            if (outfit::VanillaExtGetSuitArm(
+                    static_cast<std::uint8_t>(effectivePartsType & 0xFF),
+                    pt, outfit::ReadLiveSelectorCode(), &armEnable)
+                && !armEnable)
+                return WriteFoxPath(outPath, outfit::kSubAssetDisabled);
+        }
         return g_OrigLoadBionicArmFv2(outPath, playerType, VanillaClampPartsType(playerPartsType), playerHandType);
     }
 
@@ -874,6 +883,15 @@ namespace
             const std::uint32_t hand = RecoverArmTierForLeaf(playerType, playerHandType);
             return g_OrigLoadBionicArmFpk(outPath, playerType,
                                           kBionicArmVanillaPartsTypeSubstitute, hand);
+        }
+        if (static_cast<std::uint8_t>(effectivePartsType & 0xFF) < outfit::kCustomPartsTypeStart)
+        {
+            bool armEnable = true;
+            if (outfit::VanillaExtGetSuitArm(
+                    static_cast<std::uint8_t>(effectivePartsType & 0xFF),
+                    pt, outfit::ReadLiveSelectorCode(), &armEnable)
+                && !armEnable)
+                return WriteFoxPath(outPath, outfit::kSubAssetDisabled);
         }
         return g_OrigLoadBionicArmFpk(outPath, playerType, VanillaClampPartsType(playerPartsType), playerHandType);
     }
@@ -951,6 +969,15 @@ namespace
             }
 #endif
             return origFv2;
+        }
+        if (static_cast<std::uint8_t>(effectivePartsType & 0xFF) < outfit::kCustomPartsTypeStart)
+        {
+            bool headEnable = true;
+            if (outfit::VanillaExtGetSuitHead(
+                    static_cast<std::uint8_t>(effectivePartsType & 0xFF),
+                    pt, outfit::ReadLiveSelectorCode(), &headEnable)
+                && !headEnable)
+                return WriteFoxPath(outPath, outfit::kSubAssetDisabled);
         }
         if (const outfit::CustomHeadEntry* head = ResolveVanillaSuitCustomHead(
                 pt, playerPartsType, static_cast<std::uint8_t>(playerFaceEquipId)))
@@ -1043,6 +1070,15 @@ namespace
             }
 #endif
             return origFpk;
+        }
+        if (static_cast<std::uint8_t>(effectivePartsType & 0xFF) < outfit::kCustomPartsTypeStart)
+        {
+            bool headEnable = true;
+            if (outfit::VanillaExtGetSuitHead(
+                    static_cast<std::uint8_t>(effectivePartsType & 0xFF),
+                    pt, outfit::ReadLiveSelectorCode(), &headEnable)
+                && !headEnable)
+                return WriteFoxPath(outPath, outfit::kSubAssetDisabled);
         }
         if (const outfit::CustomHeadEntry* head = ResolveVanillaSuitCustomHead(
                 pt, playerPartsType, static_cast<std::uint8_t>(playerFaceEquipId)))
@@ -1222,6 +1258,16 @@ namespace
             if (outfit::TryGetOutfitByPartsType(pt, &entry) && entry)
                 return entry->IsHeadEnabled(livePT) ? std::uint8_t{1} : std::uint8_t{0};
         }
+        if (effective < outfit::kCustomPartsTypeStart)
+        {
+            bool headEnable = true;
+            if (outfit::VanillaExtGetSuitHead(
+                    static_cast<std::uint8_t>(effective & 0xFF),
+                    outfit::ReadLivePlayerType(), outfit::ReadLiveSelectorCode(),
+                    &headEnable)
+                && !headEnable)
+                return 0;
+        }
         const std::uint8_t orig =
             g_OrigDoesNeedFaceFova ? g_OrigDoesNeedFaceFova(playerPartsType) : 0;
         if (orig == 0)
@@ -1242,6 +1288,16 @@ namespace
             const auto livePT = outfit::ReadLivePlayerType();
             if (outfit::TryGetOutfitByPartsType(pt, &entry) && entry)
                 return entry->IsHeadEnabled(livePT) ? std::uint8_t{1} : std::uint8_t{0};
+        }
+        if (effective < outfit::kCustomPartsTypeStart)
+        {
+            bool headEnable = true;
+            if (outfit::VanillaExtGetSuitHead(
+                    static_cast<std::uint8_t>(effective & 0xFF),
+                    outfit::ReadLivePlayerType(), outfit::ReadLiveSelectorCode(),
+                    &headEnable)
+                && !headEnable)
+                return 0;
         }
         const std::uint8_t orig = g_OrigDoesNeedFaceFovaForAvatar
              ? g_OrigDoesNeedFaceFovaForAvatar(playerPartsType) : 0;

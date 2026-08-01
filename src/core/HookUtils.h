@@ -47,6 +47,8 @@ inline bool CreateAndEnableHook(void* target, void* detour, void** original)
     MH_STATUS st = MH_CreateHook(target, detour, original);
     if (st != MH_OK && st != MH_ERROR_ALREADY_CREATED)
         return false;
+    if (st == MH_ERROR_ALREADY_CREATED && !*original)
+        return false;
 
     st = EnableOrQueueHook(target);
     if (st != MH_OK && st != MH_ERROR_ENABLED)

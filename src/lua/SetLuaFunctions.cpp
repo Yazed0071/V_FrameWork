@@ -29,6 +29,7 @@ extern "C" {
 #include "GetVoiceParamWithCallSign.h"
 #include "LostHostageHook.h"
 #include "../core/V_FrameWorkState.h"
+#include "../core/LuaBroadcaster.h"
 #include "StepRadioDiscovery.h"
 #include "ActionCoreImpl_UpdateOptCamo.h"
 #include "MbDvcCassetteTapeCallbackImpl_PlayOrPauseSelectedTrack.h"
@@ -1932,17 +1933,11 @@ extern "C" __declspec(dllexport) int __cdecl luaopen_V_FrameWork(lua_State* L)
 static int __fastcall hkLuaPcallPump(lua_State* L, int nargs, int nresults,
                                      int errfunc)
 {
-    static thread_local int s_pcallDepth = 0;
-
-    ++s_pcallDepth;
+    V_FrameWork::EnterLuaPcall();
     const int r = g_OrigLuaPcallPump
         ? g_OrigLuaPcallPump(L, nargs, nresults, errfunc)
         : 0;
-    --s_pcallDepth;
-
-    if (s_pcallDepth == 0)
-        Drain_CassetteWalkmanEvents();
-
+    V_FrameWork::ExitLuaPcall();
     return r;
 }
 

@@ -109,6 +109,24 @@ namespace
         return n > m && _stricmp(path + n - m, ext) == 0;
     }
 
+    std::uint64_t ReadIconFtexPathField(lua_State* L, int tableIndex)
+    {
+        LuaGetField(L, tableIndex, "iconFtexPath");
+        std::uint64_t result = 0;
+        if (LuaType(L, -1) == LUA_TSTRING)
+        {
+            if (const char* s = GetLuaString(L, -1); s && *s)
+            {
+                std::string path(s);
+                if (!PathHasRequiredExt(path.c_str(), ".ftex"))
+                    path += ".ftex";
+                result = FoxHashes::PathCode64Ext(path);
+            }
+        }
+        LuaPop(L, 1);
+        return result;
+    }
+
     std::uint64_t ReadSubAssetField(
         lua_State* L, int tableIndex, const char* fieldName,
         std::uint64_t defaultValue)
@@ -443,6 +461,8 @@ namespace
                         LuaPop(L, 1);
                     }
 
+                    v.iconPathHash = ReadIconFtexPathField(L, -1);
+
                     LuaGetField(L, -1, "enableArm");
                     if (LuaType(L, -1) != 0)
                     {
@@ -476,7 +496,7 @@ namespace
                         && TryReadTableBoolField(L, GetLuaTop(L), "default", false))
                         branch.defaultVariant = static_cast<std::uint8_t>(i);
 
-                    branch.variants[i] = v;
+                    branch.EnsureVar(i) = v;
                     maxFilledSlot      = static_cast<std::uint8_t>(i);
                 }
                 LuaPop(L, 1);
@@ -591,6 +611,8 @@ namespace
                     static_cast<std::uint64_t>(displayHashRaw);
             }
         }
+
+        branch.baseIconPathHash = ReadIconFtexPathField(L, branchTblIdx);
 
 
         ReadVariantsArrayInto(L, branchTblIdx, branch);
@@ -781,10 +803,11 @@ int __cdecl l_RegisterOutfit(lua_State* L)
         if (ps != 0) def.selectorCodeHint = ps;
     }
     {
-        std::uint8_t persisted[14] = {};
+        std::uint8_t persisted[V_FrameWorkState::kPersistedVariantSelectorSlots] = {};
         V_FrameWorkState::GetPersistedOutfitVariantSelectors(
             key, persisted, sizeof(persisted));
-        for (std::size_t i = 0; i < 14; ++i)
+        for (std::size_t i = 0;
+             i < V_FrameWorkState::kPersistedVariantSelectorSlots; ++i)
             def.variantSelectorHints[i + 1] = persisted[i];
     }
 
@@ -1142,6 +1165,29 @@ int __cdecl l_ExtendVanillaOutfit(lua_State* L)
                     labelCamo,
                     static_cast<unsigned>(vanillaPartsType),
                     bk.key);
+            }
+
+            bool hasArm = false, armVal = true;
+            LuaGetField(L, branchIdx, "enableArm");
+            if (LuaType(L, -1) != 0) { hasArm = true; armVal = GetLuaBool(L, -1) != 0; }
+            LuaPop(L, 1);
+            bool hasHead = false, headVal = false;
+            LuaGetField(L, branchIdx, "enableHead");
+            if (LuaType(L, -1) != 0) { hasHead = true; headVal = GetLuaBool(L, -1) != 0; }
+            LuaPop(L, 1);
+            if ((hasArm || hasHead)
+                && outfit::ExtendVanillaSuitArmHead(vanillaPartsType, bk.playerType,
+                       labelCamo >= 0 ? static_cast<std::uint8_t>(labelCamo)
+                                      : std::uint8_t{0xFF},
+                       hasArm, armVal, hasHead, headVal))
+            {
+                any = true;
+                Log("[Outfit] ExtendVanillaOutfit '%s' (camo %d) -> vanilla "
+                    "partsType 0x%02X: %s arm/head override (arm=%s head=%s)\n",
+                    outfitName ? outfitName : "(by number)",
+                    labelCamo, static_cast<unsigned>(vanillaPartsType), bk.key,
+                    hasArm ? (armVal ? "on" : "off") : "-",
+                    hasHead ? (headVal ? "on" : "off") : "-");
             }
 
             outfit::VanillaSuitVariantAsset

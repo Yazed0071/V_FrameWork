@@ -35,6 +35,9 @@ void Uninstall_GetAttackIdGuard();
 bool Install_GunInfoGuard();
 void Uninstall_GunInfoGuard();
 
+bool Install_BulletEffectGuard();
+void Uninstall_BulletEffectGuard();
+
 bool Install_WeaponKeyLog();
 void Uninstall_WeaponKeyLog();
 void EquipParam_SetWeaponHandling(unsigned int fromKey, unsigned int toKey);

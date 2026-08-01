@@ -520,6 +520,10 @@ namespace
                             static_cast<unsigned>(syncPT));
                     }
                 }
+                else if (worn == 0)
+                {
+                    outfit::WriteLiveHeadSlot(0);
+                }
             }
             __except (EXCEPTION_EXECUTE_HANDLER) {}
 
@@ -724,6 +728,11 @@ namespace
                         }
                         outfit::SetWornCustomHeadSlot(worn);
                     }
+                }
+                else
+                {
+                    outfit::WriteLiveHeadSlot(0);
+                    outfit::ClearWornCustomHeadSlot();
                 }
             }
 

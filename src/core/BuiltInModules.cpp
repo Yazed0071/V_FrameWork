@@ -1,10 +1,175 @@
 #include "pch.h"
 
 #include <Windows.h>
+#include <TlHelp32.h>
+#include <cstdint>
+#include <cstring>
 #include <mutex>
 
+#include "AddressSet.h"
 #include "BuiltInModules.h"
 #include "FeatureModule.h"
+#include "HookUtils.h"
+#include "log.h"
+
+namespace
+{
+    using EntityInfoMapTeardown_t = void(__fastcall*)(void*);
+
+    static EntityInfoMapTeardown_t g_OrigEntityInfoMapTeardown = nullptr;
+    static void*                   g_EntityInfoMapTeardownAddr = nullptr;
+    static std::uintptr_t          g_ExeImageBegin             = 0;
+    static std::uintptr_t          g_ExeImageEnd               = 0;
+
+
+
+    static bool TeardownEntryLooksSane(void* obj)
+    {
+        __try
+        {
+            const std::uintptr_t vt = *reinterpret_cast<std::uintptr_t*>(obj);
+            if (vt < g_ExeImageBegin || vt >= g_ExeImageEnd)
+                return false;
+            const std::uintptr_t f0 = *reinterpret_cast<std::uintptr_t*>(vt);
+            if (f0 < g_ExeImageBegin || f0 >= g_ExeImageEnd)
+                return false;
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
+    static void ScrubTeardownMap(std::uint8_t* base, std::size_t firstOff,
+                                 std::size_t nodesOff, std::size_t valuesOff)
+    {
+        __try
+        {
+            std::int32_t  idx    = *reinterpret_cast<std::int32_t*>(base + firstOff);
+            std::uint8_t* nodes  = *reinterpret_cast<std::uint8_t**>(base + nodesOff);
+            void**        values = *reinterpret_cast<void***>(base + valuesOff);
+            if (!nodes || !values)
+                return;
+            for (int guard = 0; idx >= 0 && idx < 0x100000 && guard < 0x10000;
+                 ++guard)
+            {
+                void* obj = values[idx];
+                if (obj && !TeardownEntryLooksSane(obj))
+                {
+                    Log("[ExitGuard] EntityInfo teardown: entry %d holds a "
+                        "dead/corrupt object %p (vtable %p) - skipped instead "
+                        "of crashing (leaked engine entity)\n",
+                        idx, obj, *reinterpret_cast<void**>(obj));
+                    values[idx] = nullptr;
+                }
+                idx = *reinterpret_cast<std::int32_t*>(
+                    nodes + static_cast<std::size_t>(idx) * 0x18 + 0xC);
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+
+    static void DumpForeignObjectQword(int qi, void* q)
+    {
+        char text[32] = {};
+        __try
+        {
+            const char* p = reinterpret_cast<const char*>(q);
+            if (q && reinterpret_cast<std::uintptr_t>(q) > 0x10000)
+            {
+                int n = 0;
+                for (; n < 24; ++n)
+                {
+                    const char ch = p[n];
+                    if (ch == 0)
+                        break;
+                    text[n] = (ch >= 0x20 && ch < 0x7F) ? ch : '.';
+                }
+                text[n] = 0;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            text[0] = 0;
+        }
+        Log("[ExitGuard]   intruder q%d = %p%s%s%s\n", qi, q,
+            text[0] ? "  \"" : "", text, text[0] ? "\"" : "");
+    }
+
+    static void DumpForeignObject(void* obj)
+    {
+        void* qs[9] = {};
+        __try
+        {
+            for (int i = 0; i < 9; ++i)
+                qs[i] = reinterpret_cast<void**>(obj)[i];
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return;
+        }
+        for (int i = 0; i < 9; ++i)
+            DumpForeignObjectQword(i, qs[i]);
+    }
+
+    static void __fastcall hkEntityInfoMapTeardown(void* self)
+    {
+        if (self && g_ExeImageEnd != 0)
+        {
+            auto* base = reinterpret_cast<std::uint8_t*>(self);
+            ScrubTeardownMap(base, 0x08, 0x20, 0x28);
+            ScrubTeardownMap(base, 0x68, 0x80, 0x88);
+        }
+        if (g_OrigEntityInfoMapTeardown)
+            g_OrigEntityInfoMapTeardown(self);
+    }
+
+    static bool Install_ExitTeardownGuard()
+    {
+        void* target = ResolveGameAddress(gAddr.Fox_EntityInfoMapTeardown);
+        if (!target)
+        {
+            Log("[ExitGuard] no EntityInfo teardown address on %s - the "
+                "exit-crash guard is OFF this build\n",
+                GetGameBuildName(gGameBuild));
+            return true;
+        }
+
+        const std::uintptr_t exeBase = GetExeBase();
+        __try
+        {
+            auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(exeBase);
+            auto* nt  = reinterpret_cast<const IMAGE_NT_HEADERS64*>(
+                exeBase + dos->e_lfanew);
+            g_ExeImageBegin = exeBase + 0x1000;
+            g_ExeImageEnd   = exeBase + nt->OptionalHeader.SizeOfImage;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            g_ExeImageBegin = 0;
+            g_ExeImageEnd   = 0;
+        }
+
+        const bool ok = CreateAndEnableHook(
+            target, reinterpret_cast<void*>(&hkEntityInfoMapTeardown),
+            reinterpret_cast<void**>(&g_OrigEntityInfoMapTeardown));
+        g_EntityInfoMapTeardownAddr = ok ? target : nullptr;
+        Log("[ExitGuard] EntityInfo exit-teardown guard %s (target=%p; a "
+            "leaked/corrupt entity entry is skipped at quit instead of "
+            "crashing with RIP=0)\n",
+            ok ? "installed" : "FAILED", target);
+        return ok;
+    }
+
+    static void Uninstall_ExitTeardownGuard()
+    {
+        if (g_EntityInfoMapTeardownAddr)
+            DisableAndRemoveHook(g_EntityInfoMapTeardownAddr);
+        g_EntityInfoMapTeardownAddr = nullptr;
+        g_OrigEntityInfoMapTeardown = nullptr;
+    }
+}
 
 bool Install_SetLuaFunctions_Hook();
 bool Uninstall_SetLuaFunctions_Hook();
@@ -197,6 +362,14 @@ void Uninstall_BarrierEffectSpawn();
 bool Install_SupportAttackCrashGuard();
 void Uninstall_SupportAttackCrashGuard();
 
+bool Install_LuaErrorThrow();
+void Uninstall_LuaErrorThrow();
+
+bool Install_Reticle_InitHandGunAsset_Hook();
+void Uninstall_Reticle_InitHandGunAsset_Hook();
+bool Install_EnhanceLangIdUnlimited();
+bool Uninstall_EnhanceLangIdUnlimited();
+
 namespace SoldierAkObjIdMap { bool Install(); bool Uninstall(); }
 bool Install_InterrogationVoiceEvent_Hook();
 bool Uninstall_InterrogationVoiceEvent_Hook();
@@ -233,6 +406,9 @@ namespace equip
     void Uninstall_BulletLockOn_Hooks();
     bool Install_BulletMultiShot_Hooks();
     void Uninstall_BulletMultiShot_Hooks();
+    bool Install_MenuDevelopGridExpand();
+    bool Install_DevelopArrayGrow();
+    void Uninstall_DevelopArrayGrow();
 }
 bool Install_TppEquip_RegisterConstant_Hook();
 bool Uninstall_TppEquip_RegisterConstant_Hook();
@@ -248,6 +424,8 @@ bool Install_GetAttackIdGuard();
 void Uninstall_GetAttackIdGuard();
 bool Install_GunInfoGuard();
 void Uninstall_GunInfoGuard();
+bool Install_BulletEffectGuard();
+void Uninstall_BulletEffectGuard();
 bool Install_WeaponKeyLog();
 void Uninstall_WeaponKeyLog();
 bool Install_FireSoundOverride_Hook();
@@ -1268,12 +1446,57 @@ namespace
         void Uninstall() override { Uninstall_BarrierEffectSpawn(); }
     };
 
+    class LuaErrorThrowModule final : public IFeatureModule
+    {
+    public:
+        const char* GetName() const override { return "LuaErrorReport"; }
+        bool Install(HMODULE hGame) override { UNREFERENCED_PARAMETER(hGame); return Install_LuaErrorThrow(); }
+        void Uninstall() override { Uninstall_LuaErrorThrow(); }
+    };
+
     class SupportAttackCrashGuardModule final : public IFeatureModule
     {
     public:
         const char* GetName() const override { return "SupportAttackCrashGuard"; }
         bool Install(HMODULE hGame) override { UNREFERENCED_PARAMETER(hGame); return Install_SupportAttackCrashGuard(); }
         void Uninstall() override { Uninstall_SupportAttackCrashGuard(); }
+    };
+
+    class ExitTeardownGuardModule final : public IFeatureModule
+    {
+    public:
+        const char* GetName() const override { return "ExitTeardownGuard"; }
+        bool Install(HMODULE hGame) override { UNREFERENCED_PARAMETER(hGame); return Install_ExitTeardownGuard(); }
+        void Uninstall() override { Uninstall_ExitTeardownGuard(); }
+    };
+
+    class ReticleAssetGuardModule final : public IFeatureModule
+    {
+    public:
+        const char* GetName() const override { return "ReticleAssetGuard"; }
+        bool Install(HMODULE hGame) override { UNREFERENCED_PARAMETER(hGame); return Install_Reticle_InitHandGunAsset_Hook(); }
+        void Uninstall() override { Uninstall_Reticle_InitHandGunAsset_Hook(); }
+    };
+
+    class EnhanceLangIdUnlimitedModule final : public IFeatureModule
+    {
+    public:
+        const char* GetName() const override { return "EnhanceLangIdUnlimited"; }
+        bool Install(HMODULE hGame) override { UNREFERENCED_PARAMETER(hGame); return Install_EnhanceLangIdUnlimited(); }
+        void Uninstall() override { Uninstall_EnhanceLangIdUnlimited(); }
+    };
+
+    class DevelopArrayGrowModule final : public IFeatureModule
+    {
+    public:
+        const char* GetName() const override { return "DevelopArrayGrow"; }
+        bool Install(HMODULE hGame) override
+        {
+            UNREFERENCED_PARAMETER(hGame);
+            equip::Install_DevelopArrayGrow();
+            return true;
+        }
+        void Uninstall() override { equip::Uninstall_DevelopArrayGrow(); }
     };
 
     class PlayerOutfitCoreModule final : public IFeatureModule
@@ -1286,6 +1509,7 @@ namespace
             const bool a = outfit::Install_OutfitEquippedState_Hooks();
             const bool b = EquipDevelopAdd::Install_TppMotherBaseManagement_EquipDevelopHooks();
 
+            equip::Install_MenuDevelopGridExpand();
             EquipDevelop_InstallDevelopSyncHooks();
 
             const bool runtime = outfit::Install_OutfitRuntimeParts_Hooks();
@@ -1383,6 +1607,7 @@ namespace
             ok = Install_MotionLoader_UnderBarrelTypeHook() && ok;
             ok = Install_GetAttackIdGuard() && ok;
             ok = Install_GunInfoGuard() && ok;
+            ok = Install_BulletEffectGuard() && ok;
             ok = Install_WeaponKeyLog() && ok;
             ok = Install_FireSoundOverride_Hook() && ok;
             ok = Install_LoadoutRequestGuard() && ok;
@@ -1480,7 +1705,12 @@ void RegisterBuiltInFeatureModules()
     static IsItemNoUseModule s_IsItemNoUseModule;
     static BarrierEffectLoadModule s_BarrierEffectLoadModule;
     static BarrierEffectSpawnModule s_BarrierEffectSpawnModule;
+    static LuaErrorThrowModule s_LuaErrorThrowModule;
     static SupportAttackCrashGuardModule s_SupportAttackCrashGuardModule;
+    static ExitTeardownGuardModule s_ExitTeardownGuardModule;
+    static ReticleAssetGuardModule s_ReticleAssetGuardModule;
+    static EnhanceLangIdUnlimitedModule s_EnhanceLangIdUnlimitedModule;
+    static DevelopArrayGrowModule s_DevelopArrayGrowModule;
     static PlayerOutfitCoreModule s_PlayerOutfitCoreModule;
     static PlayerOutfitEquipModule s_PlayerOutfitEquipModule;
     static PlayerOutfitExtrasModule s_PlayerOutfitExtrasModule;
@@ -1555,9 +1785,14 @@ void RegisterBuiltInFeatureModules()
             FeatureModuleRegistry::Instance().Register(&s_EquipCrossSetEquipItemModule);
             FeatureModuleRegistry::Instance().Register(&s_IsWeaponNoUseInPlaceActionModule);
             FeatureModuleRegistry::Instance().Register(&s_IsItemNoUseModule);
+            FeatureModuleRegistry::Instance().Register(&s_LuaErrorThrowModule);
             FeatureModuleRegistry::Instance().Register(&s_SupportAttackCrashGuardModule);
+            FeatureModuleRegistry::Instance().Register(&s_ExitTeardownGuardModule);
+            FeatureModuleRegistry::Instance().Register(&s_ReticleAssetGuardModule);
+            FeatureModuleRegistry::Instance().Register(&s_EnhanceLangIdUnlimitedModule);
             FeatureModuleRegistry::Instance().Register(&s_BarrierEffectLoadModule);
             FeatureModuleRegistry::Instance().Register(&s_BarrierEffectSpawnModule);
+            FeatureModuleRegistry::Instance().Register(&s_DevelopArrayGrowModule);
             FeatureModuleRegistry::Instance().Register(&s_PlayerOutfitCoreModule);
             FeatureModuleRegistry::Instance().Register(&s_PlayerOutfitEquipModule);
             FeatureModuleRegistry::Instance().Register(&s_PlayerOutfitExtrasModule);

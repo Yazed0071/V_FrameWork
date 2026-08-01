@@ -6,12 +6,19 @@ extern "C" {
 
 #include <cstdint>
 #include <cstring>
+#include <mutex>
+#include <vector>
 
 #include "AddressSet.h"
 #include "FoxHashes.h"
 #include "HookUtils.h"
 #include "log.h"
 #include "LuaBroadcaster.h"
+
+namespace EquipDevelopAdd
+{
+    void PumpDevelopMenuWork();
+}
 
 namespace
 {
@@ -92,6 +99,42 @@ namespace
             return V_FrameWork::kMaxBroadcastArgs;
 
         return argCount;
+    }
+
+    thread_local int g_luaPcallDepth = 0;
+
+    struct DeferredBroadcast
+    {
+        std::string category;
+        std::string msg;
+        std::vector<V_FrameWork::LuaBroadcastArg> args;
+    };
+
+    std::mutex                     g_deferredMutex;
+    std::vector<DeferredBroadcast> g_deferredQueue;
+
+    static bool SafeToEmitInline()
+    {
+        if (GetCurrentThreadId() != V_FrameWork_LuaOwnerThreadId())
+            return false;
+        return g_luaPcallDepth == 0;
+    }
+
+    static void EnqueueDeferredBroadcast(const char* category,
+        const char* msg,
+        const V_FrameWork::LuaBroadcastArg* args,
+        int argCount)
+    {
+        DeferredBroadcast entry;
+        entry.category = category;
+        entry.msg = msg;
+        const int n = ClampBroadcastArgCount(argCount);
+        for (int i = 0; args && i < n; ++i)
+            entry.args.push_back(args[i]);
+
+        std::lock_guard<std::mutex> lk(g_deferredMutex);
+        if (g_deferredQueue.size() < 512)
+            g_deferredQueue.push_back(std::move(entry));
     }
 
     static constexpr std::size_t kLuaStateTopOffset       = 0x10;
@@ -292,9 +335,9 @@ namespace
 
 }
 
-void V_FrameWork::EmitMessageValues(const char* category,
+static void EmitInline(const char* category,
     const char* msg,
-    const LuaBroadcastArg* args,
+    const V_FrameWork::LuaBroadcastArg* args,
     int argCount)
 {
     if (!category || !msg)
@@ -370,5 +413,56 @@ void V_FrameWork::EmitMessageValues(const char* category,
             Log("[V_FrameWork] BroadcastMessage SEH category=%s msg=%s code=0x%08X at=%p\n",
                 category, msg, sehCode, sehAddr);
         }
+    }
+}
+
+void V_FrameWork::EmitMessageValues(const char* category,
+    const char* msg,
+    const LuaBroadcastArg* args,
+    int argCount)
+{
+    if (!category || !msg)
+        return;
+
+    if (SafeToEmitInline())
+        EmitInline(category, msg, args, argCount);
+    else
+        EnqueueDeferredBroadcast(category, msg, args, argCount);
+}
+
+void V_FrameWork::DrainDeferredBroadcasts()
+{
+    static thread_local bool s_draining = false;
+    if (s_draining)
+        return;
+
+    std::vector<DeferredBroadcast> local;
+    {
+        std::lock_guard<std::mutex> lk(g_deferredMutex);
+        if (g_deferredQueue.empty())
+            return;
+        local.swap(g_deferredQueue);
+    }
+
+    s_draining = true;
+    for (const DeferredBroadcast& d : local)
+        EmitInline(d.category.c_str(), d.msg.c_str(),
+            d.args.empty() ? nullptr : d.args.data(),
+            static_cast<int>(d.args.size()));
+    s_draining = false;
+}
+
+void V_FrameWork::EnterLuaPcall()
+{
+    ++g_luaPcallDepth;
+}
+
+void V_FrameWork::ExitLuaPcall()
+{
+    if (--g_luaPcallDepth <= 0)
+    {
+        g_luaPcallDepth = 0;
+        DrainDeferredBroadcasts();
+        EquipDevelopAdd::PumpDevelopMenuWork();
     }
 }

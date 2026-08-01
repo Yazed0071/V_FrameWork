@@ -17,6 +17,7 @@ namespace V_FrameWorkState
 
     void FlushPendingSaves();
     void SaveOnProcessExit();
+    void AbandonFlusherThread();
 
 
     void BeginBatch();
@@ -51,6 +52,8 @@ namespace V_FrameWorkState
 
     std::int32_t GetDevelopIdAtOldFlowIndex(std::int32_t oldFlowIndex);
 
+    std::int32_t GetFlowIndexByDevelopId(std::int32_t developId);
+
 
     std::vector<std::int32_t> TakePendingDevelopedResets();
 
@@ -66,6 +69,13 @@ namespace V_FrameWorkState
     void SetNewByDevelopId(std::int32_t developId, bool isNew);
     bool GetNewByDevelopId(std::int32_t developId);
 
+    void ForEachManagedDevelopRow(
+        const std::function<void(std::int32_t developId, std::int32_t flowIndex,
+                                 bool reqAnnounced)>& callback);
+
+    bool GetDevReqAnnouncedByDevelopId(std::int32_t developId);
+    void SetDevReqAnnouncedByDevelopId(std::int32_t developId, bool announced);
+
 
     bool ResolveOrCreateFlowIndex(
         const char* key,
@@ -73,6 +83,7 @@ namespace V_FrameWorkState
         std::int32_t& outFlowIndex);
 
     void SetSessionFlowIndex(const char* key, std::int32_t flowIndex);
+    std::int32_t GetPersistedFlowIndex(const char* key);
 
     void ReleaseSessionFlowIndex(const char* key);
 
@@ -100,6 +111,8 @@ namespace V_FrameWorkState
     void         SetPersistedOutfitIds(const char* key,
                                        std::uint8_t partsType,
                                        std::uint8_t selector);
+
+    constexpr std::size_t kPersistedVariantSelectorSlots = 254;
 
     std::size_t GetPersistedOutfitVariantSelectors(const char* key,
                                                    std::uint8_t* out,

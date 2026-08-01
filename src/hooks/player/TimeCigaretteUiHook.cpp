@@ -13,11 +13,19 @@
 
 namespace
 {
-    using ShowTimeCigaretteUi_t = void(__fastcall*)(void* this_, std::uint32_t index);
+    constexpr const char* kClass = "UI";
+    constexpr const char* kMessage = "TimeCigaretteUi";
 
-    static ShowTimeCigaretteUi_t g_Orig         = nullptr;
-    static bool                  g_Installed     = false;
-    static std::atomic<void*>    g_UiController{ nullptr };
+    using ShowHideTimeCigaretteUi_t = void(__fastcall*)(void* this_, std::uint32_t index);
+
+    static ShowHideTimeCigaretteUi_t g_OrigShow = nullptr;
+    static ShowHideTimeCigaretteUi_t g_OrigHide = nullptr;
+    static void*                     g_ShowTarget = nullptr;
+    static void*                     g_HideTarget = nullptr;
+    static bool                      g_Installed = false;
+
+    static std::atomic<void*>         g_UiController{ nullptr };
+    static std::atomic<std::uint32_t> g_LastIndex{ 0 };
 
     static constexpr std::size_t kOwnerField        = 0x8;
     static constexpr std::size_t kManagerField      = 0x138;
@@ -31,6 +39,20 @@ namespace
 
     static constexpr std::size_t kShowUiVtblByteOffset = 0x210;
     static constexpr std::size_t kHideUiVtblByteOffset = 0x218;
+
+    void ReportShown(std::uint32_t index)
+    {
+        if (MissionCodeGuard::ShouldBypassHooks())
+            return;
+        V_FrameWork::EmitMessage(kClass, kMessage, index, 1u);
+    }
+
+    void ReportHidden(std::uint32_t index)
+    {
+        if (MissionCodeGuard::ShouldBypassHooks())
+            return;
+        V_FrameWork::EmitMessage(kClass, kMessage, index, 0u);
+    }
 
     static bool TryReadSlot(void* this_, std::uint32_t index, void** outUiController, void** outElement)
     {
@@ -123,17 +145,66 @@ namespace
 
         if (uiController)
             g_UiController.store(uiController, std::memory_order_relaxed);
+        g_LastIndex.store(index, std::memory_order_relaxed);
 
         const bool wasShown = read && TryIsShown(element);
 
-        if (g_Orig)
-            g_Orig(this_, index);
+        if (g_OrigShow)
+            g_OrigShow(this_, index);
 
-        if (MissionCodeGuard::ShouldBypassHooks())
-            return;
+        const bool nowShown = read && TryIsShown(element);
 
-        if (read && !wasShown && TryIsShown(element))
-            V_FrameWork::EmitMessage("UI", "TimeCigaretteUi", index);
+        {
+            static unsigned long long s_lastMs = 0;
+            const bool transition = (wasShown != nowShown);
+            const unsigned long long now = GetTickCount64();
+            if (transition || now - s_lastMs >= 2000)
+            {
+                s_lastMs = now;
+                Log("[TimeCigDiag] SHOW read=%d was=%d now=%d idx=%u%s\n",
+                    static_cast<int>(read), static_cast<int>(wasShown),
+                    static_cast<int>(nowShown), index,
+                    transition ? " <TRANSITION>" : "");
+            }
+        }
+
+        if (read && !wasShown && nowShown)
+            ReportShown(index);
+    }
+
+    static void __fastcall hkHideTimeCigaretteUi(void* this_, std::uint32_t index)
+    {
+        void* uiController = nullptr;
+        void* element      = nullptr;
+        const bool read    = TryReadSlot(this_, index, &uiController, &element);
+
+        if (uiController)
+            g_UiController.store(uiController, std::memory_order_relaxed);
+        g_LastIndex.store(index, std::memory_order_relaxed);
+
+        const bool wasShown = read && TryIsShown(element);
+
+        if (g_OrigHide)
+            g_OrigHide(this_, index);
+
+        const bool nowShown = read && TryIsShown(element);
+
+        {
+            static unsigned long long s_lastMs = 0;
+            const bool transition = (wasShown != nowShown);
+            const unsigned long long now = GetTickCount64();
+            if (transition || now - s_lastMs >= 2000)
+            {
+                s_lastMs = now;
+                Log("[TimeCigDiag] HIDE read=%d was=%d now=%d idx=%u%s\n",
+                    static_cast<int>(read), static_cast<int>(wasShown),
+                    static_cast<int>(nowShown), index,
+                    transition ? " <TRANSITION>" : "");
+            }
+        }
+
+        if (read && wasShown && !nowShown)
+            ReportHidden(index);
     }
 }
 
@@ -145,12 +216,18 @@ void TimeCigaretteUi_SetUiController(void* uiController)
 
 bool Show_TimeCigaretteUi()
 {
-    return TryCallUiVtblSlot(g_UiController.load(std::memory_order_relaxed), kShowUiVtblByteOffset);
+    const bool ok = TryCallUiVtblSlot(g_UiController.load(std::memory_order_relaxed), kShowUiVtblByteOffset);
+    if (ok)
+        ReportShown(g_LastIndex.load(std::memory_order_relaxed));
+    return ok;
 }
 
 bool Hide_TimeCigaretteUi()
 {
-    return TryCallUiVtblSlot(g_UiController.load(std::memory_order_relaxed), kHideUiVtblByteOffset);
+    const bool ok = TryCallUiVtblSlot(g_UiController.load(std::memory_order_relaxed), kHideUiVtblByteOffset);
+    if (ok)
+        ReportHidden(g_LastIndex.load(std::memory_order_relaxed));
+    return ok;
 }
 
 bool Install_TimeCigaretteUi_Hook()
@@ -164,28 +241,36 @@ bool Install_TimeCigaretteUi_Hook()
         return false;
     }
 
-    void* target = ResolveGameAddress(gAddr.TimeCigaretteActionPluginImpl_ShowTimeCigaretteUi);
-    if (!target)
+    void* showTarget = ResolveGameAddress(gAddr.TimeCigaretteActionPluginImpl_ShowTimeCigaretteUi);
+    if (!showTarget)
     {
         Log("[TimeCigaretteUi] resolve failed\n");
         return false;
     }
 
-    const bool ok = CreateAndEnableHook(
-        target,
+    const bool showOk = CreateAndEnableHook(
+        showTarget,
         reinterpret_cast<void*>(&hkShowTimeCigaretteUi),
-        reinterpret_cast<void**>(&g_Orig));
+        reinterpret_cast<void**>(&g_OrigShow));
 
-    if (ok)
+    if (showOk)
+    {
+        g_ShowTarget = showTarget;
         g_Installed = true;
+    }
 
-#ifdef _DEBUG
-    Log("[TimeCigaretteUi] hook: %s (target=%p)\n", ok ? "OK" : "FAIL", target);
-#else
-    if (!ok)
-        Log("[TimeCigaretteUi] hook: %s (target=%p)\n", ok ? "OK" : "FAIL", target);
-#endif
-    return ok;
+    void* hideTarget = ResolveGameAddress(gAddr.TimeCigaretteActionPluginImpl_HideTimeCigaretteUi);
+    if (hideTarget && CreateAndEnableHook(
+            hideTarget,
+            reinterpret_cast<void*>(&hkHideTimeCigaretteUi),
+            reinterpret_cast<void**>(&g_OrigHide)))
+        g_HideTarget = hideTarget;
+    else
+        Log("[TimeCigaretteUi] WARN: Hide hook failed - TimeCigaretteUi will not fire on hide.\n");
+
+    Log("[TimeCigDiag] install show=%s (target=%p) hide=%s (target=%p)\n",
+        showOk ? "OK" : "FAIL", showTarget, g_HideTarget ? "OK" : "off", hideTarget);
+    return showOk;
 }
 
 bool Uninstall_TimeCigaretteUi_Hook()
@@ -193,11 +278,14 @@ bool Uninstall_TimeCigaretteUi_Hook()
     if (!g_Installed)
         return true;
 
-    if (gAddr.TimeCigaretteActionPluginImpl_ShowTimeCigaretteUi)
-        DisableAndRemoveHook(ResolveGameAddress(gAddr.TimeCigaretteActionPluginImpl_ShowTimeCigaretteUi));
+    if (g_ShowTarget) DisableAndRemoveHook(g_ShowTarget);
+    if (g_HideTarget) DisableAndRemoveHook(g_HideTarget);
 
-    g_Orig      = nullptr;
-    g_Installed = false;
+    g_OrigShow   = nullptr;
+    g_OrigHide   = nullptr;
+    g_ShowTarget = nullptr;
+    g_HideTarget = nullptr;
+    g_Installed  = false;
     g_UiController.store(nullptr, std::memory_order_relaxed);
     return true;
 }

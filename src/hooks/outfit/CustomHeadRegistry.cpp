@@ -17,6 +17,7 @@
 #include "../../core/V_FrameWorkState.h"
 #include "EquipDevelopControllerImpl_GetSuitDevelopInfoIndex.h"
 #include "../equip/EquipDevelop_AddToEquipDevelopTable.h"
+#include "../equip/MenuPerf.h"
 #include "OutfitRegistry.h"
 #include "../../core/FoxHashes.h"
 
@@ -363,11 +364,19 @@ namespace outfit
         return s ? s->fpk[stage] : 0;
     }
 
+    static std::atomic<DWORD> g_PendingHeadsRetryTick{ 0 };
+
     int DrainPendingHeads()
     {
         if (!g_HasPendingHeads.load(std::memory_order_acquire))
             return 0;
 
+        const DWORD lastFail =
+            g_PendingHeadsRetryTick.load(std::memory_order_relaxed);
+        if (lastFail != 0 && (GetTickCount() - lastFail) < 250)
+            return 0;
+
+        equip::MenuPerfScope _perf(equip::kPerf_DrainHeads);
         std::lock_guard<std::mutex> lock(g_Mutex);
         if (g_PendingHeads.empty())
         {
@@ -402,7 +411,15 @@ namespace outfit
         }
 
         if (g_PendingHeads.empty())
+        {
             g_HasPendingHeads.store(false, std::memory_order_release);
+            g_PendingHeadsRetryTick.store(0, std::memory_order_relaxed);
+        }
+        else
+        {
+            g_PendingHeadsRetryTick.store(GetTickCount(),
+                                          std::memory_order_relaxed);
+        }
 
         if (resolved > 0)
             LogDebug("[CustomHead] DrainPendingHeads: resolved %d deferred head(s); "

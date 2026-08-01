@@ -430,6 +430,21 @@ namespace AddressSetRuntime
         uintptr_t SoundControllerImpl_CallVoice = 0;
         uintptr_t MbDvcCassetteTapeCallbackImpl_SeekMusic = 0;
         uintptr_t EquipSystem_GetGunInfoById = 0;
+
+        uintptr_t Reticle_InitHandGunAsset = 0;
+
+        uintptr_t TimeCigaretteActionPluginImpl_HideTimeCigaretteUi = 0;
+
+        uintptr_t Fox_EntityInfoMapTeardown = 0;
+
+
+        uintptr_t WeaponEnhanceLangIdArray = 0;
+        uintptr_t WeaponEnhance_GetIndexForRegist = 0;
+        uintptr_t WeaponEnhance_GetMessageIdArray = 0;
+        uintptr_t WeaponEnhance_GetLangIdById = 0;
+        uintptr_t WeaponEnhance_GetLangIdBound = 0;
+        uintptr_t BulletEffectController_CreateEffect = 0;
+        uintptr_t ItemSelectorCallbackImpl_AddRecord = 0;
     };
 
     inline GameBuild& GetGameBuild()

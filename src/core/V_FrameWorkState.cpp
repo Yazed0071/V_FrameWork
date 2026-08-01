@@ -18,6 +18,11 @@
 #include <unordered_set>
 #include <vector>
 
+namespace equip
+{
+    std::uint32_t NativeFlowBound();
+}
+
 namespace V_FrameWorkState
 {
     namespace
@@ -29,7 +34,12 @@ namespace V_FrameWorkState
         static constexpr std::int32_t kFirstCustomEquipIdMinimum = 1;
         static constexpr std::int32_t kFirstCustomDevelopId = 0x1000;
         static constexpr std::int32_t kFirstCustomFlowIndex = 922;
-        static constexpr std::int32_t kNativeFlowIndexBound = 1024;
+        static constexpr std::int32_t kNativeFlowSentinel   = 0x400;
+
+        static std::int32_t NativeFlowIndexBound()
+        {
+            return static_cast<std::int32_t>(equip::NativeFlowBound());
+        }
         static constexpr std::int16_t kFirstCustomTapeSaveIndex = 300;
         static constexpr std::int16_t kMaxCustomTapeSaveIndex = 32000;
         static constexpr std::int32_t kTapeOrphanGraceLaunches = 2;
@@ -49,13 +59,14 @@ namespace V_FrameWorkState
 
             std::int32_t partsType = 0;
             std::int32_t selector  = 0;
-            std::uint8_t variantSelectors[14] = {};
+            std::uint8_t variantSelectors[V_FrameWorkState::kPersistedVariantSelectorSlots] = {};
 
             std::int32_t misses = 0;
 
             std::int8_t developed = -1;
 
             bool isNew = false;
+            bool devReqAnnounced = false;
         };
 
         struct TapeEntry
@@ -179,7 +190,8 @@ namespace V_FrameWorkState
                     std::size_t i = pos + std::strlen(tag);
                     std::size_t vi = 0;
                     std::string numStr;
-                    for (; i < line.size() && vi < 14; ++i)
+                    for (; i < line.size()
+                           && vi < V_FrameWorkState::kPersistedVariantSelectorSlots; ++i)
                     {
                         const char c = line[i];
                         if (c >= '0' && c <= '9') { numStr.push_back(c); continue; }
@@ -205,6 +217,8 @@ namespace V_FrameWorkState
                 out.developed = 0;
 
             out.isNew = line.find("new = true") != std::string::npos;
+            out.devReqAnnounced =
+                line.find("reqAnnounced = true") != std::string::npos;
 
             return !outKey.empty();
         }
@@ -479,7 +493,8 @@ namespace V_FrameWorkState
             {
                 const std::int32_t fi = kv.second.flowIndex;
                 const std::int32_t dv = kv.second.developId;
-                if (dv == 0 || fi < kFirstCustomFlowIndex || fi >= kNativeFlowIndexBound)
+                if (dv == 0 || fi < kFirstCustomFlowIndex
+                    || fi >= NativeFlowIndexBound() || fi == kNativeFlowSentinel)
                     continue;
                 auto found = g_OldFlowLayout.find(fi);
                 if (found == g_OldFlowLayout.end())
@@ -605,7 +620,7 @@ namespace V_FrameWorkState
                         kv.second.equipId == 0 && kv.second.subId == 0 &&
                         kv.second.partsType == 0 && kv.second.selector == 0 &&
                         kv.second.misses == 0 && kv.second.developed < 0 &&
-                        !kv.second.isNew)
+                        !kv.second.isNew && !kv.second.devReqAnnounced)
                         continue;
                     out << "        [\"" << kv.first << "\"] = {";
                     if (kv.second.developId != 0)
@@ -622,7 +637,8 @@ namespace V_FrameWorkState
                         out << " selector = " << kv.second.selector << ",";
                     {
                         std::size_t last = 0;
-                        for (std::size_t vi = 0; vi < 14; ++vi)
+                        for (std::size_t vi = 0;
+                             vi < V_FrameWorkState::kPersistedVariantSelectorSlots; ++vi)
                             if (kv.second.variantSelectors[vi] != 0) last = vi + 1;
                         if (last != 0)
                         {
@@ -641,6 +657,8 @@ namespace V_FrameWorkState
                         out << " developed = " << (kv.second.developed == 1 ? "true" : "false") << ",";
                     if (kv.second.isNew)
                         out << " new = true,";
+                    if (kv.second.devReqAnnounced)
+                        out << " reqAnnounced = true,";
                     out << " },\n";
                 }
                 out << "    },\n";
@@ -912,6 +930,12 @@ namespace V_FrameWorkState
         }
     }
 
+    void AbandonFlusherThread()
+    {
+        if (g_FlusherThread.joinable())
+            g_FlusherThread.detach();
+    }
+
     void FlushPendingSaves()
     {
         std::thread joinMe;
@@ -1095,7 +1119,7 @@ namespace V_FrameWorkState
             it->second.misses = 0;
             g_State.dirty = true;
             outDevelopId = it->second.developId;
-            if (outCreated) *outCreated = false;   // found existing persisted id -> loaded
+            if (outCreated) *outCreated = false;
             return true;
         }
 
@@ -1104,7 +1128,7 @@ namespace V_FrameWorkState
         g_State.equips[key].misses = 0;
         g_State.dirty = true;
         outDevelopId = newId;
-        if (outCreated) *outCreated = true;        // minted a new id -> added first time
+        if (outCreated) *outCreated = true;
 
         SaveToDisk_NoLock();
 
@@ -1126,6 +1150,17 @@ namespace V_FrameWorkState
         LoadFromDisk_NoLock();
         auto it = g_OldFlowLayout.find(oldFlowIndex);
         return (it != g_OldFlowLayout.end()) ? it->second : 0;
+    }
+
+    std::int32_t GetFlowIndexByDevelopId(std::int32_t developId)
+    {
+        if (developId == 0) return 0;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        LoadFromDisk_NoLock();
+        for (const auto& kv : g_State.equips)
+            if (kv.second.developId == developId)
+                return kv.second.flowIndex;
+        return 0;
     }
 
     std::vector<std::int32_t> TakePendingDevelopedResets()
@@ -1219,6 +1254,19 @@ namespace V_FrameWorkState
                 callback(kv.second.developId, kv.second.developed == 1, kv.second.isNew);
     }
 
+    void ForEachManagedDevelopRow(
+        const std::function<void(std::int32_t developId, std::int32_t flowIndex,
+                                 bool reqAnnounced)>& callback)
+    {
+        if (!callback) return;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        LoadFromDisk_NoLock();
+        for (const auto& kv : g_State.equips)
+            if (kv.second.developId != 0 && kv.second.flowIndex != 0)
+                callback(kv.second.developId, kv.second.flowIndex,
+                         kv.second.devReqAnnounced);
+    }
+
     void SetNewByDevelopId(std::int32_t developId, bool isNew)
     {
         if (developId == 0) return;
@@ -1231,6 +1279,37 @@ namespace V_FrameWorkState
                 if (kv.second.isNew != isNew)
                 {
                     kv.second.isNew = isNew;
+                    g_State.dirty = true;
+                    SaveToDisk_NoLock();
+                }
+                return;
+            }
+        }
+    }
+
+    bool GetDevReqAnnouncedByDevelopId(std::int32_t developId)
+    {
+        if (developId == 0) return true;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        LoadFromDisk_NoLock();
+        for (const auto& kv : g_State.equips)
+            if (kv.second.developId == developId)
+                return kv.second.devReqAnnounced;
+        return false;
+    }
+
+    void SetDevReqAnnouncedByDevelopId(std::int32_t developId, bool announced)
+    {
+        if (developId == 0) return;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        LoadFromDisk_NoLock();
+        for (auto& kv : g_State.equips)
+        {
+            if (kv.second.developId == developId)
+            {
+                if (kv.second.devReqAnnounced != announced)
+                {
+                    kv.second.devReqAnnounced = announced;
                     g_State.dirty = true;
                     SaveToDisk_NoLock();
                 }
@@ -1270,23 +1349,28 @@ namespace V_FrameWorkState
             return true;
         }
 
+        const std::int32_t flowBound = NativeFlowIndexBound();
         std::int32_t newIdx = 0;
         {
             std::vector<bool> used(
-                static_cast<std::size_t>(kNativeFlowIndexBound
+                static_cast<std::size_t>(flowBound
                                          - kFirstCustomFlowIndex), false);
             for (const auto& kv : g_SessionFlowIndices)
                 if (kv.second >= kFirstCustomFlowIndex
-                    && kv.second < kNativeFlowIndexBound)
+                    && kv.second < flowBound)
                     used[static_cast<std::size_t>(
                         kv.second - kFirstCustomFlowIndex)] = true;
             for (std::int32_t i = kFirstCustomFlowIndex;
-                 i < kNativeFlowIndexBound; ++i)
+                 i < flowBound; ++i)
+            {
+                if (i == kNativeFlowSentinel)
+                    continue;
                 if (!used[static_cast<std::size_t>(i - kFirstCustomFlowIndex)])
                 {
                     newIdx = i;
                     break;
                 }
+            }
         }
         if (newIdx == 0)
         {
@@ -1294,8 +1378,8 @@ namespace V_FrameWorkState
                 "develop flow array holds %d rows and indices %d..%d are all allocated. "
                 "Registering this row would corrupt memory past the array. The item will "
                 "not appear in R&D until develop-row paging frees window space.\n",
-                key, kNativeFlowIndexBound, kFirstCustomFlowIndex,
-                kNativeFlowIndexBound - 1);
+                key, flowBound, kFirstCustomFlowIndex,
+                flowBound - 1);
             return false;
         }
 
@@ -1308,6 +1392,16 @@ namespace V_FrameWorkState
         SaveToDisk_NoLock();
 
         return true;
+    }
+
+    std::int32_t GetPersistedFlowIndex(const char* key)
+    {
+        if (!key || !key[0]) return 0;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        LoadFromDisk_NoLock();
+        auto it = g_State.equips.find(key);
+        if (it == g_State.equips.end()) return 0;
+        return it->second.flowIndex;
     }
 
     void SetSessionFlowIndex(const char* key, std::int32_t flowIndex)
@@ -1333,6 +1427,15 @@ namespace V_FrameWorkState
             }
             else
                 ++it;
+        }
+
+        for (auto& kv : g_State.equips)
+        {
+            if (kv.first != key && kv.second.flowIndex == flowIndex)
+            {
+                kv.second.flowIndex = 0;
+                dirty = true;
+            }
         }
 
         auto sit = g_SessionFlowIndices.find(key);
@@ -1531,7 +1634,9 @@ namespace V_FrameWorkState
         }
 
         std::size_t nonZero = 0;
-        const std::size_t n = (cap < 14) ? cap : std::size_t{14};
+        const std::size_t n =
+            (cap < V_FrameWorkState::kPersistedVariantSelectorSlots)
+                ? cap : V_FrameWorkState::kPersistedVariantSelectorSlots;
         for (std::size_t i = 0; i < n; ++i)
         {
             out[i] = it->second.variantSelectors[i];
@@ -1556,7 +1661,8 @@ namespace V_FrameWorkState
             e.misses = 0;
             changed = true;
         }
-        for (std::size_t i = 0; i < 14; ++i)
+        for (std::size_t i = 0;
+             i < V_FrameWorkState::kPersistedVariantSelectorSlots; ++i)
         {
             const std::uint8_t v =
                 (selectors && i < count) ? selectors[i] : std::uint8_t{0};
@@ -1586,7 +1692,8 @@ namespace V_FrameWorkState
         bool changed = false;
         if (e.partsType != 0) { e.partsType = 0; changed = true; }
         if (e.selector != 0)  { e.selector = 0;  changed = true; }
-        for (std::size_t i = 0; i < 14; ++i)
+        for (std::size_t i = 0;
+             i < V_FrameWorkState::kPersistedVariantSelectorSlots; ++i)
         {
             if (e.variantSelectors[i] != 0)
             {
@@ -1617,7 +1724,8 @@ namespace V_FrameWorkState
                 (e.selector > 0 && e.selector <= 0xFF)
                     ? static_cast<std::uint8_t>(e.selector) : std::uint8_t{0};
             bool anyVariant = false;
-            for (std::size_t i = 0; i < 14; ++i)
+            for (std::size_t i = 0;
+                 i < V_FrameWorkState::kPersistedVariantSelectorSlots; ++i)
                 if (e.variantSelectors[i] != 0) { anyVariant = true; break; }
             if (pt == 0 && sel == 0 && !anyVariant) continue;
             callback(kv.first, pt, sel, e.variantSelectors);

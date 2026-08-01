@@ -260,6 +260,7 @@
     <ClInclude Include="src\hooks\equip\GunBasicInject.h" />
     <ClInclude Include="src\hooks\equip\EquipPartParams.h" />
     <ClInclude Include="src\hooks\equip\EquipDevelop_SetEquipUndeveloped.h" />
+    <ClInclude Include="src\hooks\equip\WeaponPartsDevelopControllerImpl_GetLangEnhanceInfoMessageIdArray.h" />
     <ClInclude Include="src\lua\V_TppEquipLib.h" />
     <ClInclude Include="src\lua\equip\RegisterConstantEquipId.h" />
     <ClInclude Include="src\lua\equip\DeclareEQPTypes.h" />
@@ -307,7 +308,9 @@
     <ClInclude Include="src\hooks\ui\EquipCrossEvCall_IsItemNoUse.h" />
     <ClInclude Include="src\hooks\ui\BarrierEffectLoadPatch.h" />
     <ClInclude Include="src\hooks\ui\BarrierEffectSpawn.h" />
+    <ClInclude Include="src\hooks\core\LuaErrorThrow.h" />
     <ClInclude Include="src\hooks\ui\SupportAttackCrashGuard.h" />
+    <ClInclude Include="src\hooks\ui\Reticle_InitHandGunAsset.h" />
     <ClInclude Include="src\hooks\fox\gm\GameObjectSendCommand.h" />
     <!-- Hooks: Bullet -->
     <ClInclude Include="src\hooks\bullet\Bullet3Impl_ActivateBulletAtEmptyWorkPatch.h" />
@@ -349,6 +352,7 @@
     <ClCompile Include="src\hooks\outfit\MissionPreparationSystemImpl_IsEnableHeadOptionSuit.cpp" />
     <ClCompile Include="src\hooks\outfit\CamouflageControllerImpl_ExecSuitCorrect.cpp" />
     <ClCompile Include="src\hooks\outfit\CamoufParamInfoImpl_GetCamoufValue.cpp" />
+    <ClCompile Include="src\hooks\equip\DevelopArrayGrow.cpp" />
     <ClCompile Include="src\hooks\equip\EquipDevelop_AddToEquipDevelopTable.cpp" />
     <ClCompile Include="src\hooks\equip\MenuDevelopGridExpand.cpp" />
     <ClCompile Include="src\hooks\equip\BulletLockOn.cpp" />
@@ -360,6 +364,7 @@
     <ClCompile Include="src\hooks\equip\GunBasicInject.cpp" />
     <ClCompile Include="src\hooks\equip\EquipPartParams.cpp" />
     <ClCompile Include="src\hooks\equip\EquipDevelop_SetEquipUndeveloped.cpp" />
+    <ClCompile Include="src\hooks\equip\WeaponPartsDevelopControllerImpl_GetLangEnhanceInfoMessageIdArray.cpp" />
     <ClCompile Include="src\lua\V_TppEquipLib.cpp" />
     <ClCompile Include="src\lua\equip\RegisterConstantEquipId.cpp" />
     <ClCompile Include="src\lua\equip\DeclareEQPTypes.cpp" />
@@ -474,7 +479,9 @@
     <ClCompile Include="src\hooks\ui\EquipCrossEvCall_IsItemNoUse.cpp" />
     <ClCompile Include="src\hooks\ui\BarrierEffectLoadPatch.cpp" />
     <ClCompile Include="src\hooks\ui\BarrierEffectSpawn.cpp" />
+    <ClCompile Include="src\hooks\core\LuaErrorThrow.cpp" />
     <ClCompile Include="src\hooks\ui\SupportAttackCrashGuard.cpp" />
+    <ClCompile Include="src\hooks\ui\Reticle_InitHandGunAsset.cpp" />
     <!-- Hooks: Pickable -->
     <ClCompile Include="src\hooks\pickable\TppPickableRuntime.cpp" />
     <!-- Hooks: Sahelan -->

@@ -11,6 +11,7 @@
 #include "HookUtils.h"
 #include "log.h"
 #include "MissionCodeGuard.h"
+#include "../equip/DevelopArrayGrow.h"
 #include "../equip/EquipDevelop_SetEquipUndeveloped.h"
 #include "../equip/EquipDevelop_AddToEquipDevelopTable.h"
 #include "../equip/EquipPartParams.h"
@@ -375,7 +376,7 @@ namespace
                     if (equipId == 0 || equipId == 0xEEEE)
                         continue;
                     const std::uint16_t idx = mapIdx(ctrl, equipId, 0);
-                    const bool managed = idx < 0x400
+                    const bool managed = equip::IsValidFlowIndex(idx)
                         && EquipDevelopAdd::IsManagedFlowIndex(idx);
                     const bool tainted = !managed
                         && EquipParam_IsEquipIdFobTainted(

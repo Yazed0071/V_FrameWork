@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <unordered_set>
 
 namespace outfit
@@ -37,7 +38,8 @@ namespace outfit
     constexpr std::size_t  kMaxHeadOptionsPerOutfit = 120;
 
 
-    constexpr std::size_t  kMaxVariantsPerOutfit    = 15;
+    constexpr std::size_t  kMaxVariantsPerOutfit    = 255;
+    constexpr std::size_t  kNativeVariantCells      = 15;
     constexpr std::uint16_t kHeadOption_None        = 0x400;
     constexpr std::uint16_t kHeadOption_Balaclava   = 0x210;
 
@@ -53,6 +55,7 @@ namespace outfit
         std::uint64_t  diamondFv2         = kSubAssetDisabled;
         std::uint64_t  voiceFpk           = kSubAssetUseVanilla;
         std::uint64_t  displayNameHash    = 0;
+        std::uint64_t  iconPathHash       = 0;
         bool           hasEnableArm        = false;
         bool           enableArm           = true;
         bool           hasEnableHead       = false;
@@ -76,7 +79,8 @@ namespace outfit
         std::uint64_t  camoFv2             = kSubAssetDisabled;
         std::uint64_t  diamondFv2          = kSubAssetDisabled;
         std::uint64_t  baseDisplayNameHash = 0;
-        OutfitVariant  variants[kMaxVariantsPerOutfit] = {};
+        std::uint64_t  baseIconPathHash    = 0;
+        std::deque<OutfitVariant> variants;
         std::uint8_t   variantCount                    = 0;
         std::uint8_t   defaultVariant                  = 0;
         bool           enableArm              = true;
@@ -89,6 +93,16 @@ namespace outfit
         std::uint8_t   camoBonusType                              = kCamoBonusTypeUnset;
         std::int32_t   camoBonusValues[kCamoMaterialCount]        = {};
         bool           hasCamoBonusValues                         = false;
+
+        const OutfitVariant* Var(std::size_t i) const
+        {
+            return i < variants.size() ? &variants[i] : nullptr;
+        }
+        OutfitVariant& EnsureVar(std::size_t i)
+        {
+            while (variants.size() <= i) variants.emplace_back();
+            return variants[i];
+        }
     };
     struct OutfitDefinition
     {
@@ -135,6 +149,7 @@ namespace outfit
         std::uint64_t  displaySummaryIconHash                       = 0;
         const OutfitPlayerTypeData* GetPTData(std::uint8_t playerType) const;
         bool IsPlayerTypeSupported(std::uint8_t playerType) const;
+        std::uint8_t FirstSupportedPlayerType() const;
 
 
         bool HasVariants()       const { return variantCount > 0; }
@@ -175,6 +190,7 @@ namespace outfit
         std::uint64_t GetVariantDiamondFv2(std::uint8_t playerType, std::uint8_t variantIdx) const;
         std::uint64_t GetVariantVoiceFpk(std::uint8_t playerType, std::uint8_t variantIdx) const;
         std::uint64_t GetVariantDisplayNameHash(std::uint8_t playerType, std::uint8_t variantIdx) const;
+        std::uint64_t GetVariantIconPathHash(std::uint8_t playerType, std::uint8_t variantIdx) const;
 
 
         std::uint8_t  GetVariantCountFor(std::uint8_t playerType) const;
@@ -206,6 +222,9 @@ namespace outfit
     void NoteOutfitOrdered(std::uint16_t developId);
     void NoteOutfitMenuStamp(std::uint16_t developId);
     void ClearOutfitMenuStamps();
+
+    void NoteOutfitRowRefresh(std::uint16_t developId);
+    bool BindOutfitForVisibleRow(std::uint16_t developId);
 
     bool TryGetOutfitByPartsType(std::uint8_t partsType,
                                  const OutfitEntry** outEntry);
@@ -337,6 +356,20 @@ namespace outfit
                                             std::uint8_t playerType,
                                             std::uint8_t wornCamo);
 
+    bool ExtendVanillaSuitArmHead(std::uint8_t vanillaPartsType,
+                                  std::uint8_t playerType,
+                                  std::uint8_t sourceCamo,
+                                  bool hasArm, bool armVal,
+                                  bool hasHead, bool headVal);
+
+    bool VanillaExtGetSuitArm(std::uint8_t vanillaPartsType,
+                              std::uint8_t playerType,
+                              std::uint8_t wornCamo, bool* outEnable);
+
+    bool VanillaExtGetSuitHead(std::uint8_t vanillaPartsType,
+                               std::uint8_t playerType,
+                               std::uint8_t wornCamo, bool* outEnable);
+
     bool ExtendVanillaSuitHeadOptions(std::uint8_t vanillaPartsType,
                                       std::uint8_t playerType,
                                       std::uint8_t sourceCamo,
@@ -366,6 +399,9 @@ namespace outfit
     std::uint8_t ReadLiveSelectorCode();
     std::uint8_t ReadLivePlayerType();
 
+    bool BootRestoreScrubActive();
+    void EndBootRestoreScrub(const char* reason);
+
 
     bool WriteLivePlayerOutfit(std::uint8_t partsType,
                                std::uint8_t selectorCode,
@@ -387,6 +423,8 @@ namespace outfit
 
     void          SetActiveVariant(std::uint8_t partsType, std::uint8_t variantIndex);
     std::uint8_t  GetActiveVariant(std::uint8_t partsType);
+    std::uint8_t  GetVariantWindowStart(std::uint16_t developId);
+    void          SetVariantWindowStart(std::uint16_t developId, std::uint8_t start);
     void          ClearActiveVariant(std::uint8_t partsType);
 
 

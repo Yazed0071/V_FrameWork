@@ -93,4 +93,5 @@ namespace EquipIdCompression
         }
         return -1;
     }
+
 }

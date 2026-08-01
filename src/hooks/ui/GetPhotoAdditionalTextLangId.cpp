@@ -15,7 +15,7 @@ using GetPhotoAdditionalTextLangIdHook_t = unsigned long long(__thiscall*)(Mothe
 
 static GetPhotoAdditionalTextLangIdHook_t g_OrigGetPhotoAdditionalTextLangIdHook = nullptr;
 
-// Caption (lang id) overrides keyed by missionCode + photoId + photoType.
+// missionCode + photoId + photoType.
 static std::list<PhotoInfo> addPhotoInfos{};
 
 unsigned long long __thiscall hkGetPhotoAdditionalTextLangId(MotherBaseMissionCommonData* self, unsigned long long* ret, unsigned short missionCode, unsigned char photoId, unsigned char photoType)

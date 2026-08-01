@@ -4,6 +4,7 @@
 #include "ShadowState.h"
 
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -47,8 +48,10 @@ namespace
     static std::uint16_t g_CrateDeliveredDevelopId     = 0;
     static std::uint8_t  g_CrateDeliveredVariantIdx    = 0;
 
-    static constexpr std::size_t kMaxVanillaExtVariants =
-        outfit::kMaxVariantsPerOutfit - 1;
+    static constexpr std::size_t kMaxVanillaExtVariants = 29;
+    static_assert(V_FrameWorkState::kPersistedVariantSelectorSlots
+                      == outfit::kMaxVariantsPerOutfit - 1,
+                  "persisted variant-selector slots must track kMaxVariantsPerOutfit-1");
 
     struct VanillaSuitExtension
     {
@@ -66,6 +69,13 @@ namespace
 
         std::uint64_t suitVoiceFpk[kPlayerTypeMax] = {};
         std::uint8_t  suitVoiceCamo[kPlayerTypeMax] = {};
+
+        bool          suitArmOverride[kPlayerTypeMax]  = {};
+        bool          suitArmEnable[kPlayerTypeMax]    = {};
+        std::uint8_t  suitArmCamo[kPlayerTypeMax]      = {};
+        bool          suitHeadOverride[kPlayerTypeMax] = {};
+        bool          suitHeadEnable[kPlayerTypeMax]   = {};
+        std::uint8_t  suitHeadCamo[kPlayerTypeMax]     = {};
     };
     static std::deque<VanillaSuitExtension> g_VanillaExts;
 
@@ -148,6 +158,14 @@ namespace
         return h ? h : 1ull;
     }
 
+    static std::uint16_t ResolvePersistedFlowIndex(const char* key)
+    {
+        if (!key || !key[0]) return 0;
+        const std::int32_t fi = V_FrameWorkState::GetPersistedFlowIndex(key);
+        if (fi <= 0 || fi > 0xFFFF) return 0;
+        return static_cast<std::uint16_t>(fi);
+    }
+
     static void BuildReservations_NoLock()
     {
         if (g_ReservationsBuilt) return;
@@ -173,7 +191,9 @@ namespace
                     else if (g_SelectorReservedBy[s] != h) ++conflicts;
                 };
                 reserveSel(sel);
-                for (std::size_t i = 0; i < 14; ++i) reserveSel(variants[i]);
+                for (std::size_t i = 0;
+                     i < V_FrameWorkState::kPersistedVariantSelectorSlots; ++i)
+                    reserveSel(variants[i]);
             });
 
         if (reservedSel || reservedPt || conflicts)
@@ -348,7 +368,9 @@ namespace
     static bool ShouldLogBindRefusal_NoLock(std::uint64_t keyHash,
                                             const char* reason)
     {
-        if (!reason || std::strcmp(reason, "menu-stamp") != 0)
+        if (!reason
+            || (std::strcmp(reason, "menu-stamp") != 0
+                && std::strcmp(reason, "row-window") != 0))
             return true;
         static std::unordered_set<std::uint64_t> s_menuStampLogged;
         return s_menuStampLogged.insert(keyHash).second;
@@ -560,6 +582,11 @@ namespace
     static std::unordered_set<std::uint16_t> g_OrderedThisSession;
     static std::unordered_set<std::uint16_t> g_MenuStampSet;
 
+    static constexpr std::uint64_t kMenuStampFreshMs = 500;
+    static constexpr std::uint64_t kRowBindRetryMs   = 300;
+    static std::unordered_map<std::uint16_t, std::uint64_t> g_MenuStampTick;
+    static std::unordered_map<std::uint16_t, std::uint64_t> g_RowBindBackoff;
+
     static int ReadStateBytesSEH(const std::uint8_t* state, std::size_t off,
                                  std::uint8_t* out, std::size_t n)
     {
@@ -585,10 +612,11 @@ namespace
 
     enum PinScope : unsigned
     {
-        kPinCore           = 0u,
-        kPinAppliedOrdered = 1u << 0,
-        kPinMenuStamps     = 1u << 1,
-        kPinAll            = kPinAppliedOrdered | kPinMenuStamps,
+        kPinCore            = 0u,
+        kPinAppliedOrdered  = 1u << 0,
+        kPinMenuStamps      = 1u << 1,
+        kPinMenuStampsFresh = 1u << 2,
+        kPinAll             = kPinAppliedOrdered | kPinMenuStamps,
     };
 
     static void ComputePins_NoLock(std::vector<bool>& pinned, bool& scanAvailable,
@@ -664,11 +692,96 @@ namespace
         }
         if (scope & kPinMenuStamps)
             for (const std::uint16_t d : g_MenuStampSet)       pinByDevelopId(d);
+        else if (scope & kPinMenuStampsFresh)
+        {
+            const std::uint64_t now = GetTickCount64();
+            for (const std::uint16_t d : g_MenuStampSet)
+            {
+                auto it = g_MenuStampTick.find(d);
+                if (it != g_MenuStampTick.end()
+                    && now - it->second <= kMenuStampFreshMs)
+                    pinByDevelopId(d);
+            }
+        }
 
         if (g_PendingSupplyDropDevelopId != 0)
             pinByDevelopId(g_PendingSupplyDropDevelopId);
         if (g_CrateDeliveredDevelopId != 0)
             pinByDevelopId(g_CrateDeliveredDevelopId);
+    }
+
+    static void ReleaseVictimBytes_NoLock(OutfitEntry& victim, const char* tier,
+                                          const char* forKey)
+    {
+        const std::uint8_t vPt  = victim.partsType;
+        const std::uint8_t vSel = victim.selectorCode;
+        std::uint8_t vVars[outfit::kMaxVariantsPerOutfit];
+        for (std::size_t i = 0; i < outfit::kMaxVariantsPerOutfit; ++i)
+            vVars[i] = victim.variantSelectorCodes[i];
+
+        Log("[OutfitRegistry] recycled live bytes of key=%s (%s) to "
+            "make room for key=%s\n", victim.key, tier, forKey ? forKey : "?");
+        UnbindOutfit_NoLock(victim);
+
+        if (IsCustomPartsType(vPt))
+            g_PartsTypeReservedBy[vPt] = 0;
+        auto releaseSel = [&](std::uint8_t s)
+        {
+            if (IsAllocatableSelector(s))
+                g_SelectorReservedBy[s] = 0;
+        };
+        releaseSel(vSel);
+        for (std::size_t i = 1; i < outfit::kMaxVariantsPerOutfit; ++i)
+            releaseSel(vVars[i]);
+        V_FrameWorkState::ClearPersistedOutfitIds(victim.key);
+    }
+
+    static bool TryEvictStaleStamp_NoLock(const char* forKey)
+    {
+        std::vector<bool> pinned;
+        bool scanAvailable = false;
+        ComputePins_NoLock(pinned, scanAvailable,
+                           kPinAppliedOrdered | kPinMenuStampsFresh);
+        if (!scanAvailable)
+            return false;
+
+        OutfitEntry*  best     = nullptr;
+        int           bestCat  = 2;
+        std::uint64_t bestTick = ~0ull;
+        std::size_t   idx      = 0;
+        for (auto& e : g_Entries)
+        {
+            const std::size_t here = idx++;
+            if (!e.used || !e.bound)
+                continue;
+            if (here < pinned.size() && pinned[here])
+                continue;
+
+            int           cat  = 0;
+            std::uint64_t tick = e.lastBindTouch;
+            if (g_MenuStampSet.count(e.developId))
+            {
+                auto it = g_MenuStampTick.find(e.developId);
+                cat  = 1;
+                tick = (it != g_MenuStampTick.end()) ? it->second : 0;
+            }
+            if (!best || cat < bestCat
+                || (cat == bestCat && tick < bestTick))
+            {
+                best     = &e;
+                bestCat  = cat;
+                bestTick = tick;
+            }
+        }
+        if (!best)
+            return false;
+
+        ReleaseVictimBytes_NoLock(*best,
+                                  bestCat == 0
+                                      ? "menu-window, idle leftover"
+                                      : "menu-window, off-screen stale",
+                                  forKey);
+        return true;
     }
 
     static bool TryEvictOne_NoLock(const char* forKey)
@@ -707,27 +820,7 @@ namespace
         if (!victim)
             return false;
 
-        const std::uint8_t vPt  = victim->partsType;
-        const std::uint8_t vSel = victim->selectorCode;
-        std::uint8_t vVars[outfit::kMaxVariantsPerOutfit];
-        for (std::size_t i = 0; i < outfit::kMaxVariantsPerOutfit; ++i)
-            vVars[i] = victim->variantSelectorCodes[i];
-
-        Log("[OutfitRegistry] recycled live bytes of key=%s (%s) to "
-            "make room for key=%s\n", victim->key, tier, forKey ? forKey : "?");
-        UnbindOutfit_NoLock(*victim);
-
-        if (IsCustomPartsType(vPt))
-            g_PartsTypeReservedBy[vPt] = 0;
-        auto releaseSel = [&](std::uint8_t s)
-        {
-            if (IsAllocatableSelector(s))
-                g_SelectorReservedBy[s] = 0;
-        };
-        releaseSel(vSel);
-        for (std::size_t i = 1; i < outfit::kMaxVariantsPerOutfit; ++i)
-            releaseSel(vVars[i]);
-        V_FrameWorkState::ClearPersistedOutfitIds(victim->key);
+        ReleaseVictimBytes_NoLock(*victim, tier, forKey);
         return true;
     }
 
@@ -819,15 +912,26 @@ namespace outfit
         return GetPTData(playerType) != nullptr;
     }
 
+    std::uint8_t OutfitEntry::FirstSupportedPlayerType() const
+    {
+        for (std::uint8_t pt = 0; pt < kPlayerTypeMax; ++pt)
+            if (perPlayerType[pt].used)
+                return pt == kPlayerType_Avatar ? kPlayerType_Snake : pt;
+        return 0xFF;
+    }
+
 
     bool OutfitEntry::IsArmEnabled(std::uint8_t playerType) const
     {
+        if (playerType == kPlayerType_DDMale
+            || playerType == kPlayerType_DDFemale)
+            return false;
         const auto* d = GetPTData(playerType);
         if (!d) return false;
         const std::uint8_t vi = GetActiveVariant(partsType);
-        if (vi >= 1 && vi < kMaxVariantsPerOutfit
-            && d->variants[vi].used && d->variants[vi].hasEnableArm)
-            return d->variants[vi].enableArm;
+        if (const auto* v = (vi >= 1) ? d->Var(vi) : nullptr;
+            v && v->used && v->hasEnableArm)
+            return v->enableArm;
         return d->enableArm;
     }
 
@@ -836,9 +940,9 @@ namespace outfit
         const auto* d = GetPTData(playerType);
         if (!d) return false;
         const std::uint8_t vi = GetActiveVariant(partsType);
-        if (vi >= 1 && vi < kMaxVariantsPerOutfit
-            && d->variants[vi].used && d->variants[vi].hasEnableHead)
-            return d->variants[vi].enableHead;
+        if (const auto* v = (vi >= 1) ? d->Var(vi) : nullptr;
+            v && v->used && v->hasEnableHead)
+            return v->enableHead;
         return d->enableHead;
     }
 
@@ -933,14 +1037,13 @@ namespace outfit
                                                std::uint8_t* outCount) const
     {
         const auto* d = GetPTData(playerType);
-        if (d && variant >= 1 && variant < kMaxVariantsPerOutfit
-            && d->variants[variant].used)
+        const auto* v = (d && variant >= 1) ? d->Var(variant) : nullptr;
+        if (v && v->used)
         {
-            if (d->variants[variant].headOptionsDeclared
-                && d->variants[variant].headOptionCount > 0)
+            if (v->headOptionsDeclared && v->headOptionCount > 0)
             {
-                if (outEquipIds) *outEquipIds = d->variants[variant].headOptionEquipIds;
-                if (outCount)    *outCount    = d->variants[variant].headOptionCount;
+                if (outEquipIds) *outEquipIds = v->headOptionEquipIds;
+                if (outCount)    *outCount    = v->headOptionCount;
                 return true;
             }
             if (outEquipIds) *outEquipIds = nullptr;
@@ -978,7 +1081,7 @@ namespace outfit
         if (HasHeadOption(equipId, playerType)) return true;
         const auto* d = GetPTData(playerType);
         if (!d) return false;
-        for (std::uint8_t vi = 1; vi < kMaxVariantsPerOutfit; ++vi)
+        for (std::size_t vi = 1; vi < d->variants.size(); ++vi)
         {
             const auto& v = d->variants[vi];
             if (!v.used || !v.headOptionsDeclared) continue;
@@ -1038,7 +1141,7 @@ namespace outfit
                 total += fill(b.headOptionEquipIds, b.headOptionCount,
                               b.pendingHeadNameHashes, b.pendingHeadCount,
                               &b.supportsHeadOptions, nullptr, nullptr);
-                for (std::uint8_t vi = 1; vi < kMaxVariantsPerOutfit; ++vi)
+                for (std::size_t vi = 1; vi < b.variants.size(); ++vi)
                 {
                     auto& v = b.variants[vi];
                     if (!v.used) continue;
@@ -1069,6 +1172,24 @@ namespace outfit
     {
         const auto* d = GetPTData(playerType);
         return d ? d->variantCount : std::uint8_t{0};
+    }
+
+    static std::unordered_map<std::uint16_t, std::uint8_t> g_VariantWindowStart;
+
+    std::uint8_t GetVariantWindowStart(std::uint16_t developId)
+    {
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        auto it = g_VariantWindowStart.find(developId);
+        return it != g_VariantWindowStart.end() ? it->second : std::uint8_t{0};
+    }
+
+    void SetVariantWindowStart(std::uint16_t developId, std::uint8_t start)
+    {
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        if (start == 0)
+            g_VariantWindowStart.erase(developId);
+        else
+            g_VariantWindowStart[developId] = start;
     }
 
     std::uint8_t OutfitEntry::GetVariantSelectorCode(std::uint8_t variantIdx) const
@@ -1107,11 +1228,12 @@ namespace outfit
     {
         const auto* d = GetPTData(playerType);
         if (!d) return 0;
-        if (variantIdx == 0 || variantIdx >= d->variantCount
-            || !d->variants[variantIdx].used)
+        const auto* v = (variantIdx != 0 && variantIdx < d->variantCount)
+            ? d->Var(variantIdx) : nullptr;
+        if (!v || !v->used)
             return d->partsPathCode64;
-        return d->variants[variantIdx].partsPathCode64 != 0
-             ? d->variants[variantIdx].partsPathCode64
+        return v->partsPathCode64 != 0
+             ? v->partsPathCode64
              : d->partsPathCode64;
     }
 
@@ -1120,11 +1242,12 @@ namespace outfit
     {
         const auto* d = GetPTData(playerType);
         if (!d) return 0;
-        if (variantIdx == 0 || variantIdx >= d->variantCount
-            || !d->variants[variantIdx].used)
+        const auto* v = (variantIdx != 0 && variantIdx < d->variantCount)
+            ? d->Var(variantIdx) : nullptr;
+        if (!v || !v->used)
             return d->fpkPathCode64;
-        return d->variants[variantIdx].fpkPathCode64 != 0
-             ? d->variants[variantIdx].fpkPathCode64
+        return v->fpkPathCode64 != 0
+             ? v->fpkPathCode64
              : d->fpkPathCode64;
     }
 
@@ -1133,10 +1256,11 @@ namespace outfit
     {
         const auto* d = GetPTData(playerType);
         if (!d) return kSubAssetUseVanilla;
-        if (variantIdx == 0 || variantIdx >= d->variantCount
-            || !d->variants[variantIdx].used)
+        const auto* v = (variantIdx != 0 && variantIdx < d->variantCount)
+            ? d->Var(variantIdx) : nullptr;
+        if (!v || !v->used)
             return d->camoFpk;
-        return d->variants[variantIdx].camoFpk;
+        return v->camoFpk;
     }
 
     std::uint64_t OutfitEntry::GetVariantCamoFv2(
@@ -1144,10 +1268,11 @@ namespace outfit
     {
         const auto* d = GetPTData(playerType);
         if (!d) return kSubAssetUseVanilla;
-        if (variantIdx == 0 || variantIdx >= d->variantCount
-            || !d->variants[variantIdx].used)
+        const auto* v = (variantIdx != 0 && variantIdx < d->variantCount)
+            ? d->Var(variantIdx) : nullptr;
+        if (!v || !v->used)
             return d->camoFv2;
-        return d->variants[variantIdx].camoFv2;
+        return v->camoFv2;
     }
 
     std::uint64_t OutfitEntry::GetVariantDiamondFpk(
@@ -1155,10 +1280,11 @@ namespace outfit
     {
         const auto* d = GetPTData(playerType);
         if (!d) return kSubAssetDisabled;
-        if (variantIdx == 0 || variantIdx >= d->variantCount
-            || !d->variants[variantIdx].used)
+        const auto* v = (variantIdx != 0 && variantIdx < d->variantCount)
+            ? d->Var(variantIdx) : nullptr;
+        if (!v || !v->used)
             return d->diamondFpk;
-        return d->variants[variantIdx].diamondFpk;
+        return v->diamondFpk;
     }
 
     std::uint64_t OutfitEntry::GetVariantDiamondFv2(
@@ -1166,10 +1292,11 @@ namespace outfit
     {
         const auto* d = GetPTData(playerType);
         if (!d) return kSubAssetUseVanilla;
-        if (variantIdx == 0 || variantIdx >= d->variantCount
-            || !d->variants[variantIdx].used)
+        const auto* v = (variantIdx != 0 && variantIdx < d->variantCount)
+            ? d->Var(variantIdx) : nullptr;
+        if (!v || !v->used)
             return d->diamondFv2;
-        return d->variants[variantIdx].diamondFv2;
+        return v->diamondFv2;
     }
 
     std::uint64_t OutfitEntry::GetVariantVoiceFpk(
@@ -1177,10 +1304,11 @@ namespace outfit
     {
         const auto* d = GetPTData(playerType);
         if (!d) return kSubAssetUseVanilla;
-        if (variantIdx == 0 || variantIdx >= d->variantCount
-            || !d->variants[variantIdx].used)
+        const auto* v = (variantIdx != 0 && variantIdx < d->variantCount)
+            ? d->Var(variantIdx) : nullptr;
+        if (!v || !v->used)
             return d->voiceFpk;
-        return d->variants[variantIdx].voiceFpk;
+        return v->voiceFpk;
     }
 
     std::uint64_t OutfitEntry::GetVariantDisplayNameHash(
@@ -1190,7 +1318,20 @@ namespace outfit
         if (!d) return 0;
         if (variantIdx == 0) return d->baseDisplayNameHash;
         if (variantIdx >= d->variantCount) return 0;
-        return d->variants[variantIdx].displayNameHash;
+        const auto* v = d->Var(variantIdx);
+        return v ? v->displayNameHash : 0;
+    }
+
+    std::uint64_t OutfitEntry::GetVariantIconPathHash(
+        std::uint8_t playerType, std::uint8_t variantIdx) const
+    {
+        const auto* d = GetPTData(playerType);
+        if (!d) return 0;
+        const auto* v = (variantIdx != 0 && variantIdx < d->variantCount)
+            ? d->Var(variantIdx) : nullptr;
+        if (v && v->used && v->iconPathHash != 0)
+            return v->iconPathHash;
+        return d->baseIconPathHash;
     }
 
 
@@ -1255,8 +1396,10 @@ namespace outfit
 
             if (e.developId == def.developId)
             {
-                if (e.flowIndex != def.flowIndex)
+                if (def.flowIndex != 0 && e.flowIndex != def.flowIndex)
                     e.flowIndex = def.flowIndex;
+                else if (e.flowIndex == 0)
+                    e.flowIndex = ResolvePersistedFlowIndex(def.key);
 #ifdef _DEBUG
                 Log("[OutfitRegistry] re-registration of same outfit "
                     "developId=%u flowIndex=%u partsType=0x%02X - "
@@ -1297,11 +1440,16 @@ namespace outfit
             slot = &g_Entries.back();
         }
 
-        *slot = OutfitEntry{};
+        {
+            static const OutfitEntry kBlankEntry{};
+            *slot = kBlankEntry;
+        }
         slot->used         = true;
         slot->bound        = false;
         slot->developId    = def.developId;
-        slot->flowIndex    = def.flowIndex;
+        slot->flowIndex    = (def.flowIndex != 0)
+                                 ? def.flowIndex
+                                 : ResolvePersistedFlowIndex(def.key);
         slot->partsType    = 0;
         slot->selectorCode = 0;
         slot->keyHash      = keyHash;
@@ -1670,12 +1818,67 @@ namespace outfit
         if (developId == 0) return;
         std::lock_guard<std::mutex> lock(g_Mutex);
         g_MenuStampSet.insert(developId);
+        g_MenuStampTick[developId] = GetTickCount64();
     }
 
     void ClearOutfitMenuStamps()
     {
         std::lock_guard<std::mutex> lock(g_Mutex);
         g_MenuStampSet.clear();
+        g_MenuStampTick.clear();
+        g_RowBindBackoff.clear();
+    }
+
+    void NoteOutfitRowRefresh(std::uint16_t developId)
+    {
+        if (developId == 0) return;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        g_MenuStampSet.insert(developId);
+        g_MenuStampTick[developId] = GetTickCount64();
+    }
+
+    bool BindOutfitForVisibleRow(std::uint16_t developId)
+    {
+        if (developId == 0) return false;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        BuildReservations_NoLock();
+
+        OutfitEntry* target = nullptr;
+        for (auto& e : g_Entries)
+            if (e.used && e.developId == developId)
+            {
+                target = &e;
+                break;
+            }
+        if (!target)
+            return false;
+
+        const std::uint64_t now = GetTickCount64();
+        if (target->bound)
+        {
+            g_MenuStampSet.insert(developId);
+            g_MenuStampTick[developId] = now;
+            return true;
+        }
+
+        auto bo = g_RowBindBackoff.find(developId);
+        if (bo != g_RowBindBackoff.end() && now - bo->second < kRowBindRetryMs)
+            return false;
+
+        for (int attempt = 0; attempt < 64; ++attempt)
+        {
+            if (BindOutfit_NoLock(*target, false, "row-window"))
+            {
+                g_RowBindBackoff.erase(developId);
+                g_MenuStampSet.insert(developId);
+                g_MenuStampTick[developId] = GetTickCount64();
+                return true;
+            }
+            if (!TryEvictStaleStamp_NoLock(target->key))
+                break;
+        }
+        g_RowBindBackoff[developId] = now;
+        return false;
     }
 
     std::uint64_t GetVariantDisplayNameHash(std::uint8_t partsType,
@@ -1827,6 +2030,25 @@ namespace outfit
             if (e.used) outEntries[count++] = &e;
         }
         return count;
+    }
+
+    namespace
+    {
+        std::atomic<bool> g_BootRestoreScrubArmed{ true };
+    }
+
+    bool BootRestoreScrubActive()
+    {
+        return g_BootRestoreScrubArmed.load(std::memory_order_relaxed);
+    }
+
+    void EndBootRestoreScrub(const char* reason)
+    {
+        bool expected = true;
+        if (g_BootRestoreScrubArmed.compare_exchange_strong(expected, false))
+            Log("[OutfitRegistry] BOOT-SCRUB disarmed (%s) - custom outfit "
+                "restore/resolve is live again for the rest of the session\n",
+                reason ? reason : "unspecified");
     }
 
     std::uint8_t ReadLivePartsType()
@@ -2055,16 +2277,17 @@ namespace outfit
                           vanillaPartsType);
             const std::uint64_t keyHash = HashOutfitKey(keyBuf);
 
-            std::uint8_t persisted[14] = {};
-            V_FrameWorkState::GetPersistedOutfitVariantSelectors(keyBuf,
-                                                                 persisted, 14);
+            std::uint8_t persisted[V_FrameWorkState::kPersistedVariantSelectorSlots] = {};
+            V_FrameWorkState::GetPersistedOutfitVariantSelectors(
+                keyBuf, persisted, V_FrameWorkState::kPersistedVariantSelectorSlots);
             base = static_cast<int>(x->variantSelectorCount);
             for (std::uint8_t j = 0; j < take; ++j)
             {
                 const std::uint8_t slot =
                     static_cast<std::uint8_t>(base + j);
-                std::uint8_t sel = (slot < 14) ? persisted[slot]
-                                               : std::uint8_t{0};
+                std::uint8_t sel =
+                    (slot < V_FrameWorkState::kPersistedVariantSelectorSlots)
+                        ? persisted[slot] : std::uint8_t{0};
                 if (!IsAllocatableSelector(sel) || IsSelectorTaken_NoLock(sel)
                     || IsSelectorReservedForOther_NoLock(sel, keyHash))
                     sel = AllocateSelector_NoLock(sel, keyHash);
@@ -2101,14 +2324,16 @@ namespace outfit
                     std::snprintf(keyBuf, sizeof(keyBuf), "__vext:0x%02X",
                                   vanillaPartsType);
                     const std::uint64_t keyHash = HashOutfitKey(keyBuf);
-                    std::uint8_t persisted[14] = {};
+                    std::uint8_t persisted[V_FrameWorkState::kPersistedVariantSelectorSlots] = {};
                     V_FrameWorkState::GetPersistedOutfitVariantSelectors(
-                        keyBuf, persisted, 14);
+                        keyBuf, persisted,
+                        V_FrameWorkState::kPersistedVariantSelectorSlots);
                     for (std::uint8_t g = 0; g < need; ++g)
                     {
                         const std::uint8_t slot = x->variantSelectorCount;
-                        std::uint8_t sel = (slot < 14) ? persisted[slot]
-                                                       : std::uint8_t{0};
+                        std::uint8_t sel =
+                            (slot < V_FrameWorkState::kPersistedVariantSelectorSlots)
+                                ? persisted[slot] : std::uint8_t{0};
                         if (!IsAllocatableSelector(sel)
                             || IsSelectorTaken_NoLock(sel)
                             || IsSelectorReservedForOther_NoLock(sel, keyHash))
@@ -2458,6 +2683,88 @@ namespace outfit
         if (storedCamo == kHeadOptionAnyCamo) return true;
         if (wornCamo   == kHeadOptionAnyCamo) return true;
         return storedCamo == wornCamo;
+    }
+
+    bool ExtendVanillaSuitArmHead(std::uint8_t vanillaPartsType,
+                                  std::uint8_t playerType,
+                                  std::uint8_t sourceCamo,
+                                  bool hasArm, bool armVal,
+                                  bool hasHead, bool headVal)
+    {
+        if (IsCustomPartsType(vanillaPartsType) || vanillaPartsType == 0xFF)
+            return false;
+        if (playerType >= kPlayerTypeMax)
+            return false;
+        if (!hasArm && !hasHead)
+            return false;
+
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        VanillaSuitExtension* x = FindOrCreateVanillaExt_NoLock(vanillaPartsType);
+        if (hasArm)
+        {
+            x->suitArmOverride[playerType] = true;
+            x->suitArmEnable[playerType]   = armVal;
+            x->suitArmCamo[playerType]     = sourceCamo;
+        }
+        if (hasHead)
+        {
+            x->suitHeadOverride[playerType] = true;
+            x->suitHeadEnable[playerType]   = headVal;
+            x->suitHeadCamo[playerType]     = sourceCamo;
+        }
+        return true;
+    }
+
+    bool VanillaExtGetSuitArm(std::uint8_t vanillaPartsType,
+                              std::uint8_t playerType,
+                              std::uint8_t wornCamo, bool* outEnable)
+    {
+        if (playerType >= kPlayerTypeMax) return false;
+        if (playerType == kPlayerType_DDMale
+            || playerType == kPlayerType_DDFemale)
+        {
+            if (outEnable) *outEnable = false;
+            return true;
+        }
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        const VanillaSuitExtension* x = FindVanillaExt_NoLock(vanillaPartsType);
+        if (!x) return false;
+        std::uint8_t src = playerType;
+        if (!x->suitArmOverride[src])
+        {
+            const std::uint8_t partner =
+                (playerType == kPlayerType_Avatar) ? kPlayerType_Snake
+              : (playerType == kPlayerType_Snake)  ? kPlayerType_Avatar
+                                                   : std::uint8_t{0xFF};
+            if (partner != 0xFF && x->suitArmOverride[partner]) src = partner;
+            else return false;
+        }
+        if (!HeadCamoMatches_NoLock(x->suitArmCamo[src], wornCamo)) return false;
+        if (outEnable) *outEnable = x->suitArmEnable[src];
+        return true;
+    }
+
+    bool VanillaExtGetSuitHead(std::uint8_t vanillaPartsType,
+                               std::uint8_t playerType,
+                               std::uint8_t wornCamo, bool* outEnable)
+    {
+        if (playerType >= kPlayerTypeMax) return false;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        const VanillaSuitExtension* x = FindVanillaExt_NoLock(vanillaPartsType);
+        if (!x) return false;
+        std::uint8_t src = playerType;
+        if (!x->suitHeadOverride[src])
+        {
+            const std::uint8_t partner =
+                (playerType == kPlayerType_Avatar) ? kPlayerType_Snake
+              : (playerType == kPlayerType_Snake)  ? kPlayerType_Avatar
+                                                   : std::uint8_t{0xFF};
+            if (partner != 0xFF && x->suitHeadOverride[partner]) src = partner;
+            else return false;
+        }
+        if (!HeadCamoMatches_NoLock(x->suitHeadCamo[src], wornCamo)) return false;
+        if (outEnable) *outEnable = x->suitHeadEnable[src];
+        return true;
     }
 
     bool VanillaExtHasAnyHeadOptions(std::uint8_t vanillaPartsType,

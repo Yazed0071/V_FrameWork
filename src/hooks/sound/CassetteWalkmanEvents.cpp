@@ -3,8 +3,6 @@
 #include <Windows.h>
 #include <atomic>
 #include <cstdint>
-#include <mutex>
-#include <vector>
 
 #include "AddressSet.h"
 #include "HookUtils.h"
@@ -35,42 +33,34 @@ namespace
     void* g_ResumeTarget  = nullptr;
     void* g_SpeakerTarget = nullptr;
 
-    struct Deferred { const char* msg; std::uint32_t a1; std::uint32_t a2; std::uint32_t a3; int argc; };
-
-    std::mutex             g_queueMutex;
-    std::vector<Deferred>  g_queue;
-
     std::uint32_t ByUser() { return t_programmatic ? 0u : 1u; }
-
-    void Enqueue(const char* msg, std::uint32_t a1, std::uint32_t a2, std::uint32_t a3, int argc)
-    {
-        std::lock_guard<std::mutex> lk(g_queueMutex);
-        if (g_queue.size() < 256)
-            g_queue.push_back(Deferred{ msg, a1, a2, a3, argc });
-    }
 
     std::uint32_t* __fastcall hk_Stop(void* player, std::uint32_t* outErr,
                                       std::uint32_t fadeMs, std::uint8_t stopByUser)
     {
-        Enqueue("StopWalkMan", g_currentTrackId.load(std::memory_order_relaxed), ByUser(), 0, 2);
+        V_FrameWork::EmitMessage(kClass, "StopWalkMan",
+            g_currentTrackId.load(std::memory_order_relaxed), ByUser());
         return g_OrigStop ? g_OrigStop(player, outErr, fadeMs, stopByUser) : nullptr;
     }
 
     int* __fastcall hk_Pause(void* player, int* outErr, std::uint32_t fadeMs)
     {
-        Enqueue("PauseWalkMan", g_currentTrackId.load(std::memory_order_relaxed), ByUser(), 0, 2);
+        V_FrameWork::EmitMessage(kClass, "PauseWalkMan",
+            g_currentTrackId.load(std::memory_order_relaxed), ByUser());
         return g_OrigPause ? g_OrigPause(player, outErr, fadeMs) : nullptr;
     }
 
     int* __fastcall hk_Resume(void* player, int* outErr, std::uint32_t fadeMs)
     {
-        Enqueue("StartWalkMan", g_currentTrackId.load(std::memory_order_relaxed), ByUser(), 0, 2);
+        V_FrameWork::EmitMessage(kClass, "StartWalkMan",
+            g_currentTrackId.load(std::memory_order_relaxed), ByUser());
         return g_OrigResume ? g_OrigResume(player, outErr, fadeMs) : nullptr;
     }
 
     std::uint32_t* __fastcall hk_Speaker(void* player, std::uint32_t* outResult, std::uint32_t targetMode)
     {
-        Enqueue("SpeakerWalkMan", g_currentTrackId.load(std::memory_order_relaxed), targetMode, ByUser(), 3);
+        V_FrameWork::EmitMessage(kClass, "SpeakerWalkMan",
+            g_currentTrackId.load(std::memory_order_relaxed), targetMode, ByUser());
         return g_OrigSpeaker ? g_OrigSpeaker(player, outResult, targetMode) : nullptr;
     }
 
@@ -95,32 +85,7 @@ void Set_CassetteWalkmanProgrammatic(bool programmatic)
 void Emit_CassetteWalkmanStart(std::uint32_t trackId)
 {
     g_currentTrackId.store(trackId, std::memory_order_relaxed);
-    Enqueue("StartWalkMan", trackId, ByUser(), 0, 2);
-}
-
-void Drain_CassetteWalkmanEvents()
-{
-    static thread_local bool s_draining = false;
-    if (s_draining)
-        return;
-
-    std::vector<Deferred> local;
-    {
-        std::lock_guard<std::mutex> lk(g_queueMutex);
-        if (g_queue.empty())
-            return;
-        local.swap(g_queue);
-    }
-
-    s_draining = true;
-    for (const Deferred& d : local)
-    {
-        if (d.argc >= 3)
-            V_FrameWork::EmitMessage(kClass, d.msg, d.a1, d.a2, d.a3);
-        else
-            V_FrameWork::EmitMessage(kClass, d.msg, d.a1, d.a2);
-    }
-    s_draining = false;
+    V_FrameWork::EmitMessage(kClass, "StartWalkMan", trackId, ByUser());
 }
 
 bool Install_CassetteWalkmanEvents_Hook()
@@ -168,10 +133,5 @@ bool Uninstall_CassetteWalkmanEvents_Hook()
     g_OrigResume = nullptr;
     g_OrigSpeaker = nullptr;
     g_StopTarget = g_PauseTarget = g_ResumeTarget = g_SpeakerTarget = nullptr;
-
-    {
-        std::lock_guard<std::mutex> lk(g_queueMutex);
-        g_queue.clear();
-    }
     return true;
 }

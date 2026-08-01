@@ -19,6 +19,50 @@ namespace
     using GetUixUtility_t = void** (__fastcall*)();
     using GetQuarkSystemTable_t = void* (__fastcall*)();
 
+    using TexStatusCreate_t = char(__fastcall*)(void*, void*, unsigned);
+
+    TexStatusCreate_t     g_OrigTexStatusCreate = nullptr;
+
+    constexpr uintptr_t   kAddr_TexStatusCreate_En154 = 0x141DBC2D0;
+
+    bool DescriptorReadableSEH(const void* src)
+    {
+        const uintptr_t v = reinterpret_cast<uintptr_t>(src);
+        if (v < 0x10000ull || v >= 0x7FFFFFFFFFFFull)
+            return false;
+        __try
+        {
+            volatile unsigned probe =
+                *reinterpret_cast<const unsigned*>(
+                    static_cast<const char*>(src) + 0x18);
+            (void)probe;
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
+    char __fastcall hkTexStatusCreate(void* out, void* src, unsigned flags)
+    {
+        if (src && !DescriptorReadableSEH(src))
+        {
+            static bool s_Warned = false;
+            if (!s_Warned)
+            {
+                s_Warned = true;
+                Log("[UiTextureGuard] a UI material texture slot holds the "
+                    "corrupt streamer descriptor %p - the bind is skipped so "
+                    "fox::gr::TextureStreamerStatus does not fault on it; "
+                    "that slot draws untextured instead of crashing the "
+                    "render worker\n", src);
+            }
+            return 0;
+        }
+        return g_OrigTexStatusCreate(out, src, flags);
+    }
+
     SetWeaponPanelLogo_t  g_OrigSetWeaponPanelLogo = nullptr;
     SetTextureName_t      g_SetTextureName = nullptr;
     GetUixUtility_t       g_GetUixUtility = nullptr;
@@ -307,6 +351,19 @@ bool Install_EquipBgTexture_Hook()
         reinterpret_cast<void**>(&g_OrigSetWeaponPanelLogo));
 
     Resolve();
+
+    if (gGameBuild == AddressSetRuntime::GameBuild::En_1_0_15_4)
+    {
+        void* guard = ResolveGameAddress(kAddr_TexStatusCreate_En154);
+        if (guard && !CreateAndEnableHook(
+                guard,
+                reinterpret_cast<void*>(&hkTexStatusCreate),
+                reinterpret_cast<void**>(&g_OrigTexStatusCreate)))
+            Log("[UiTextureGuard] install FAILED - a corrupt UI texture "
+                "descriptor will fault the render worker inside "
+                "fox::gr::TextureStreamerStatus instead of being skipped\n");
+    }
+
 #ifdef _DEBUG
     Log("[Hook] EquipBgTexture: %s\n", ok ? "OK" : "FAIL");
 #else
@@ -320,6 +377,12 @@ bool Install_EquipBgTexture_Hook()
 bool Uninstall_EquipBgTexture_Hook()
 {
     DisableAndRemoveHook(ResolveGameAddress(gAddr.SetEquipBackgroundTexture));
+
+    if (g_OrigTexStatusCreate)
+    {
+        DisableAndRemoveHook(ResolveGameAddress(kAddr_TexStatusCreate_En154));
+        g_OrigTexStatusCreate = nullptr;
+    }
 
     g_OrigSetWeaponPanelLogo = nullptr;
     return true;

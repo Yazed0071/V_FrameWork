@@ -102,6 +102,10 @@ namespace V_FrameWork
         const LuaBroadcastArg* args,
         int argCount);
 
+    void EnterLuaPcall();
+    void ExitLuaPcall();
+    void DrainDeferredBroadcasts();
+
     inline void EmitMessage(const char* category, const char* msg)
     {
         EmitMessageValues(category, msg, nullptr, 0);

@@ -376,8 +376,18 @@ static const char* const kAddrFieldNames[] = {
     "SoundControllerImpl_CallVoice",
     "MbDvcCassetteTapeCallbackImpl_SeekMusic",
     "EquipSystem_GetGunInfoById",
+    "Reticle_InitHandGunAsset",
+    "TimeCigaretteActionPluginImpl_HideTimeCigaretteUi",
+    "Fox_EntityInfoMapTeardown",
+    "WeaponEnhanceLangIdArray",
+    "WeaponEnhance_GetIndexForRegist",
+    "WeaponEnhance_GetMessageIdArray",
+    "WeaponEnhance_GetLangIdById",
+    "WeaponEnhance_GetLangIdBound",
+    "BulletEffectController_CreateEffect",
+    "ItemSelectorCallbackImpl_AddRecord",
 };
-static const int kAddrFieldCount = 364;
+static const int kAddrFieldCount = 374;
 static_assert(sizeof(AddressSetRuntime::AddressSet) / sizeof(uintptr_t) == kAddrFieldCount,
               "kAddrFieldNames must stay in lockstep with the AddressSet layout");
 static_assert(sizeof(kAddrFieldNames) / sizeof(kAddrFieldNames[0]) == kAddrFieldCount,
@@ -792,6 +802,16 @@ namespace AddressSetRuntime
             0x140B08380ull, // SoundControllerImpl_CallVoice
             0x140EF71F0ull, // MbDvcCassetteTapeCallbackImpl_SeekMusic
             0x140DBEB20ull, // EquipSystem_GetGunInfoById
+            0x1409427A0ull, // Reticle_InitHandGunAsset
+            0x1412B0240ull, // TimeCigaretteActionPluginImpl_HideTimeCigaretteUi
+            0x140076DC0ull, // Fox_EntityInfoMapTeardown
+            0x142AC6D10ull, // WeaponEnhanceLangIdArray
+            0x140F9FA00ull, // WeaponEnhance_GetIndexForRegist
+            0x140F9FAB0ull, // WeaponEnhance_GetMessageIdArray
+            0x140F9FA60ull, // WeaponEnhance_GetLangIdById
+            0x140F9FAA0ull, // WeaponEnhance_GetLangIdBound
+            0x140B3B8A0ull, // BulletEffectController_CreateEffect
+            0x1416A1170ull, // ItemSelectorCallbackImpl_AddRecord
         };
 
         return value;
@@ -1165,6 +1185,16 @@ namespace AddressSetRuntime
             0x140B082E0ull, // SoundControllerImpl_CallVoice
             0x140EF7220ull, // MbDvcCassetteTapeCallbackImpl_SeekMusic
             0x140DBEAE0ull, // EquipSystem_GetGunInfoById
+            0x140942680ull, // Reticle_InitHandGunAsset
+            0x1412B0280ull, // TimeCigaretteActionPluginImpl_HideTimeCigaretteUi
+            0x140076e30ull, // Fox_EntityInfoMapTeardown
+            0x142AC6D10ull, // WeaponEnhanceLangIdArray
+            0x140F9FA50ull, // WeaponEnhance_GetIndexForRegist
+            0x140F9FB00ull, // WeaponEnhance_GetMessageIdArray
+            0x140F9FAB0ull, // WeaponEnhance_GetLangIdById
+            0x140F9FAF0ull, // WeaponEnhance_GetLangIdBound
+            0x140b3b850ull, // BulletEffectController_CreateEffect
+            0x1416A1140ull, // ItemSelectorCallbackImpl_AddRecord
         };
         return value;
     }

@@ -35,6 +35,18 @@ namespace EquipDevelopAdd
 
     void MaybeRotateDevelopWindow(std::uint16_t predicateIdx);
 
+    void PumpDevelopMenuWork();
+
+    void NoteMenuTabHint(int typeId);
+
+    void NoteMenuFillEnter();
+    void NoteMenuFillLeave();
+    struct MenuFillScope
+    {
+        MenuFillScope()  { NoteMenuFillEnter(); }
+        ~MenuFillScope() { NoteMenuFillLeave(); }
+    };
+
     bool TryGetFlowIndexForDevelopId(std::uint16_t developId, std::uint16_t& outFlowIndex);
 
     bool IsManagedFlowIndex(std::uint16_t flowIndex);
