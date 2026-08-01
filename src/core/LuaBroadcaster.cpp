@@ -354,6 +354,41 @@ static void EmitInline(const char* category,
     if (!BroadcastStackHasRoom(L, category, msg))
         return;
 
+#ifdef _DEBUG
+    const bool traceWalk =
+        category[0] == 'U' && category[1] == 'I' && category[2] == '\0' &&
+        std::strstr(msg, "WalkMan") != nullptr;
+    static thread_local int s_walkTrace = 0;
+#endif
+
+    static thread_local int s_dispatchDepth = 0;
+    if (s_dispatchDepth >= 8)
+    {
+        static thread_local int s_loggedDepth = 0;
+        if (s_loggedDepth < 12)
+        {
+            ++s_loggedDepth;
+            Log("[LuaBroadcast] re-entrant dispatch depth>=8: DROPPING category=%s msg=%s to "
+                "break a message-recursion loop - a receiver of a prior message re-triggered an "
+                "emit that led back here. If this is a WalkMan message, a walkman event is "
+                "feeding itself (tape-finish auto-advance).\n",
+                category, msg);
+        }
+        return;
+    }
+    ++s_dispatchDepth;
+
+#ifdef _DEBUG
+    if (traceWalk && s_walkTrace < 40)
+    {
+        ++s_walkTrace;
+        Log("[LuaBroadcast] dispatch BEGIN %s.%s depth=%d - if no matching 'dispatch END' "
+            "follows, TppMain.OnMessage for this walkman message hung (freeze is inside the "
+            "Lua dispatch / a receiver)\n",
+            category, msg, s_dispatchDepth);
+    }
+#endif
+
     DWORD  sehCode     = 0;
     PVOID  sehAddr     = nullptr;
     ULONG_PTR sehFault = 0;
@@ -414,6 +449,13 @@ static void EmitInline(const char* category,
                 category, msg, sehCode, sehAddr);
         }
     }
+
+    --s_dispatchDepth;
+
+#ifdef _DEBUG
+    if (traceWalk && s_walkTrace <= 40)
+        Log("[LuaBroadcast] dispatch END   %s.%s\n", category, msg);
+#endif
 }
 
 void V_FrameWork::EmitMessageValues(const char* category,

@@ -22,6 +22,8 @@ namespace
     struct GunBasicRow
     {
         std::int32_t f[13];
+        std::int32_t logical[13];
+        std::int32_t slotSpace[13];
     };
 
     using ReloadEquipParameterTables2_t = void(__fastcall*)(lua_State* L);
@@ -309,6 +311,43 @@ bool GunBasic_ReadRowBytes(int weaponId, unsigned char* out12)
     return CopyRowBytesSEH(buf + static_cast<size_t>(weaponId - 1) * 12, out12) == 1;
 }
 
+int GunBasic_RebindWidePartsForWeapon(int weaponId)
+{
+    std::lock_guard<std::recursive_mutex> lock(g_Mutex);
+
+    GunBasicRow* row = nullptr;
+    for (auto& r : g_Rows)
+        if (r.f[0] == weaponId)
+        {
+            row = &r;
+            break;
+        }
+    if (!row)
+        return 0;
+
+    int rebound = 0;
+    for (int i = 1; i <= 11; ++i)
+    {
+        if (row->slotSpace[i] < 0 || row->logical[i] < 0x100)
+            continue;
+        const int b = EquipParam_ResolvePartByte(row->slotSpace[i], row->logical[i]);
+        if (b > 0 && b != row->f[i])
+        {
+            row->f[i] = b;
+            ++rebound;
+        }
+    }
+
+    if (rebound)
+    {
+        const int cap = BufferSlotCount();
+        std::uint8_t* buf = BufferBase();
+        if (buf && weaponId >= 1 && weaponId <= cap)
+            WriteNativeRowSEH(buf, weaponId, &row->f[1]);
+    }
+    return rebound;
+}
+
 int __cdecl l_SetGunBasic(lua_State* L)
 {
     if (!ResolveLuaApi())
@@ -369,6 +408,14 @@ int __cdecl l_SetGunBasic(lua_State* L)
         kVanillaSpace_Sight, kVanillaSpace_Sight, kVanillaSpace_UnderBarrel,
         kVanillaSpace_Option, kVanillaSpace_Option
     };
+    for (int i = 0; i < 13; ++i)
+    {
+        row.logical[i]   = row.f[i];
+        row.slotSpace[i] = -1;
+    }
+    for (int i = 0; i < 11; ++i)
+        row.slotSpace[i + 1] = kSlotSpaces[i];
+
     for (int i = 0; i < 11; ++i)
     {
         if (kSlotSpaces[i] >= 0 && row.f[i + 1] >= 0x100)

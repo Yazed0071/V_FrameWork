@@ -8222,40 +8222,68 @@ namespace
                                                   void*, unsigned int);
     static BulletEffectSpawn_t g_OrigBulletEffectSpawn = nullptr;
 
-    static bool BulletEffectIndexInRangeSEH(void* emitter, unsigned int index)
+    enum class BulletEffectRange { InRange, OutOfRange, Unverifiable };
+
+    static BulletEffectRange BulletEffectIndexRangeSEH(void* emitter,
+                                                       unsigned int index,
+                                                       unsigned long long& outCount)
     {
+        outCount = 0;
         __try
         {
             const unsigned char* base =
                 *reinterpret_cast<const unsigned char* const*>(
                     reinterpret_cast<const unsigned char*>(emitter) + 0x50);
             if (!base)
-                return false;
+                return BulletEffectRange::Unverifiable;
             const unsigned long long count =
                 *reinterpret_cast<const unsigned long long*>(base - 8);
+            outCount = count;
             if (count == 0 || count > 0x1000)
-                return false;
-            return static_cast<unsigned long long>(index) < count;
+                return BulletEffectRange::Unverifiable;
+            return static_cast<unsigned long long>(index) < count
+                ? BulletEffectRange::InRange
+                : BulletEffectRange::OutOfRange;
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            return false;
+            return BulletEffectRange::Unverifiable;
         }
     }
 
     static void __fastcall hkBulletEffectSpawn(void* emitter, unsigned long long a2,
                                                unsigned int index, void* a4, unsigned int a5)
     {
-        if (emitter && index != 0 && !BulletEffectIndexInRangeSEH(emitter, index))
+        if (emitter && index != 0)
         {
-            static std::atomic<bool> s_Warned{ false };
-            if (!s_Warned.exchange(true))
-                Log("[EquipParam] bullet trail/muzzle effect index %u is past this weapon's "
-                    "effect FilePtr array - skipping the effect instead of reading past the "
-                    "array end (the engine does no bounds check; a custom weapon whose "
-                    "donor-aliased fire params request an effect index its own equip row does "
-                    "not cover would otherwise GP-fault on the adjacent arena node)\n", index);
-            return;
+            unsigned long long count = 0;
+            const BulletEffectRange r =
+                BulletEffectIndexRangeSEH(emitter, index, count);
+
+            if (r == BulletEffectRange::OutOfRange)
+            {
+                static std::atomic<bool> s_Warned{ false };
+                if (!s_Warned.exchange(true))
+                    Log("[EquipParam] bullet trail/muzzle effect index %u is past this "
+                        "weapon's effect FilePtr array (count=%llu) - skipping the effect "
+                        "instead of reading past the array end (the engine does no bounds "
+                        "check; a donor-aliased custom weapon asking for an index its own "
+                        "equip row does not cover would otherwise GP-fault)\n",
+                        index, count);
+                return;
+            }
+
+            if (r == BulletEffectRange::Unverifiable)
+            {
+                static std::atomic<bool> s_Warned{ false };
+                if (!s_Warned.exchange(true))
+                    Log("[EquipParam] bullet trail/muzzle effect index %u: this emitter's "
+                        "array count is not readable or not credible (raw=%llu), so the "
+                        "index cannot be proven out of range - letting the effect through. "
+                        "If this line is followed by a GP-fault in BulletEffectController, "
+                        "the count header is at a different offset on this path.\n",
+                        index, count);
+            }
         }
         g_OrigBulletEffectSpawn(emitter, a2, index, a4, a5);
     }
