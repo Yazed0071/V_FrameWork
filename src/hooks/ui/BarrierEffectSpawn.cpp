@@ -65,7 +65,9 @@ namespace
     {
         switch (gGameBuild)
         {
+            case ::AddressSetRuntime::GameBuild::En_1_0_15_4a:
             case ::AddressSetRuntime::GameBuild::En_1_0_15_4: return 0x140FF94D0ull;
+            case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4a:
             case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4: return 0x140FF9560ull;
             case ::AddressSetRuntime::GameBuild::En_1_0_15_3: return 0x140FF9C70ull;
             case ::AddressSetRuntime::GameBuild::Jp_1_0_15_3: return 0x140FF9CC0ull;
@@ -88,6 +90,7 @@ namespace
     {
         switch (gGameBuild)
         {
+            case ::AddressSetRuntime::GameBuild::En_1_0_15_4a:
             case ::AddressSetRuntime::GameBuild::En_1_0_15_4:
                 out[0] = { 0x140D2DDB7ull, { 0x41, 0x0F, 0xB7, 0x47, 0x2A },
                                             { 0xE9, 0x15, 0x02, 0x00, 0x00 }, "bullet wall-hit SE" };
@@ -96,6 +99,7 @@ namespace
                 out[2] = { 0x141751648ull, { 0xC6, 0x44, 0x24, 0x28, 0x01 },
                                             { 0xC6, 0x44, 0x24, 0x28, 0x00 }, "ricochet-spawn sound flag" };
                 return 3;
+            case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4a:
             case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4:
                 out[0] = { 0x140D2DD67ull, { 0x41, 0x0F, 0xB7, 0x47, 0x2A },
                                             { 0xE9, 0x15, 0x02, 0x00, 0x00 }, "bullet wall-hit SE" };
@@ -187,7 +191,9 @@ namespace
     {
         switch (gGameBuild)
         {
+            case ::AddressSetRuntime::GameBuild::En_1_0_15_4a:
             case ::AddressSetRuntime::GameBuild::En_1_0_15_4: return 0x140FF5BB0ull;
+            case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4a:
             case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4: return 0x140FF5C40ull;
             case ::AddressSetRuntime::GameBuild::En_1_0_15_3: return 0x1496DA350ull;
             case ::AddressSetRuntime::GameBuild::Jp_1_0_15_3: return 0x14A13FBB0ull;
@@ -198,7 +204,9 @@ namespace
     {
         switch (gGameBuild)
         {
+            case ::AddressSetRuntime::GameBuild::En_1_0_15_4a:
             case ::AddressSetRuntime::GameBuild::En_1_0_15_4: return 0x142ACEB58ull;
+            case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4a:
             case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4: return 0x142ACEB58ull;
             case ::AddressSetRuntime::GameBuild::En_1_0_15_3: return 0x142ACEB58ull;
             case ::AddressSetRuntime::GameBuild::Jp_1_0_15_3: return 0x142ACEB58ull;
@@ -210,7 +218,9 @@ namespace
     {
         switch (gGameBuild)
         {
+            case ::AddressSetRuntime::GameBuild::En_1_0_15_4a:
             case ::AddressSetRuntime::GameBuild::En_1_0_15_4: return 0x140FFAAA0ull;
+            case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4a:
             case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4: return 0x140FFAB30ull;
             case ::AddressSetRuntime::GameBuild::En_1_0_15_3: return 0x1496DD430ull;
             case ::AddressSetRuntime::GameBuild::Jp_1_0_15_3: return 0x14A142E80ull;
@@ -222,7 +232,9 @@ namespace
     {
         switch (gGameBuild)
         {
+            case ::AddressSetRuntime::GameBuild::En_1_0_15_4a:
             case ::AddressSetRuntime::GameBuild::En_1_0_15_4: return 0x140FF4AE0ull;
+            case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4a:
             case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4: return 0x140FF4B70ull;
             case ::AddressSetRuntime::GameBuild::En_1_0_15_3: return 0x1496D5120ull;
             case ::AddressSetRuntime::GameBuild::Jp_1_0_15_3: return 0x14A137900ull;

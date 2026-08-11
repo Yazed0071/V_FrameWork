@@ -11,7 +11,9 @@ namespace AddressSetRuntime
         En_1_0_15_3,   // day1820
         Jp_1_0_15_3,   // day1820
         En_1_0_15_4,   // day3800
-        Jp_1_0_15_4    // day3800
+        Jp_1_0_15_4,   // day3800
+        En_1_0_15_4a,    // day3900 - exe version resource still reads 1.0.15.4
+        Jp_1_0_15_4a     // day3900
     };
 
     struct AddressSet
@@ -463,6 +465,8 @@ namespace AddressSetRuntime
     const AddressSet& Get_mst_jp_day3800_AddressSet();   // 1.0.15.4 japanese
     const AddressSet& Get_mst_en_day1820_AddressSet();   // 1.0.15.3 english
     const AddressSet& Get_mst_jp_day1820_AddressSet();   // 1.0.15.3 japanese
+    const AddressSet& Get_mst_en_day3900_AddressSet();   // day3900 english
+    const AddressSet& Get_mst_jp_day3900_AddressSet();   // day3900 japanese
     GameBuild DetectGameBuildFromVersionInfo(HMODULE hGame);
     bool ResolveAddressSet(HMODULE hGame);
     void InstallCrashHandler();
@@ -475,12 +479,17 @@ namespace AddressSetRuntime
         case GameBuild::Jp_1_0_15_3: return "JP 1.0.15.3";
         case GameBuild::En_1_0_15_4: return "EN 1.0.15.4";
         case GameBuild::Jp_1_0_15_4: return "JP 1.0.15.4";
+        case GameBuild::En_1_0_15_4a:  return "EN 1.0.15.4a (day3900)";
+        case GameBuild::Jp_1_0_15_4a:  return "JP 1.0.15.4a (day3900)";
         default:                     return "Unknown";
         }
     }
 
-    inline bool IsEnglishBuild(GameBuild b)  { return b == GameBuild::En_1_0_15_3 || b == GameBuild::En_1_0_15_4; }
-    inline bool IsJapaneseBuild(GameBuild b) { return b == GameBuild::Jp_1_0_15_3 || b == GameBuild::Jp_1_0_15_4; }
+    inline bool IsEnglishBuild(GameBuild b)  { return b == GameBuild::En_1_0_15_3 || b == GameBuild::En_1_0_15_4 || b == GameBuild::En_1_0_15_4a; }
+    inline bool IsJapaneseBuild(GameBuild b) { return b == GameBuild::Jp_1_0_15_3 || b == GameBuild::Jp_1_0_15_4 || b == GameBuild::Jp_1_0_15_4a; }
+
+    inline bool IsEn154Family(GameBuild b) { return b == GameBuild::En_1_0_15_4 || b == GameBuild::En_1_0_15_4a; }
+    inline bool IsJp154Family(GameBuild b) { return b == GameBuild::Jp_1_0_15_4 || b == GameBuild::Jp_1_0_15_4a; }
 }
 
 #define gGameBuild (::AddressSetRuntime::GetGameBuild())

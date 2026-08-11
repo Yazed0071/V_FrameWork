@@ -649,13 +649,8 @@ namespace
             if (camoIdx >= 0 && camoIdx <= outfit::kVanillaCamoTypeMax)
                 branch.camoBonusType = static_cast<std::uint8_t>(camoIdx);
         }
+        branch.camoBonusTypeDeclared = branch.camoBonusType;
         ReadBranchCamoBonusValues(L, branchTblIdx, branch);
-
-        if (branch.hasCamoBonusValues
-            && branch.camoBonusType == outfit::kCamoBonusTypeUnset)
-        {
-            branch.camoBonusType = 0;
-        }
 
 
         branch.used = true;

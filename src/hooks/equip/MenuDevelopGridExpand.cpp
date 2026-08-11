@@ -1007,7 +1007,7 @@ namespace equip
             copyFlat, reinterpret_cast<void*>(&hkCopyFlat),
             reinterpret_cast<void**>(&g_OrigCopyFlat));
 
-        if (gGameBuild == AddressSetRuntime::GameBuild::En_1_0_15_4)
+        if (::AddressSetRuntime::IsEn154Family(gGameBuild))
         {
             void* rail = ResolveGameAddress(kAddr_DevelopRailBuild_En154);
             if (rail && !CreateAndEnableHook(

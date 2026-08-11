@@ -45,7 +45,9 @@ namespace
     {
         switch (gGameBuild)
         {
+            case ::AddressSetRuntime::GameBuild::En_1_0_15_4a:
             case ::AddressSetRuntime::GameBuild::En_1_0_15_4: return 0x140FC8020ull;
+            case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4a:
             case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4: return 0x140FC8070ull;
             case ::AddressSetRuntime::GameBuild::En_1_0_15_3: return 0x140FC88A0ull;
             case ::AddressSetRuntime::GameBuild::Jp_1_0_15_3: return 0x140FC8960ull;
@@ -56,7 +58,9 @@ namespace
     {
         switch (gGameBuild)
         {
+            case ::AddressSetRuntime::GameBuild::En_1_0_15_4a:
             case ::AddressSetRuntime::GameBuild::En_1_0_15_4: return 0x1409CEAE0ull;
+            case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4a:
             case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4: return 0x1409CE9E0ull;
             case ::AddressSetRuntime::GameBuild::En_1_0_15_3: return 0x14627C6F0ull;
             case ::AddressSetRuntime::GameBuild::Jp_1_0_15_3: return 0x147F4CCE0ull;
@@ -67,7 +71,9 @@ namespace
     {
         switch (gGameBuild)
         {
+            case ::AddressSetRuntime::GameBuild::En_1_0_15_4a:
             case ::AddressSetRuntime::GameBuild::En_1_0_15_4: return 0x14118C1C0ull;
+            case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4a:
             case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4: return 0x14118C240ull;
             case ::AddressSetRuntime::GameBuild::En_1_0_15_3: return 0x14118C970ull;
             case ::AddressSetRuntime::GameBuild::Jp_1_0_15_3: return 0x14118CA10ull;
@@ -78,7 +84,9 @@ namespace
     {
         switch (gGameBuild)
         {
+            case ::AddressSetRuntime::GameBuild::En_1_0_15_4a:
             case ::AddressSetRuntime::GameBuild::En_1_0_15_4: return 0x14118E1B0ull;
+            case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4a:
             case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4: return 0x14118E230ull;
             case ::AddressSetRuntime::GameBuild::En_1_0_15_3: return 0x14118E9E0ull;
             case ::AddressSetRuntime::GameBuild::Jp_1_0_15_3: return 0x14118EA90ull;
@@ -89,7 +97,9 @@ namespace
     {
         switch (gGameBuild)
         {
+            case ::AddressSetRuntime::GameBuild::En_1_0_15_4a:
             case ::AddressSetRuntime::GameBuild::En_1_0_15_4: return 0x140FF28D0ull;
+            case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4a:
             case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4: return 0x140FF28F0ull;
             case ::AddressSetRuntime::GameBuild::En_1_0_15_3: return 0x140FF3000ull;
             case ::AddressSetRuntime::GameBuild::Jp_1_0_15_3: return 0x140FF30C0ull;

@@ -24,7 +24,7 @@ namespace detail
     {
         if (pathCode64Ext == 0) return false;
 
-        if (gGameBuild == ::AddressSetRuntime::GameBuild::En_1_0_15_4)
+        if (::AddressSetRuntime::IsEn154Family(gGameBuild))
             return true;
 
         auto ctor = reinterpret_cast<FoxPathCtor_t>(

@@ -352,7 +352,7 @@ bool Install_EquipBgTexture_Hook()
 
     Resolve();
 
-    if (gGameBuild == AddressSetRuntime::GameBuild::En_1_0_15_4)
+    if (::AddressSetRuntime::IsEn154Family(gGameBuild))
     {
         void* guard = ResolveGameAddress(kAddr_TexStatusCreate_En154);
         if (guard && !CreateAndEnableHook(

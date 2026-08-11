@@ -158,6 +158,7 @@
     <ClInclude Include="src\core\framework.h" />
     <ClInclude Include="src\core\pch.h" />
     <ClInclude Include="src\core\AddressSet.h" />
+    <ClInclude Include="src\core\AddressSet_day3900.h" />
     <ClInclude Include="src\core\V_FrameWorkState.h" />
     <ClInclude Include="src\core\HookUtils.h" />
     <ClInclude Include="src\core\FeatureModule.h" />
@@ -336,6 +337,7 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="src\core\AddressSet_day3800.cpp" />
+    <ClCompile Include="src\core\AddressSet_day3900.cpp" />
     <ClCompile Include="src\core\V_FrameWorkState.cpp" />
     <ClCompile Include="src\core\AddressSet_day1820.cpp" />
     <ClCompile Include="src\core\BuiltInModules.cpp" />

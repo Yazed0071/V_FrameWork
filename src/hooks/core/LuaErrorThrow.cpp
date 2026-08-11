@@ -47,7 +47,7 @@ namespace
 
 bool Install_LuaErrorThrow()
 {
-    if (gGameBuild != AddressSetRuntime::GameBuild::En_1_0_15_4)
+    if (!::AddressSetRuntime::IsEn154Family(gGameBuild))
         return true;
 
     void* target = ResolveGameAddress(kAddr_LuaErrorThrow_En154);

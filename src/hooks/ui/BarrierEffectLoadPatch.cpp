@@ -40,10 +40,12 @@ namespace
     {
         switch (gGameBuild)
         {
+            case ::AddressSetRuntime::GameBuild::En_1_0_15_4a:
             case ::AddressSetRuntime::GameBuild::En_1_0_15_4:
                 out[0] = { 0x140FF04C1ull, "alloc" };
                 out[1] = { 0x140FF1139ull, "populate" };
                 return;
+            case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4a:
             case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4:
                 out[0] = { 0x140FF04E1ull, "alloc" };
                 out[1] = { 0x140FF1159ull, "populate" };

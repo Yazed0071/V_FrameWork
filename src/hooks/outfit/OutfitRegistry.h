@@ -91,6 +91,7 @@ namespace outfit
         std::uint64_t  pendingHeadNameHashes[kMaxHeadOptionsPerOutfit] = {};
         std::uint8_t   pendingHeadCount                             = 0;
         std::uint8_t   camoBonusType                              = kCamoBonusTypeUnset;
+        std::uint8_t   camoBonusTypeDeclared                      = kCamoBonusTypeUnset;
         std::int32_t   camoBonusValues[kCamoMaterialCount]        = {};
         bool           hasCamoBonusValues                         = false;
 

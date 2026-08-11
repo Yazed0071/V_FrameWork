@@ -560,7 +560,10 @@ namespace
         for (std::size_t i = 0; i < outfit::kMaxVariantsPerOutfit; ++i)
             e.variantSelectorCodes[i] = 0xFF;
         for (std::uint8_t pt = 0; pt < kPlayerTypeMax; ++pt)
-            e.perPlayerType[pt].camoBonusType = outfit::kCamoBonusTypeUnset;
+        {
+            auto& b = e.perPlayerType[pt];
+            b.camoBonusType = b.camoBonusTypeDeclared;
+        }
         e.bound = false;
     }
 

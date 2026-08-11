@@ -3449,7 +3449,9 @@ namespace
     {
         switch (gGameBuild)
         {
+        case ::AddressSetRuntime::GameBuild::En_1_0_15_4a:
         case ::AddressSetRuntime::GameBuild::En_1_0_15_4: return 0x14105fdb0ull;
+        case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4a:
         case ::AddressSetRuntime::GameBuild::Jp_1_0_15_4: return 0x14105fe20ull;
         case ::AddressSetRuntime::GameBuild::En_1_0_15_3: return 0x1410605f0ull;
         case ::AddressSetRuntime::GameBuild::Jp_1_0_15_3: return 0x141060640ull;
@@ -3623,6 +3625,7 @@ namespace
     {
         switch (gGameBuild)
         {
+        case ::AddressSetRuntime::GameBuild::En_1_0_15_4a:
         case ::AddressSetRuntime::GameBuild::En_1_0_15_4: return 0x141040a00ull;
         default:                                          return 0;
         }
@@ -3775,6 +3778,7 @@ namespace
     {
         switch (gGameBuild)
         {
+        case ::AddressSetRuntime::GameBuild::En_1_0_15_4a:
         case ::AddressSetRuntime::GameBuild::En_1_0_15_4: return 0x141a6c300ull;
         default:                                          return 0;
         }
@@ -3789,6 +3793,7 @@ namespace
     {
         switch (gGameBuild)
         {
+        case ::AddressSetRuntime::GameBuild::En_1_0_15_4a:
         case ::AddressSetRuntime::GameBuild::En_1_0_15_4: return 0x141c64420ull;
         default:                                          return 0;
         }
@@ -3803,6 +3808,7 @@ namespace
     {
         switch (gGameBuild)
         {
+        case ::AddressSetRuntime::GameBuild::En_1_0_15_4a:
         case ::AddressSetRuntime::GameBuild::En_1_0_15_4: return 0x141c60750ull;
         default:                                          return 0;
         }
@@ -3898,6 +3904,7 @@ namespace
     {
         switch (gGameBuild)
         {
+        case ::AddressSetRuntime::GameBuild::En_1_0_15_4a:
         case ::AddressSetRuntime::GameBuild::En_1_0_15_4: return 0x141307d70ull;
         default:                                          return 0;
         }
@@ -3934,6 +3941,7 @@ namespace
     {
         switch (gGameBuild)
         {
+        case ::AddressSetRuntime::GameBuild::En_1_0_15_4a:
         case ::AddressSetRuntime::GameBuild::En_1_0_15_4: return 0x141307150ull;
         default:                                          return 0;
         }
@@ -4823,7 +4831,7 @@ namespace
 
     static void InstallPartsSlotModelGuards()
     {
-        if (gGameBuild != ::AddressSetRuntime::GameBuild::En_1_0_15_4)
+        if (!::AddressSetRuntime::IsEn154Family(gGameBuild))
             return;
         const PartsSlotGuardDef defs[3] = {
             { 0x140adddb0ull, reinterpret_cast<void*>(&hkPartsThermoSafe),
@@ -4870,7 +4878,7 @@ namespace
 
     static void ArmClipArchiveFallback()
     {
-        if (gGameBuild != ::AddressSetRuntime::GameBuild::En_1_0_15_4)
+        if (!::AddressSetRuntime::IsEn154Family(gGameBuild))
             return;
         void** vtbl = static_cast<void**>(
             reinterpret_cast<void*>(ResolveGameAddress(gAddr.SimplePartsControllerImpl_Vtable)));
@@ -5059,7 +5067,7 @@ namespace
     {
         if (tableValid)
             *tableValid = false;
-        if (!fpkHash || gGameBuild != ::AddressSetRuntime::GameBuild::En_1_0_15_4)
+        if (!fpkHash || !::AddressSetRuntime::IsEn154Family(gGameBuild))
             return false;
         {
             std::lock_guard<std::mutex> lock(g_WeaponKeyMutex);
@@ -5195,7 +5203,7 @@ namespace
     {
         if (!arr_ || !h)
             return false;
-        if (gGameBuild != ::AddressSetRuntime::GameBuild::En_1_0_15_4)
+        if (!::AddressSetRuntime::IsEn154Family(gGameBuild))
             return false;
         auto* arr = static_cast<FoxPathArray*>(arr_);
         __try
@@ -5479,7 +5487,7 @@ namespace
 
     static void FillCustomMotionEntriesEarly()
     {
-        if (gGameBuild != ::AddressSetRuntime::GameBuild::En_1_0_15_4)
+        if (!::AddressSetRuntime::IsEn154Family(gGameBuild))
             return;
         FillCustomMotionEntriesTable(
             reinterpret_cast<void*>(ResolveGameAddress(gAddr.Equip_MotionEntryTable)));
@@ -5492,7 +5500,7 @@ namespace
 
     static void* GetEquipMotionLoaderIface()
     {
-        if (gGameBuild != ::AddressSetRuntime::GameBuild::En_1_0_15_4)
+        if (!::AddressSetRuntime::IsEn154Family(gGameBuild))
             return nullptr;
         using QST_t = std::uint8_t*(__fastcall*)();
         auto qst = reinterpret_cast<QST_t>(ResolveGameAddress(gAddr.Fox_GetQuarkSystemTable));
@@ -5578,6 +5586,7 @@ namespace
     {
         switch (gGameBuild)
         {
+        case ::AddressSetRuntime::GameBuild::En_1_0_15_4a:
         case ::AddressSetRuntime::GameBuild::En_1_0_15_4: return 0x140a02290ull;
         default:                                          return 0;
         }
@@ -6291,7 +6300,7 @@ namespace
         void* af = nullptr;
         void* dataPtr = nullptr;
         int dataHead = -1;
-        if (gGameBuild == ::AddressSetRuntime::GameBuild::En_1_0_15_4)
+        if (::AddressSetRuntime::IsEn154Family(gGameBuild))
         {
             af = CallGetAnimFileSEH(ResolveGameAddress(gAddr.Mtar_GetAnimFile), mtar, clip);
             if (af && reinterpret_cast<uintptr_t>(af) > 1)
@@ -6397,7 +6406,7 @@ namespace
             VirtualProtect(&vtbl[0x200 / 8], sizeof(void*) * 3, oldProt, &oldProt);
         }
         g_BoltBoneVtbl = vtbl;
-        if (gGameBuild == ::AddressSetRuntime::GameBuild::En_1_0_15_4)
+        if (::AddressSetRuntime::IsEn154Family(gGameBuild))
         {
             void* smdTarget =
                 reinterpret_cast<void*>(ResolveGameAddress(gAddr.SimplePartsControllerImpl_SetMotionData));
@@ -6628,6 +6637,7 @@ namespace
     {
         switch (gGameBuild)
         {
+        case ::AddressSetRuntime::GameBuild::En_1_0_15_4a:
         case ::AddressSetRuntime::GameBuild::En_1_0_15_4: return 0x140adde80ull;
         default:                                          return 0;
         }
@@ -6645,7 +6655,7 @@ namespace
 
     static bool ResolveRemapCreateFns(RemapCreateFns& f)
     {
-        if (gGameBuild != ::AddressSetRuntime::GameBuild::En_1_0_15_4)
+        if (!::AddressSetRuntime::IsEn154Family(gGameBuild))
             return false;
         f.size = ResolveGameAddress(gAddr.Animx_GetControlSize);
         f.place = ResolveGameAddress(gAddr.Animx_SimpleControlCtorPool);
@@ -7107,6 +7117,7 @@ namespace
     {
         switch (gGameBuild)
         {
+        case ::AddressSetRuntime::GameBuild::En_1_0_15_4a:
         case ::AddressSetRuntime::GameBuild::En_1_0_15_4: return 0x141a94710ull;
         default:                                          return 0;
         }
@@ -7149,6 +7160,7 @@ namespace
     {
         switch (gGameBuild)
         {
+        case ::AddressSetRuntime::GameBuild::En_1_0_15_4a:
         case ::AddressSetRuntime::GameBuild::En_1_0_15_4: return 0x141303da0ull;
         default:                                          return 0;
         }
@@ -7943,7 +7955,7 @@ bool Install_WeaponKeyLog()
         Log("[WeaponKey] SetupWeaponInfo key-log Install -> OK (target=%p)\n", target);
 #endif
 
-    if (gGameBuild == ::AddressSetRuntime::GameBuild::En_1_0_15_4)
+    if (::AddressSetRuntime::IsEn154Family(gGameBuild))
     {
         g_MotionEntryAAddr = ResolveGameAddress(gAddr.Equip_MotionEntrySlotHookA);
         const bool aOk = CreateAndEnableHook(
@@ -8349,7 +8361,7 @@ bool Install_GunInfoGuard()
 #endif
         }
     }
-    if (gGameBuild == ::AddressSetRuntime::GameBuild::En_1_0_15_4)
+    if (::AddressSetRuntime::IsEn154Family(gGameBuild))
     {
         g_ReloadChimeraPartsAddr = ResolveGameAddress(gAddr.Equip_ReloadChimeraPartsInfoTable);
         const bool okC = CreateAndEnableHook(

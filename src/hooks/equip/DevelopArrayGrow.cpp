@@ -2065,6 +2065,10 @@ namespace equip
 
         std::uint8_t g_CtlDispOff[kMaxCtlSites] = {};
 
+        CtlDispSite   g_CtlMut[kMaxCtlSites] = {};
+        std::intptr_t g_CloneDelta[4]        = {};
+        std::size_t   g_CloneDeltaCount      = 0;
+
         const std::uintptr_t kSweepFpEn154[] = {
             0x140FE5295, 0x140FFE8C8, 0x14127A055, 0x14127A37E,
             0x141311057, 0x1413110C5, 0x141A582B5, 0x142643B6D,
@@ -2215,9 +2219,11 @@ namespace equip
         {
             switch (gGameBuild)
             {
+            case AddressSetRuntime::GameBuild::En_1_0_15_4a:
             case AddressSetRuntime::GameBuild::En_1_0_15_4:
                 g_A = &kAddrsEn154;
                 break;
+            case AddressSetRuntime::GameBuild::Jp_1_0_15_4a:
             case AddressSetRuntime::GameBuild::Jp_1_0_15_4:
                 g_A = &kAddrsJp154;
                 break;
@@ -2243,7 +2249,9 @@ namespace equip
                 std::memcpy(kSiblingLoopFixes[i].oldBytes,
                             g_A->sibFixOld[i], 4);
             }
-            kCtlDispSites   = g_A->ctl;
+            for (std::size_t i = 0; i < g_A->ctlCount && i < kMaxCtlSites; ++i)
+                g_CtlMut[i] = g_A->ctl[i];
+            kCtlDispSites   = g_CtlMut;
             kCtlSiteCount   = g_A->ctlCount;
             kBoundImmSites  = g_A->bnd;
             kBoundSiteCount = g_A->bndCount;
@@ -2520,11 +2528,11 @@ namespace equip
             return true;
         }
 
-        bool VerifyCtlSite(std::size_t i)
+        bool VerifyCtlSiteAt(std::size_t i, std::uintptr_t va, bool quiet)
         {
             const CtlDispSite& s = kCtlDispSites[i];
             const std::uint8_t* addr = reinterpret_cast<const std::uint8_t*>(
-                ResolveGameAddress(s.addr));
+                ResolveGameAddress(va));
             if (!addr)
                 return false;
             __try
@@ -2535,9 +2543,10 @@ namespace equip
                     std::memcpy(&v, addr + s.dispOff, 4);
                     if (v != s.oldDisp)
                     {
-                        NoteVerifyFail("ctl site %p: disp at +%u is 0x%X, "
-                                       "expected 0x%X",
-                                       addr, s.dispOff, v, s.oldDisp);
+                        if (!quiet)
+                            NoteVerifyFail("ctl site %p: disp at +%u is 0x%X, "
+                                           "expected 0x%X",
+                                           addr, s.dispOff, v, s.oldDisp);
                         return false;
                     }
                     g_CtlDispOff[i] = s.dispOff;
@@ -2552,9 +2561,10 @@ namespace equip
                     {
                         if (found >= 0)
                         {
-                            NoteVerifyFail("ctl site %p disp 0x%X: ambiguous "
-                                           "(offsets %d and %d)",
-                                           addr, s.oldDisp, found, off);
+                            if (!quiet)
+                                NoteVerifyFail("ctl site %p disp 0x%X: "
+                                               "ambiguous (offsets %d and %d)",
+                                               addr, s.oldDisp, found, off);
                             return false;
                         }
                         found = off;
@@ -2562,8 +2572,10 @@ namespace equip
                 }
                 if (found < 0)
                 {
-                    NoteVerifyFail("ctl site %p: disp 0x%X not found in the "
-                                   "instruction window", addr, s.oldDisp);
+                    if (!quiet)
+                        NoteVerifyFail("ctl site %p: disp 0x%X not found in "
+                                       "the instruction window",
+                                       addr, s.oldDisp);
                     return false;
                 }
                 g_CtlDispOff[i] = static_cast<std::uint8_t>(found);
@@ -2571,9 +2583,135 @@ namespace equip
             }
             __except (EXCEPTION_EXECUTE_HANDLER)
             {
-                NoteVerifyFail("ctl site %p: unreadable", addr);
+                if (!quiet)
+                    NoteVerifyFail("ctl site %p: unreadable", addr);
                 return false;
             }
+        }
+
+        bool VerifyCtlSite(std::size_t i)
+        {
+            return VerifyCtlSiteAt(i, kCtlDispSites[i].addr, false);
+        }
+
+        bool RelocateCloneCtlSites(const std::size_t* failed,
+                                   std::size_t nFailed)
+        {
+            const CtlDispSite& f0 = kCtlDispSites[failed[0]];
+            const std::uint8_t* base = reinterpret_cast<const std::uint8_t*>(
+                GetModuleHandleW(nullptr));
+            if (!base)
+                return false;
+
+            std::intptr_t deltas[4] = {};
+            std::size_t   nDeltas   = 0;
+            __try
+            {
+                const IMAGE_DOS_HEADER* dos =
+                    reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+                const IMAGE_NT_HEADERS* nt =
+                    reinterpret_cast<const IMAGE_NT_HEADERS*>(
+                        base + dos->e_lfanew);
+                const std::uint8_t* end =
+                    base + nt->OptionalHeader.SizeOfImage;
+
+                MEMORY_BASIC_INFORMATION mbi;
+                const std::uint8_t* p = base;
+                while (p < end
+                       && VirtualQuery(p, &mbi, sizeof(mbi)) == sizeof(mbi))
+                {
+                    const std::uint8_t* rBeg =
+                        static_cast<const std::uint8_t*>(mbi.BaseAddress);
+                    const std::uint8_t* rEnd = rBeg + mbi.RegionSize;
+                    if (rEnd > end)
+                        rEnd = end;
+                    const bool scannable =
+                        mbi.State == MEM_COMMIT
+                        && (mbi.Protect
+                            & (PAGE_EXECUTE | PAGE_EXECUTE_READ
+                               | PAGE_EXECUTE_READWRITE
+                               | PAGE_EXECUTE_WRITECOPY)) != 0;
+                    if (scannable && rEnd - rBeg >= 8)
+                    {
+                        for (const std::uint8_t* q = rBeg;
+                             q + 4 <= rEnd; ++q)
+                        {
+                            if (q[2] != 0x01 || q[3] != 0x00)
+                                continue;
+                            std::uint32_t v = 0;
+                            std::memcpy(&v, q, 4);
+                            if (v != f0.oldDisp)
+                                continue;
+                            const std::uintptr_t va =
+                                0x140000000ull
+                                + static_cast<std::uintptr_t>(q - base);
+                            const int offLo =
+                                f0.dispOff != 0xFF ? f0.dispOff : 1;
+                            const int offHi =
+                                f0.dispOff != 0xFF ? f0.dispOff : f0.maxOff;
+                            for (int off = offLo; off <= offHi; ++off)
+                            {
+                                const std::intptr_t d =
+                                    static_cast<std::intptr_t>(va - off)
+                                    - static_cast<std::intptr_t>(f0.addr);
+                                if (d == 0)
+                                    continue;
+                                bool dup = false;
+                                for (std::size_t k = 0; k < nDeltas; ++k)
+                                    if (deltas[k] == d)
+                                        dup = true;
+                                if (dup)
+                                    continue;
+                                bool all = true;
+                                for (std::size_t k = 0; k < nFailed && all;
+                                     ++k)
+                                    all = VerifyCtlSiteAt(
+                                        failed[k],
+                                        kCtlDispSites[failed[k]].addr + d,
+                                        true);
+                                if (!all)
+                                    continue;
+                                if (nDeltas < 4)
+                                    deltas[nDeltas] = d;
+                                ++nDeltas;
+                            }
+                        }
+                    }
+                    p = rEnd < end ? rEnd : end;
+                }
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                NoteVerifyFail("clone relocation: exception while scanning "
+                               "the game image");
+                return false;
+            }
+
+            if (nDeltas != 1)
+            {
+                NoteVerifyFail("clone relocation: %zu candidate deltas for "
+                               "%zu moved ctl sites (need exactly 1) - the "
+                               "clone table must be re-ported by hand",
+                               nDeltas, nFailed);
+                return false;
+            }
+
+            for (std::size_t k = 0; k < nFailed; ++k)
+            {
+                g_CtlMut[failed[k]].addr += deltas[0];
+                if (!VerifyCtlSiteAt(failed[k],
+                                     kCtlDispSites[failed[k]].addr, false))
+                    return false;
+            }
+            if (g_CloneDeltaCount < 4)
+                g_CloneDelta[g_CloneDeltaCount++] = deltas[0];
+            Log("[DevelopArrayGrow] %zu Arxan clone ctl site(s) moved by this "
+                "game update - relocated by %+lld bytes (first now 0x%llX) "
+                "and byte-verified; the grow proceeds without a hand re-port\n",
+                nFailed, static_cast<long long>(deltas[0]),
+                static_cast<unsigned long long>(
+                    kCtlDispSites[failed[0]].addr));
+            return true;
         }
 
         constexpr std::uint32_t kSweepValLo = 0x1A008;
@@ -2595,6 +2733,10 @@ namespace equip
             for (std::size_t i = 0; i < g_SweepAllowCount; ++i)
                 if (g_SweepAllow[i] == va)
                     return true;
+            for (std::size_t d = 0; d < g_CloneDeltaCount; ++d)
+                for (std::size_t i = 0; i < g_SweepAllowCount; ++i)
+                    if (g_SweepAllow[i] + g_CloneDelta[d] == va)
+                        return true;
             return false;
         }
 
@@ -3836,7 +3978,7 @@ namespace equip
         {
             std::uint8_t* bits = *reinterpret_cast<std::uint8_t**>(
                 reinterpret_cast<std::uint8_t*>(controller)
-                + kBase20_FlagsPtrOff);
+                + DevFlagsPtrOffsetBase20());
             if (!bits)
                 return;
             if (index >= kOldRows && bits != g_FlagsShadow)
@@ -3860,7 +4002,7 @@ namespace equip
         {
             std::uint8_t* bits = *reinterpret_cast<std::uint8_t**>(
                 reinterpret_cast<std::uint8_t*>(controller)
-                + kBase20_FlagsPtrOff);
+                + DevFlagsPtrOffsetBase20());
             if (!bits)
                 return false;
             if (index >= kOldRows && bits != g_FlagsShadow)
@@ -3910,13 +4052,34 @@ namespace equip
                 g_PrePatchDetail = static_cast<int>(i);
                 return;
             }
-        for (std::size_t i = 0; i < kCtlSiteCount; ++i)
-            if (!VerifyCtlSite(i))
+        {
+            std::size_t ctlFailed[16];
+            std::size_t nCtlFailed   = 0;
+            std::size_t ctlFirstFail = 0;
+            for (std::size_t i = 0; i < kCtlSiteCount; ++i)
+                if (!VerifyCtlSiteAt(i, kCtlDispSites[i].addr, true))
+                {
+                    if (nCtlFailed == 0)
+                        ctlFirstFail = i;
+                    if (nCtlFailed < 16)
+                        ctlFailed[nCtlFailed] = i;
+                    ++nCtlFailed;
+                }
+            if (nCtlFailed > 16)
             {
+                VerifyCtlSite(ctlFirstFail);
                 g_PrePatch       = PrePatchState::VerifyFailed;
-                g_PrePatchDetail = 1000 + static_cast<int>(i);
+                g_PrePatchDetail = 1000 + static_cast<int>(ctlFirstFail);
                 return;
             }
+            if (nCtlFailed > 0
+                && !RelocateCloneCtlSites(ctlFailed, nCtlFailed))
+            {
+                g_PrePatch       = PrePatchState::VerifyFailed;
+                g_PrePatchDetail = 1000 + static_cast<int>(ctlFirstFail);
+                return;
+            }
+        }
         for (std::size_t i = 0; i < kBoundSiteCount; ++i)
             if (!VerifyBoundSite(kBoundImmSites[i]))
             {
