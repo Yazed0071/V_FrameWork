@@ -41,6 +41,8 @@ this.DEBUG_strCode32List={
   "StartWalkMan",
   "PauseWalkMan",
   "SpeakerWalkMan",
+  "Mission",
+  "MissionStateReset",
 }
 
 this.CassettePlay={
@@ -168,6 +170,7 @@ this.signatureTypes={
 
   TimeCigaretteUi={
     {argName="playerIndex",argType="number"},
+    {argName="isShown",argType="number"},
   },
 
   HeliStart={
@@ -236,6 +239,10 @@ this.signatureTypes={
     {argName="isEnable",argType="number"},
     {argName="isOnByUser",argType="number"},
   },
+
+  MissionStateReset={
+    {argName="missionCode",argType="number"},
+  },
 }
 
 this.messageSignatures={
@@ -279,6 +286,10 @@ this.messageSignatures={
 
   Subtitles={
     SubtitlesEventMessage=this.signatureTypes.SubtitlesEventMessage,
+  },
+
+  Mission={
+    MissionStateReset=this.signatureTypes.MissionStateReset,
   },
 }
 

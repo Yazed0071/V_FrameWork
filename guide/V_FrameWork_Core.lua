@@ -39,22 +39,6 @@ this.langStrings={
 	},
 }
 
-function this.OnAllocate(missionTable)
-    V_TppSound.UnsetSoldierVoicePitch()
-    V_TppCommandPost.UnsetCautionPhaseDuration()
-    V_TppEnemy.ClearCallSignPatrolSoldiers()
-    V_TppEnemy.ClearSoldierStealthCamoOverrides()
-    V_TppEnemy.ClearEnemyInformationLangId()
-    V_TppEnemy.ClearEnemyUnitName()
-    V_TppEnemy.ClearAllEnemyInformationLangIdForSoldiers()
-    V_TppEnemy.ClearAllEnemyUnitNameForSoldiers()
-    V_TppHostage.ClearLostHostages()
-    V_TppHostage.ClearAllCustomLostLabels()
-    V_TppSahelan.ClearSahelanFova()
-    V_TppSahelan.ClearEyeLampColor()
-    V_TppSahelan.ClearHeartLightColor()
-end
-
 function this.AddMissionPacks(missionCode,packPaths)
 	if InfMain.IsOnlineMission(missionCode) or missionCode < 5 then return end
 

@@ -135,13 +135,12 @@ function this.SetUpEnemy()
             elseif missionCode == 10041 then
                 SendCommand(vipName, { id = "SetVIPImportant", isOfficer = vipInfo.isOfficer or false, deadBodyLabel = "V_CPR0042_KEEP" })
             else
-                this.SetVIPImportant(vipInfo.name, vipInfo.isOfficer)
                 SendCommand(vipName, { id = "SetVIPImportant", isOfficer = vipInfo.isOfficer or false})
             end
-            V_TppSound.SetSoldierVoicePitch(vipInfo.name, pitch)
+            SendCommand(vipName, { id = "SetVoicePitch", pitch = pitch })
         end
     else
-        V_FrameWork.Log("No VIP setup for mission " .. tostring(missionCode))
+        Fox.Log("No VIP setup for mission " .. tostring(missionCode))
     end
 end
 

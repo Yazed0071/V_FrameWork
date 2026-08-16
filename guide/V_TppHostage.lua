@@ -1,6 +1,3 @@
--- V_TppHostage — lost-hostage tracking.
--- See guide/V_FrameWork_API_Reference.txt for parameter specs and examples.
-
 local this = {}
 
 local StrCode32              = Fox.StrCode32
@@ -271,6 +268,14 @@ function this.Messages()
                     this.ClearLostHostages()
                     this.BuildHostageList()
                     this.AutoSetLostHostage()
+                end,
+            },
+        },
+        Mission = {
+            {
+                msg = "MissionStateReset",
+                func = function(code)
+                    this.ClearAllCustomLostLabels()
                 end,
             },
         },
