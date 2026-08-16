@@ -41,16 +41,10 @@ int __cdecl l_ShowMbDvcAnnouncePopupReward(lua_State* L);
 int __cdecl l_ShowMbDvcAnnouncePopupRewardLangId(lua_State* L);
 
 int __cdecl l_SetEnemyInformationLangId(lua_State* L);
-int __cdecl l_ClearEnemyInformationLangId(lua_State* L);
 int __cdecl l_SetEnemyUnitName(lua_State* L);
-int __cdecl l_ClearEnemyUnitName(lua_State* L);
 
 int __cdecl l_SetEnemyInformationLangIdForSoldier(lua_State* L);
-int __cdecl l_ClearEnemyInformationLangIdForSoldier(lua_State* L);
-int __cdecl l_ClearAllEnemyInformationLangIdForSoldiers(lua_State* L);
 int __cdecl l_SetEnemyUnitNameForSoldier(lua_State* L);
-int __cdecl l_ClearEnemyUnitNameForSoldier(lua_State* L);
-int __cdecl l_ClearAllEnemyUnitNameForSoldiers(lua_State* L);
 
 int __cdecl l_SetAnnounceLogSE(lua_State* L);
 int __cdecl l_RegisterAnnounceLogSfx(lua_State* L);
