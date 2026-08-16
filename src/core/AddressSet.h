@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <Windows.h>
 #include <cstdint>
@@ -447,6 +447,33 @@ namespace AddressSetRuntime
         uintptr_t WeaponEnhance_GetLangIdBound = 0;
         uintptr_t BulletEffectController_CreateEffect = 0;
         uintptr_t ItemSelectorCallbackImpl_AddRecord = 0;
+
+        uintptr_t LoadPlayerLilChickCapFv2 = 0;
+        uintptr_t LoadPlayerLilChickCapFpk = 0;
+        uintptr_t LoadPlayerChickenCapFv2 = 0;
+        uintptr_t LoadPlayerChickenCapFpk = 0;
+        uintptr_t AdditionalMotionTable_GetMtarPathId = 0;
+        uintptr_t ModelVertexColorChange_GetModelTotalVertexNum = 0;
+        uintptr_t ItemSelector_AddDevelopWeaponList = 0;
+        uintptr_t BlockControllerImpl_UpdateAdditionalMotionBlock = 0;
+        uintptr_t Fox_Block_GetFileForPathId = 0;
+        uintptr_t Fox_BlockGroup_GetBlockAtIndex = 0;
+        uintptr_t EquipPreviewSystem_RequestLoadEquip = 0;
+        uintptr_t ItemSelector_StartEquipPreviewImpl = 0;
+        uintptr_t EquipBlockController2_RequestLoad = 0;
+        uintptr_t EquipBlockController2_Instance = 0;
+        uintptr_t ItemSelector_UpdateSelect = 0;
+        uintptr_t UiEquipPreviewController_ScrollNext = 0;
+        uintptr_t UiEquipPreviewController_ScrollPrev = 0;
+        uintptr_t UiEquipPreviewController_StopEquipPreview = 0;
+        uintptr_t Player2Impl_AddAdditionalMtarAll = 0;
+        uintptr_t Player2Impl_RemoveAdditionalMtarAll = 0;
+        uintptr_t MotionLoaderImpl_BarrelTypeTable = 0;
+        uintptr_t MotionLoaderImpl_GetBarrelType = 0;
+        uintptr_t MotionLoaderImpl_MagazineTypeTable = 0;
+        uintptr_t MotionLoaderImpl_GetMagazineType = 0;
+        uintptr_t MotionLoaderImpl_SightTypeTable = 0;
+        uintptr_t MotionLoaderImpl_GetSightType = 0;
     };
 
     inline GameBuild& GetGameBuild()

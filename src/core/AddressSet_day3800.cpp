@@ -1,4 +1,4 @@
-#include "pch.h"
+﻿#include "pch.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -386,8 +386,34 @@ static const char* const kAddrFieldNames[] = {
     "WeaponEnhance_GetLangIdBound",
     "BulletEffectController_CreateEffect",
     "ItemSelectorCallbackImpl_AddRecord",
+    "LoadPlayerLilChickCapFv2",
+    "LoadPlayerLilChickCapFpk",
+    "LoadPlayerChickenCapFv2",
+    "LoadPlayerChickenCapFpk",
+    "AdditionalMotionTable_GetMtarPathId",
+    "ModelVertexColorChange_GetModelTotalVertexNum",
+    "ItemSelector_AddDevelopWeaponList",
+    "BlockControllerImpl_UpdateAdditionalMotionBlock",
+    "Fox_Block_GetFileForPathId",
+    "Fox_BlockGroup_GetBlockAtIndex",
+    "EquipPreviewSystem_RequestLoadEquip",
+    "ItemSelector_StartEquipPreviewImpl",
+    "EquipBlockController2_RequestLoad",
+    "EquipBlockController2_Instance",
+    "ItemSelector_UpdateSelect",
+    "UiEquipPreviewController_ScrollNext",
+    "UiEquipPreviewController_ScrollPrev",
+    "UiEquipPreviewController_StopEquipPreview",
+    "Player2Impl_AddAdditionalMtarAll",
+    "Player2Impl_RemoveAdditionalMtarAll",
+    "MotionLoaderImpl_BarrelTypeTable",
+    "MotionLoaderImpl_GetBarrelType",
+    "MotionLoaderImpl_MagazineTypeTable",
+    "MotionLoaderImpl_GetMagazineType",
+    "MotionLoaderImpl_SightTypeTable",
+    "MotionLoaderImpl_GetSightType",
 };
-static const int kAddrFieldCount = 374;
+static const int kAddrFieldCount = 400;
 static_assert(sizeof(AddressSetRuntime::AddressSet) / sizeof(uintptr_t) == kAddrFieldCount,
               "kAddrFieldNames must stay in lockstep with the AddressSet layout");
 static_assert(sizeof(kAddrFieldNames) / sizeof(kAddrFieldNames[0]) == kAddrFieldCount,
@@ -812,6 +838,32 @@ namespace AddressSetRuntime
             0x140F9FAA0ull, // WeaponEnhance_GetLangIdBound
             0x140B3B8A0ull, // BulletEffectController_CreateEffect
             0x1416A1170ull, // ItemSelectorCallbackImpl_AddRecord
+            0x140AE9140ull, // LoadPlayerLilChickCapFv2
+            0x140AE91E0ull, // LoadPlayerLilChickCapFpk
+            0x140AE9280ull, // LoadPlayerChickenCapFv2
+            0x140AE9320ull, // LoadPlayerChickenCapFpk
+            0x140AE4490ull, // AdditionalMotionTable_GetMtarPathId
+            0x141C2F530ull, // ModelVertexColorChange_GetModelTotalVertexNum
+            0x1416A2400ull, // ItemSelector_AddDevelopWeaponList
+            0x1409B7C40ull, // BlockControllerImpl_UpdateAdditionalMotionBlock
+            0x14006D9A0ull, // Fox_Block_GetFileForPathId
+            0x14006D790ull, // Fox_BlockGroup_GetBlockAtIndex
+            0x140DB98E0ull, // EquipPreviewSystem_RequestLoadEquip
+            0x1416AC570ull, // ItemSelector_StartEquipPreviewImpl
+            0x140A03A10ull, // EquipBlockController2_RequestLoad
+            0x142C1E3B0ull, // EquipBlockController2_Instance
+            0x1416ACA30ull, // ItemSelector_UpdateSelect
+            0x141681CC0ull, // UiEquipPreviewController_ScrollNext
+            0x141681B10ull, // UiEquipPreviewController_ScrollPrev
+            0x141682160ull, // UiEquipPreviewController_StopEquipPreview
+            0ull,           // Player2Impl_AddAdditionalMtarAll TODO EN 15.4
+            0ull,           // Player2Impl_RemoveAdditionalMtarAll TODO EN 15.4
+            0x142349B80ull, // MotionLoaderImpl_BarrelTypeTable (shares EN15.4a layout)
+            0x140DB69D0ull, // MotionLoaderImpl_GetBarrelType
+            0x142349C00ull, // MotionLoaderImpl_MagazineTypeTable
+            0x140DB6A20ull, // MotionLoaderImpl_GetMagazineType
+            0x142349CC0ull, // MotionLoaderImpl_SightTypeTable
+            0x140DB6CC0ull, // MotionLoaderImpl_GetSightType
         };
 
         return value;
@@ -1195,6 +1247,32 @@ namespace AddressSetRuntime
             0x140F9FAF0ull, // WeaponEnhance_GetLangIdBound
             0x140b3b850ull, // BulletEffectController_CreateEffect
             0x1416A1140ull, // ItemSelectorCallbackImpl_AddRecord
+            0x140AE90B0ull, // LoadPlayerLilChickCapFv2
+            0x140AE9150ull, // LoadPlayerLilChickCapFpk
+            0x140AE91F0ull, // LoadPlayerChickenCapFv2
+            0x140AE9290ull, // LoadPlayerChickenCapFpk
+            0x140AE4410ull, // AdditionalMotionTable_GetMtarPathId
+            0x141C2F1E0ull, // ModelVertexColorChange_GetModelTotalVertexNum
+            0x1416A23D0ull, // ItemSelector_AddDevelopWeaponList
+            0x1409B7B50ull, // BlockControllerImpl_UpdateAdditionalMotionBlock
+            0x14006DA00ull, // Fox_Block_GetFileForPathId
+            0x14006D7F0ull, // Fox_BlockGroup_GetBlockAtIndex
+            0x140DB98A0ull, // EquipPreviewSystem_RequestLoadEquip
+            0x1416AC540ull, // ItemSelector_StartEquipPreviewImpl
+            0ull,           // EquipBlockController2_RequestLoad TODO JP 15.4
+            0ull,           // EquipBlockController2_Instance TODO JP 15.4
+            0ull,           // ItemSelector_UpdateSelect TODO JP 15.4
+            0x141681C90ull, // UiEquipPreviewController_ScrollNext
+            0x141681AE0ull, // UiEquipPreviewController_ScrollPrev
+            0ull,           // UiEquipPreviewController_StopEquipPreview TODO JP 15.4
+            0ull,           // Player2Impl_AddAdditionalMtarAll TODO JP 15.4
+            0ull,           // Player2Impl_RemoveAdditionalMtarAll TODO JP 15.4
+            0ull,           // MotionLoaderImpl_BarrelTypeTable TODO JP 15.4
+            0ull,           // MotionLoaderImpl_GetBarrelType TODO JP 15.4
+            0ull,           // MotionLoaderImpl_MagazineTypeTable TODO JP 15.4
+            0ull,           // MotionLoaderImpl_GetMagazineType TODO JP 15.4
+            0ull,           // MotionLoaderImpl_SightTypeTable TODO JP 15.4
+            0ull,           // MotionLoaderImpl_GetSightType TODO JP 15.4
         };
         return value;
     }

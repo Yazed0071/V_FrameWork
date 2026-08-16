@@ -1,4 +1,4 @@
-#include "pch.h"
+﻿#include "pch.h"
 
 #include <Windows.h>
 #include <TlHelp32.h>
@@ -8,6 +8,8 @@
 
 #include "AddressSet.h"
 #include "BuiltInModules.h"
+#include "../hooks/equip/EquipPartParams.h"
+#include "../hooks/equip/PartIdWiden.h"
 #include "FeatureModule.h"
 #include "HookUtils.h"
 #include "log.h"
@@ -371,6 +373,10 @@ bool Install_EnhanceLangIdUnlimited();
 bool Uninstall_EnhanceLangIdUnlimited();
 
 namespace SoldierAkObjIdMap { bool Install(); bool Uninstall(); }
+bool Install_TargetCqcStance_Hook();
+bool Uninstall_TargetCqcStance_Hook();
+bool Install_CheckSightNoticePlayer_Hook();
+bool Uninstall_CheckSightNoticePlayer_Hook();
 bool Install_InterrogationVoiceEvent_Hook();
 bool Uninstall_InterrogationVoiceEvent_Hook();
 
@@ -387,12 +393,16 @@ namespace outfit
     void Uninstall_OutfitItemSelector_Hook();
     bool Install_OutfitListInject_Hook();
     void Uninstall_OutfitListInject_Hook();
+    bool Install_DevelopWeaponList_Hook();
+    void Uninstall_DevelopWeaponList_Hook();
     bool Install_OutfitHeadOption_Hook();
     void Uninstall_OutfitHeadOption_Hook();
     bool Install_OutfitCamoBonus_Hook();
     void Uninstall_OutfitCamoBonus_Hook();
     bool Install_OutfitGetCamoufValue_Hook();
     void Uninstall_OutfitGetCamoufValue_Hook();
+    bool Install_OutfitMotionMtar_Hook();
+    void Uninstall_OutfitMotionMtar_Hook();
 }
 namespace EquipDevelopAdd
 {
@@ -409,6 +419,8 @@ namespace equip
     bool Install_MenuDevelopGridExpand();
     bool Install_DevelopArrayGrow();
     void Uninstall_DevelopArrayGrow();
+    bool Install_UiEquipPreviewControllerScroll();
+    void Uninstall_UiEquipPreviewControllerScroll();
 }
 bool Install_TppEquip_RegisterConstant_Hook();
 bool Uninstall_TppEquip_RegisterConstant_Hook();
@@ -420,6 +432,12 @@ bool Install_MotionLoader_ReceiverTypeHook();
 void Uninstall_MotionLoader_ReceiverTypeHook();
 bool Install_MotionLoader_UnderBarrelTypeHook();
 void Uninstall_MotionLoader_UnderBarrelTypeHook();
+bool Install_MotionLoader_BarrelTypeHook();
+void Uninstall_MotionLoader_BarrelTypeHook();
+bool Install_MotionLoader_MagazineTypeHook();
+void Uninstall_MotionLoader_MagazineTypeHook();
+bool Install_MotionLoader_SightTypeHook();
+void Uninstall_MotionLoader_SightTypeHook();
 bool Install_GetAttackIdGuard();
 void Uninstall_GetAttackIdGuard();
 bool Install_GunInfoGuard();
@@ -1147,6 +1165,46 @@ namespace
         }
     };
 
+    class TargetCqcStanceModule final : public IFeatureModule
+    {
+    public:
+        const char* GetName() const override
+        {
+            return "TargetCqcStance";
+        }
+
+        bool Install(HMODULE hGame) override
+        {
+            UNREFERENCED_PARAMETER(hGame);
+            return Install_TargetCqcStance_Hook();
+        }
+
+        void Uninstall() override
+        {
+            Uninstall_TargetCqcStance_Hook();
+        }
+    };
+
+    class SoldierIgnorePlayerModule final : public IFeatureModule
+    {
+    public:
+        const char* GetName() const override
+        {
+            return "SoldierIgnorePlayer";
+        }
+
+        bool Install(HMODULE hGame) override
+        {
+            UNREFERENCED_PARAMETER(hGame);
+            return Install_CheckSightNoticePlayer_Hook();
+        }
+
+        void Uninstall() override
+        {
+            Uninstall_CheckSightNoticePlayer_Hook();
+        }
+    };
+
     class InterrogationVoiceEventModule final : public IFeatureModule
     {
     public:
@@ -1494,9 +1552,14 @@ namespace
         {
             UNREFERENCED_PARAMETER(hGame);
             equip::Install_DevelopArrayGrow();
+            equip::Install_UiEquipPreviewControllerScroll();
             return true;
         }
-        void Uninstall() override { equip::Uninstall_DevelopArrayGrow(); }
+        void Uninstall() override
+        {
+            equip::Uninstall_UiEquipPreviewControllerScroll();
+            equip::Uninstall_DevelopArrayGrow();
+        }
     };
 
     class PlayerOutfitCoreModule final : public IFeatureModule
@@ -1534,11 +1597,13 @@ namespace
             const bool apply  = outfit::Install_OutfitSuitConditionApply_Hook();
             const bool select = outfit::Install_OutfitItemSelector_Hook();
             const bool list   = outfit::Install_OutfitListInject_Hook();
-            (void)apply; (void)select; (void)list;
+            const bool roots  = outfit::Install_DevelopWeaponList_Hook();
+            (void)apply; (void)select; (void)list; (void)roots;
             return true;
         }
         void Uninstall() override
         {
+            outfit::Uninstall_DevelopWeaponList_Hook();
             outfit::Uninstall_OutfitListInject_Hook();
             outfit::Uninstall_OutfitItemSelector_Hook();
             outfit::Uninstall_OutfitSuitConditionApply_Hook();
@@ -1555,11 +1620,13 @@ namespace
             const bool head  = outfit::Install_OutfitHeadOption_Hook();
             const bool camo  = outfit::Install_OutfitCamoBonus_Hook();
             const bool value = outfit::Install_OutfitGetCamoufValue_Hook();
-            (void)head; (void)camo; (void)value;
+            const bool mtar  = outfit::Install_OutfitMotionMtar_Hook();
+            (void)head; (void)camo; (void)value; (void)mtar;
             return true;
         }
         void Uninstall() override
         {
+            outfit::Uninstall_OutfitMotionMtar_Hook();
             outfit::Uninstall_OutfitGetCamoufValue_Hook();
             outfit::Uninstall_OutfitCamoBonus_Hook();
             outfit::Uninstall_OutfitHeadOption_Hook();
@@ -1602,9 +1669,16 @@ namespace
         bool Install(HMODULE hGame) override
         {
             UNREFERENCED_PARAMETER(hGame);
+
+            if (PartIdWiden_Install())
+                EquipParam_EnableWidePartIds(65535);
+
             bool ok = Install_TppEquip_ReloadEquipParameterTables2_Hook();
             ok = Install_MotionLoader_ReceiverTypeHook() && ok;
             ok = Install_MotionLoader_UnderBarrelTypeHook() && ok;
+            ok = Install_MotionLoader_BarrelTypeHook() && ok;
+            ok = Install_MotionLoader_MagazineTypeHook() && ok;
+            ok = Install_MotionLoader_SightTypeHook() && ok;
             ok = Install_GetAttackIdGuard() && ok;
             ok = Install_GunInfoGuard() && ok;
             ok = Install_BulletEffectGuard() && ok;
@@ -1625,6 +1699,9 @@ namespace
             Uninstall_TppEquip_ReloadEquipParameterTables2_Hook();
             Uninstall_MotionLoader_ReceiverTypeHook();
             Uninstall_MotionLoader_UnderBarrelTypeHook();
+            Uninstall_MotionLoader_BarrelTypeHook();
+            Uninstall_MotionLoader_MagazineTypeHook();
+            Uninstall_MotionLoader_SightTypeHook();
             Uninstall_GetAttackIdGuard();
             Uninstall_GunInfoGuard();
             Uninstall_WeaponKeyLog();
@@ -1678,6 +1755,8 @@ void RegisterBuiltInFeatureModules()
     static SoldierVoiceTypeQueryModule s_SoldierVoiceTypeQueryModule;
     static VoicePitchOverrideModule s_VoicePitchOverrideModule;
     static SoldierAkObjIdMapModule s_SoldierAkObjIdMapModule;
+    static TargetCqcStanceModule s_TargetCqcStanceModule;
+    static SoldierIgnorePlayerModule s_SoldierIgnorePlayerModule;
     static InterrogationVoiceEventModule s_InterrogationVoiceEventModule;
     static SetEyeLampColorModule s_SetEyeLampColorModule;
     static GetGameObjectIdWithIndex s_GetGameObjectIdWithIndex;
@@ -1759,6 +1838,8 @@ void RegisterBuiltInFeatureModules()
             FeatureModuleRegistry::Instance().Register(&s_MissionDeployWarningModule);
             FeatureModuleRegistry::Instance().Register(&s_MissionMenuHelpModule);
             FeatureModuleRegistry::Instance().Register(&s_SoldierAkObjIdMapModule);
+            FeatureModuleRegistry::Instance().Register(&s_TargetCqcStanceModule);
+            FeatureModuleRegistry::Instance().Register(&s_SoldierIgnorePlayerModule);
             FeatureModuleRegistry::Instance().Register(&s_InterrogationVoiceEventModule);
             FeatureModuleRegistry::Instance().Register(&s_SoldierVoiceTypeQueryModule);
             FeatureModuleRegistry::Instance().Register(&s_VoicePitchOverrideModule);

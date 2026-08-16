@@ -1,4 +1,4 @@
-#include "pch.h"
+﻿#include "pch.h"
 
 #include "AddressSet.h"
 
@@ -382,6 +382,32 @@ namespace AddressSetRuntime
             0x1495814B0ull, // WeaponEnhance_GetLangIdBound
             0x140b3b690ull, // BulletEffectController_CreateEffect
             0x1416A2160ull, // ItemSelectorCallbackImpl_AddRecord
+            0x140AE8960ull, // LoadPlayerLilChickCapFv2
+            0x140AE8A00ull, // LoadPlayerLilChickCapFpk
+            0x140AE8AA0ull, // LoadPlayerChickenCapFv2
+            0x140AE8B40ull, // LoadPlayerChickenCapFpk
+            0x140AE3C40ull, // AdditionalMotionTable_GetMtarPathId
+            0x141C2EA80ull, // ModelVertexColorChange_GetModelTotalVertexNum
+            0x1416A33F0ull, // ItemSelector_AddDevelopWeaponList
+            0x1409B6F40ull, // BlockControllerImpl_UpdateAdditionalMotionBlock
+            0x14006D440ull, // Fox_Block_GetFileForPathId
+            0x14006D230ull, // Fox_BlockGroup_GetBlockAtIndex
+            0x140DB9630ull, // EquipPreviewSystem_RequestLoadEquip
+            0x1416AD560ull, // ItemSelector_StartEquipPreviewImpl
+            0ull,           // EquipBlockController2_RequestLoad TODO EN 15.3
+            0ull,           // EquipBlockController2_Instance TODO EN 15.3
+            0ull,           // ItemSelector_UpdateSelect TODO EN 15.3
+            0x141682D50ull, // UiEquipPreviewController_ScrollNext
+            0x141682BA0ull, // UiEquipPreviewController_ScrollPrev
+            0ull,           // UiEquipPreviewController_StopEquipPreview TODO EN 15.3
+            0ull,           // Player2Impl_AddAdditionalMtarAll TODO EN 15.3
+            0ull,           // Player2Impl_RemoveAdditionalMtarAll TODO EN 15.3
+            0ull,           // MotionLoaderImpl_BarrelTypeTable TODO EN 15.3
+            0ull,           // MotionLoaderImpl_GetBarrelType TODO EN 15.3
+            0ull,           // MotionLoaderImpl_MagazineTypeTable TODO EN 15.3
+            0ull,           // MotionLoaderImpl_GetMagazineType TODO EN 15.3
+            0ull,           // MotionLoaderImpl_SightTypeTable TODO EN 15.3
+            0ull,           // MotionLoaderImpl_GetSightType TODO EN 15.3
         };
         return value;
     }
@@ -799,6 +825,32 @@ namespace AddressSetRuntime
             0x14A026BE0ull, // WeaponEnhance_GetLangIdBound
             0x140b3b210ull, // BulletEffectController_CreateEffect
             0x1416A22B0ull, // ItemSelectorCallbackImpl_AddRecord
+            0x140AE84A0ull, // LoadPlayerLilChickCapFv2
+            0x140AE8540ull, // LoadPlayerLilChickCapFpk
+            0x140AE85E0ull, // LoadPlayerChickenCapFv2
+            0x140AE8680ull, // LoadPlayerChickenCapFpk
+            0ull,           // AdditionalMotionTable_GetMtarPathId TODO JP 15.3
+            0x141C2E8F0ull, // ModelVertexColorChange_GetModelTotalVertexNum
+            0x1416A3540ull, // ItemSelector_AddDevelopWeaponList
+            0ull,           // BlockControllerImpl_UpdateAdditionalMotionBlock TODO JP 15.3
+            0ull,           // Fox_Block_GetFileForPathId TODO JP 15.3
+            0ull,           // Fox_BlockGroup_GetBlockAtIndex TODO JP 15.3
+            0x140DB9710ull, // EquipPreviewSystem_RequestLoadEquip
+            0x1416AD6B0ull, // ItemSelector_StartEquipPreviewImpl
+            0ull,           // EquipBlockController2_RequestLoad TODO JP 15.3
+            0ull,           // EquipBlockController2_Instance TODO JP 15.3
+            0ull,           // ItemSelector_UpdateSelect TODO JP 15.3
+            0x141682EA0ull, // UiEquipPreviewController_ScrollNext
+            0x141682CF0ull, // UiEquipPreviewController_ScrollPrev
+            0ull,           // UiEquipPreviewController_StopEquipPreview TODO JP 15.3
+            0ull,           // Player2Impl_AddAdditionalMtarAll TODO JP 15.3
+            0ull,           // Player2Impl_RemoveAdditionalMtarAll TODO JP 15.3
+            0ull,           // MotionLoaderImpl_BarrelTypeTable TODO JP 15.3
+            0ull,           // MotionLoaderImpl_GetBarrelType TODO JP 15.3
+            0ull,           // MotionLoaderImpl_MagazineTypeTable TODO JP 15.3
+            0ull,           // MotionLoaderImpl_GetMagazineType TODO JP 15.3
+            0ull,           // MotionLoaderImpl_SightTypeTable TODO JP 15.3
+            0ull,           // MotionLoaderImpl_GetSightType TODO JP 15.3
         };
 
         return value;
