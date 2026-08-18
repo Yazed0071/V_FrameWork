@@ -246,6 +246,7 @@
     <!-- Hooks: Outfit + Equip (custom-outfit prep-summary feed) -->
     <ClInclude Include="src\hooks\outfit\OutfitRegistry.h" />
     <ClInclude Include="src\hooks\outfit\CustomHeadRegistry.h" />
+    <ClInclude Include="src\hooks\outfit\OutfitAbilities.h" />
     <ClInclude Include="src\hooks\outfit\ShadowState.h" />
     <ClInclude Include="src\hooks\outfit\AdditionalMotionTable_GetMtarPathId.h" />
     <ClInclude Include="src\hooks\outfit\EquipDevelopControllerImpl_GetSuitDevelopInfoIndex.h" />
@@ -352,6 +353,7 @@
     <ClCompile Include="src\core\FoxPath.cpp" />
     <ClCompile Include="src\hooks\outfit\OutfitRegistry.cpp" />
     <ClCompile Include="src\hooks\outfit\CustomHeadRegistry.cpp" />
+    <ClCompile Include="src\hooks\outfit\OutfitAbilities.cpp" />
     <ClCompile Include="src\hooks\outfit\ShadowState.cpp" />
     <ClCompile Include="src\hooks\outfit\AdditionalMotionTable_GetMtarPathId.cpp" />
     <ClCompile Include="src\hooks\outfit\EquipDevelopControllerImpl_GetSuitDevelopInfoIndex.cpp" />

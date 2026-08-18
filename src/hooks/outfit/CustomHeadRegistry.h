@@ -53,6 +53,9 @@ namespace outfit
     std::uint64_t GetCustomHeadSnakeStageFpk(const char* name,
                                              std::uint32_t stage);
 
+    void SetCustomHeadInfiniteAmmo(const char* name, bool enable);
+    bool GetCustomHeadInfiniteAmmo(const char* name);
+
 
     int DrainPendingHeads();
 

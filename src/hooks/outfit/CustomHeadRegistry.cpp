@@ -8,6 +8,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <HookUtils.h>
@@ -73,6 +74,7 @@ namespace outfit
             std::uint64_t fpk[kSnakeFaceStageCount] = {};
         };
         std::unordered_map<std::string, SnakeFaceStages> g_SnakeStages;
+        std::unordered_set<std::string> g_InfiniteAmmoHeads;
 
         std::string SnakeStageKey(const char* name)
         {
@@ -425,6 +427,29 @@ namespace outfit
         std::lock_guard<std::mutex> lock(g_Mutex);
         const SnakeFaceStages* s = FindSnakeStagesUnlocked(name);
         return s ? s->fpk[stage] : 0;
+    }
+
+    void SetCustomHeadInfiniteAmmo(const char* name, bool enable)
+    {
+        if (!name || !name[0]) return;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        if (enable)
+        {
+            if (g_InfiniteAmmoHeads.insert(SnakeStageKey(name)).second)
+                LogDebug("[CustomHead] '%s' grants INFINITE AMMO while worn\n",
+                    name);
+        }
+        else
+        {
+            g_InfiniteAmmoHeads.erase(SnakeStageKey(name));
+        }
+    }
+
+    bool GetCustomHeadInfiniteAmmo(const char* name)
+    {
+        if (!name || !name[0]) return false;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        return g_InfiniteAmmoHeads.count(SnakeStageKey(name)) != 0;
     }
 
     static std::atomic<DWORD> g_PendingHeadsRetryTick{ 0 };

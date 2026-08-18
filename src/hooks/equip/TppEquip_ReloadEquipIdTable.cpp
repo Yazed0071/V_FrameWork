@@ -77,6 +77,7 @@ namespace
     static std::mutex g_Mutex;
     static std::vector<EquipIdRow> g_Rows;
     static std::map<int, EquipIdRow> g_Extended;
+    static std::map<std::int32_t, std::int32_t> g_AmmoRootParams;
 
     static std::uint8_t* g_InfoMirror = nullptr;
     static bool g_MirrorSitesPatched = false;
@@ -415,10 +416,24 @@ namespace
         return ok;
     }
 
-    static void QueueAndWrite(const EquipIdRow& row)
+    static void QueueAndWrite(const EquipIdRow& rowIn)
     {
+        EquipIdRow row = rowIn;
         {
             std::lock_guard<std::mutex> lock(g_Mutex);
+            if (row.subId == 0)
+            {
+                auto it = g_AmmoRootParams.find(row.equipId);
+                if (it != g_AmmoRootParams.end())
+                {
+                    row.subId = it->second;
+                    LogDebug("[EquipIdTable] equipId=%d is a registered ammo item - subId "
+                        "auto-set to its ammoId %d (the supply-crate refill resolves the "
+                        "refill amount through this field; with subId 0 an ammo supply "
+                        "delivered nothing for this ammo)\n",
+                        row.equipId, row.subId);
+                }
+            }
             bool replaced = false;
             for (auto& existing : g_Rows)
             {
@@ -945,6 +960,48 @@ bool Uninstall_TppEquip_ReloadEquipIdTable_Hook()
     for (const std::int32_t id : resident)
         EraseNativeRow(id);
     return true;
+}
+
+void TppEquip_NoteAmmoRootParam(int eqpAmmoEquipId, int ammoId)
+{
+    if (eqpAmmoEquipId <= 0 || ammoId <= 0 || ammoId > 0x3FF)
+        return;
+    EquipIdRow updated{};
+    bool restamp = false;
+    int prevSub = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        g_AmmoRootParams[eqpAmmoEquipId] = ammoId;
+        for (auto& r : g_Rows)
+        {
+            if (r.equipId != eqpAmmoEquipId || r.released)
+                continue;
+            if (r.subId != ammoId)
+            {
+                prevSub = r.subId;
+                r.subId = ammoId;
+                updated = r;
+                restamp = true;
+            }
+            break;
+        }
+        auto it = g_Extended.find(eqpAmmoEquipId);
+        if (it != g_Extended.end() && !it->second.released
+            && it->second.subId != ammoId)
+        {
+            it->second.subId = ammoId;
+            MirrorStampRowNoLock(it->second);
+        }
+    }
+    if (restamp)
+    {
+        WriteNativeRow(updated);
+        LogDebug("[EquipIdTable] ammo item equipId=%d subId %d -> %d (its ammoId; the "
+            "supply-crate refill resolves the refill amount through this field - the row "
+            "was stamped before SetMagazine assigned the ammo row, so ammo supplies "
+            "delivered nothing for it)\n",
+            eqpAmmoEquipId, prevSub, ammoId);
+    }
 }
 
 int TppEquip_ReleaseEquipRow(int equipId)

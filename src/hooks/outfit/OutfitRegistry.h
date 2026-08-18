@@ -92,6 +92,10 @@ namespace outfit
         std::uint8_t   defaultVariant                  = 0;
         bool           enableArm              = true;
         bool           enableHead             = false;
+        bool           abilitySilentSteps     = false;
+        std::uint8_t   abilityDefense         = 0;
+        std::uint8_t   abilityLifeRecovery    = 0;
+        std::uint8_t   abilityRattleSuit      = 0xFF;
         std::uint16_t  headOptionEquipIds[kMaxHeadOptionsPerOutfit] = {};
         std::uint8_t   headOptionCount                              = 0;
         bool           supportsHeadOptions                          = false;

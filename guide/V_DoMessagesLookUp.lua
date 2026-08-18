@@ -43,6 +43,7 @@ this.DEBUG_strCode32List={
   "SpeakerWalkMan",
   "Mission",
   "MissionStateReset",
+  "partsTypeChange",
 }
 
 this.CassettePlay={
@@ -243,6 +244,12 @@ this.signatureTypes={
   MissionStateReset={
     {argName="missionCode",argType="number"},
   },
+
+  PartsTypeChange={
+    {argName="playerType",argType="number"},
+    {argName="playerPartsType",argType="number"},
+    {argName="playerCamoType",argType="number"},
+  },
 }
 
 this.messageSignatures={
@@ -261,6 +268,7 @@ this.messageSignatures={
     OnPlayerLockPickStart=this.signatureTypes.OnPlayerLockPickStart,
     OnPlayerLockPickEnd=this.signatureTypes.OnPlayerLockPickEnd,
     BarrierDamage=this.signatureTypes.BarrierDamage,
+    partsTypeChange=this.signatureTypes.PartsTypeChange,
   },
 
   UI={
@@ -534,6 +542,7 @@ function this.RefreshLookups()
   InfLookup.messageSignatures.Player.OnPlayerLockPickStart=this.signatureTypes.OnPlayerLockPickStart
   InfLookup.messageSignatures.Player.OnPlayerLockPickEnd=this.signatureTypes.OnPlayerLockPickEnd
   InfLookup.messageSignatures.Player.BarrierDamage=this.signatureTypes.BarrierDamage
+  InfLookup.messageSignatures.Player.partsTypeChange=this.signatureTypes.PartsTypeChange
   InfLookup.messageSignatures.UI.TimeCigaretteUi=this.signatureTypes.TimeCigaretteUi
   InfLookup.messageSignatures.UI.StopWalkMan=this.signatureTypes.StopWalkMan
   InfLookup.messageSignatures.UI.StartWalkMan=this.signatureTypes.StartWalkMan

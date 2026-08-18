@@ -241,6 +241,70 @@ namespace
     }
 
 
+    static std::uint8_t ResolveRattleSuitToken(const char* s)
+    {
+        if (!s || !s[0]) return 0xFF;
+        if (_stricmp(s, "nom")  == 0) return 0x01;
+        if (_stricmp(s, "bony") == 0) return 0x03;
+        if (_stricmp(s, "snk")  == 0) return 0x08;
+        if (_stricmp(s, "amr")  == 0) return 0x09;
+        return 0xFF;
+    }
+
+    static std::uint8_t ClampAbilityLevel(int level)
+    {
+        if (level < 0) return 0;
+        if (level > 9) return 9;
+        return static_cast<std::uint8_t>(level);
+    }
+
+    void ReadBranchAbilities(
+        lua_State* L, int branchTblIdx, outfit::OutfitPlayerTypeData& branch)
+    {
+        LuaGetField(L, branchTblIdx, "abilities");
+        if (LuaType(L, -1) != LUA_TTABLE)
+        {
+            SetLuaTop(L, -2);
+            return;
+        }
+
+        const int abilitiesTbl = GetLuaTop(L);
+
+        branch.abilitySilentSteps =
+            TryReadTableBoolField(L, abilitiesTbl, "silentFootsteps", false);
+
+        int level = 0;
+        if (TryReadTableIntField(L, abilitiesTbl, "defense", level))
+            branch.abilityDefense = ClampAbilityLevel(level);
+        if (TryReadTableIntField(L, abilitiesTbl, "lifeRecovery", level))
+            branch.abilityLifeRecovery = ClampAbilityLevel(level);
+
+        const char* rattle = nullptr;
+        if (TryReadTableStringField(L, abilitiesTbl, "rattleSuit", rattle)
+            && rattle && rattle[0])
+        {
+            const std::uint8_t donor = ResolveRattleSuitToken(rattle);
+            if (donor != 0xFF)
+                branch.abilityRattleSuit = donor;
+            else
+                LogDebug("[OutfitLua] abilities.rattleSuit: unknown token '%s' "
+                    "- ignored (valid: \"nom\", \"bony\", \"snk\", \"amr\")\n",
+                    rattle);
+        }
+
+        if (branch.abilitySilentSteps || branch.abilityDefense
+            || branch.abilityLifeRecovery || branch.abilityRattleSuit != 0xFF)
+            LogDebug("[OutfitLua] abilities: silentFootsteps=%d defense=%u "
+                "lifeRecovery=%u rattleSuit=0x%02X\n",
+                branch.abilitySilentSteps ? 1 : 0,
+                static_cast<unsigned>(branch.abilityDefense),
+                static_cast<unsigned>(branch.abilityLifeRecovery),
+                static_cast<unsigned>(branch.abilityRattleSuit));
+
+        SetLuaTop(L, -2);
+    }
+
+
     struct MaterialNameEntry
     {
         const char*     name;
@@ -640,6 +704,8 @@ namespace
         branch.enableArm  = TryReadTableBoolField(L, branchTblIdx, "enableArm",  true);
         branch.enableHead = TryReadTableBoolField(L, branchTblIdx, "enableHead", true);
 
+        ReadBranchAbilities(L, branchTblIdx, branch);
+
 
         LuaGetField(L, branchTblIdx, "displayName");
         if (LuaType(L, -1) == LUA_TSTRING)
@@ -991,8 +1057,19 @@ int __cdecl l_RegisterHeadOption(lua_State* L)
         SetLuaTop(L, -2);
     }
 
+    bool infiniteAmmo = false;
+    {
+        LuaGetField(L, 1, "abilities");
+        if (LuaType(L, -1) == LUA_TTABLE)
+            infiniteAmmo = TryReadTableBoolField(L, GetLuaTop(L),
+                                                 "infiniteAmmo", false);
+        SetLuaTop(L, -2);
+    }
+
     const std::uint16_t equipId = outfit::RegisterHeadOption(
         key, faceIds, faceFv2Codes, faceFpkCodes, showInDevelopMenu);
+
+    outfit::SetCustomHeadInfiniteAmmo(key, infiniteAmmo);
 
     if (haveSnakeStages)
         outfit::SetCustomHeadSnakeFaceStages(key, snakeStageFv2, snakeStageFpk);
@@ -1313,6 +1390,62 @@ int __cdecl l_ForceVanillaVariant(lua_State* L)
         static_cast<unsigned>(vanillaPartsType), vi);
     PushLuaNumber(L, static_cast<float>(vi));
     return 1;
+}
+
+int __cdecl l_GetOutfitInfo(lua_State* L)
+{
+    const char* key = nullptr;
+    if (LuaType(L, 1) == LUA_TSTRING)
+        key = GetLuaString(L, 1);
+    else if (LuaType(L, 1) == LUA_TTABLE)
+        TryReadTableStringField(L, 1, "key", key);
+
+    if (!key || !key[0])
+    {
+        LogDebug("[OutfitLua] GetOutfitInfo: pass the outfit key string "
+            "(or a table with key=)\n");
+        PushLuaBool(L, false);
+        return 1;
+    }
+
+    const std::int32_t developId = V_FrameWorkState::GetDevelopIdByKey(key);
+    if (developId <= 0 || developId > 0xFFFF)
+    {
+        LogDebug("[OutfitLua] GetOutfitInfo: unknown outfit key '%s' "
+            "(RegisterOutfit must run before this)\n", key);
+        PushLuaBool(L, false);
+        return 1;
+    }
+
+    const outfit::OutfitEntry* e = nullptr;
+    if (!outfit::TryGetOutfitByDevelopId(
+            static_cast<std::uint16_t>(developId), &e) || !e)
+    {
+        LogDebug("[OutfitLua] GetOutfitInfo: key '%s' has developId=%d "
+            "but no registered outfit entry\n", key, developId);
+        PushLuaBool(L, false);
+        return 1;
+    }
+
+    if (!e->bound)
+    {
+        outfit::BindOutfit(static_cast<std::uint16_t>(developId), true,
+                           "lua-parts-bytes");
+        if (!outfit::TryGetOutfitByDevelopId(
+                static_cast<std::uint16_t>(developId), &e) || !e || !e->bound)
+        {
+            LogDebug("[OutfitLua] GetOutfitInfo: '%s' could not take "
+                "live bytes (pools full) - returns false, vars stay vanilla\n",
+                key);
+            PushLuaBool(L, false);
+            return 1;
+        }
+    }
+
+    PushLuaNumber(L, static_cast<float>(e->partsType));
+    PushLuaNumber(L, static_cast<float>(e->selectorCode));
+    PushLuaNumber(L, static_cast<float>(e->developId));
+    return 3;
 }
 
 int __cdecl l_AddToEquipDevelopTable(lua_State* L)

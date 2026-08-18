@@ -12,38 +12,39 @@
 namespace
 {
     using FnFaceUpdate_t    = void(__fastcall*)(void* self, std::uint32_t soldierIndex, std::uint32_t faceParam, void* soldierData);
-    using FnHeadEquipType_t = std::uint64_t(__fastcall*)(void* self, std::uint32_t soldierIndex, void* group, std::uint32_t groupCount);
     using FnGetFovaResMgr_t = void* (__fastcall*)(void* fovaController, std::uint32_t faceParam, std::uint32_t type);
     using FnGetFovaModel_t  = void* (__fastcall*)(void* resMgr, int a2, std::uint32_t a3, std::uint32_t a4, bool a5);
 
     FnFaceUpdate_t    g_OrigFaceUpdate   = nullptr;
-    FnHeadEquipType_t g_GetHeadEquipType = nullptr;
     FnGetFovaResMgr_t g_GetFovaResMgr    = nullptr;
     FnGetFovaModel_t  g_GetFovaModel     = nullptr;
 
-    constexpr std::uint64_t  kNoHeadEquipModelType = 0x2e;
-    constexpr std::uint32_t  kHairFovaType         = 2;
-    constexpr std::uintptr_t kModelVisMaskOffset   = 0x1a4;
+    constexpr std::uint32_t  kNoHeadEquipModelType     = 0x2e;
+    constexpr std::uint32_t  kHairFovaType             = 2;
+    constexpr std::uintptr_t kModelVisMaskOffset       = 0x1a4;
+    constexpr std::uintptr_t kHeadEquipTypeCacheOffset = 0x5c;
 
     bool ResolveHelpers()
     {
-        if (!g_GetHeadEquipType && gAddr.RealizedSoldier2Impl_ConvertHeadEquipModelType)
-            g_GetHeadEquipType = reinterpret_cast<FnHeadEquipType_t>(
-                ResolveGameAddress(gAddr.RealizedSoldier2Impl_ConvertHeadEquipModelType));
         if (!g_GetFovaResMgr && gAddr.FovaController_GetActiveFovaResourceManager)
             g_GetFovaResMgr = reinterpret_cast<FnGetFovaResMgr_t>(
                 ResolveGameAddress(gAddr.FovaController_GetActiveFovaResourceManager));
         if (!g_GetFovaModel && gAddr.Fv2ResourceManager_GetModel)
             g_GetFovaModel = reinterpret_cast<FnGetFovaModel_t>(
                 ResolveGameAddress(gAddr.Fv2ResourceManager_GetModel));
-        return g_GetHeadEquipType && g_GetFovaResMgr && g_GetFovaModel;
+        return g_GetFovaResMgr && g_GetFovaModel;
     }
 
-    bool SoldierHasHeadEquip(void* self, std::uint32_t soldierIndex)
+    bool SoldierHasHeadEquip(std::uint32_t soldierIndex, void* soldierData)
     {
-        if (soldierIndex == 0x1ff)
+        if (soldierIndex == 0x1ff || !soldierData)
             return false;
-        __try { return g_GetHeadEquipType(self, soldierIndex, nullptr, 0) != kNoHeadEquipModelType; }
+        __try
+        {
+            return *reinterpret_cast<std::uint32_t*>(
+                       reinterpret_cast<std::uint8_t*>(soldierData)
+                       + kHeadEquipTypeCacheOffset) != kNoHeadEquipModelType;
+        }
         __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
     }
 
@@ -67,7 +68,7 @@ namespace
             if (!hairModel)
                 return;
 
-            const bool helmet = SoldierHasHeadEquip(self, soldierIndex);
+            const bool helmet = SoldierHasHeadEquip(soldierIndex, soldierData);
             *reinterpret_cast<std::uint32_t*>(reinterpret_cast<std::uint8_t*>(hairModel) + kModelVisMaskOffset) =
                 helmet ? 0xFFFFFFFFu : 0u;
         }
@@ -93,9 +94,8 @@ bool Install_SoldierHairFova_Hook()
                             reinterpret_cast<void**>(&g_OrigFaceUpdate));
 
 #ifdef _DEBUG
-    LogDebug("[HairFova] install: FaceUpdate=%s GetHeadEquip=%s GetFovaMgr=%s GetFovaModel=%s\n",
+    LogDebug("[HairFova] install: FaceUpdate=%s GetFovaMgr=%s GetFovaModel=%s headEquipSrc=soldierData+0x5c\n",
         gAddr.RealizedSoldier2Impl_UpdateHeadEquipMesh ? "set" : "0",
-        g_GetHeadEquipType ? "ok" : "NULL",
         g_GetFovaResMgr ? "ok" : "NULL",
         g_GetFovaModel ? "ok" : "NULL");
 #endif

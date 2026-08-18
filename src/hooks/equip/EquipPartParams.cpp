@@ -49,6 +49,7 @@ namespace
         int nextId;
         std::map<std::string, int> nameToId;
         int space = -1;
+        std::uint8_t* origBuf = nullptr;
     };
 
     static PartBuffer g_Magazine = { "magazine", 0x20, 8, 191, 255, {}, false, 192, {}, kVanillaSpace_Magazine };
@@ -111,6 +112,8 @@ namespace
         if (!loc)
             return false;
 
+        std::uint8_t* stockBuf = ReadPtrSEH(loc);
+
         if (pb.shadow.empty())
             pb.shadow.assign(static_cast<size_t>(pb.maxId) * pb.stride, 0);
 
@@ -121,6 +124,7 @@ namespace
             return false;
         }
 
+        pb.origBuf = stockBuf;
         pb.active = true;
         LogDebug("[EquipParam] %s shadow active (stock %d -> %d slots; custom ids %d..%d)\n",
             pb.name, pb.stockCount, pb.maxId, pb.stockCount + 1, pb.maxId);
@@ -130,6 +134,149 @@ namespace
     static std::uint8_t* PartCurrentBuf(PartBuffer& pb)
     {
         return ReadPtrSEH(PartPtrLoc(pb));
+    }
+
+    static int ProbeSupplyCountLocSEH(void* getQuarkFn, void*** outLoc,
+                                      std::uint8_t** outCur)
+    {
+        __try
+        {
+            using GetQuark_t = std::uint8_t* (__fastcall*)();
+            std::uint8_t* quark = reinterpret_cast<GetQuark_t>(getQuarkFn)();
+            if (!quark)
+                return 0;
+            std::uint8_t* app = *reinterpret_cast<std::uint8_t**>(quark + 0x98);
+            if (!app)
+                return 0;
+            std::uint8_t* holder = *reinterpret_cast<std::uint8_t**>(app + 0x1e8);
+            if (!holder)
+                return 0;
+            std::uint8_t* paramObj = *reinterpret_cast<std::uint8_t**>(holder + 0x10);
+            if (!paramObj)
+                return 0;
+            void** loc = reinterpret_cast<void**>(paramObj + 0xa0);
+            *outCur = static_cast<std::uint8_t*>(*loc);
+            *outLoc = loc;
+            return 1;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return 0;
+        }
+    }
+
+    static int WritePtrSEH(void** loc, void* value)
+    {
+        __try
+        {
+            *loc = value;
+            return 1;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return 0;
+        }
+    }
+
+    static int CompareMagazineRowsSEH(const std::uint8_t* a, const std::uint8_t* b,
+                                      int rows, int* fullEqual)
+    {
+        __try
+        {
+            *fullEqual =
+                (std::memcmp(a, b, static_cast<size_t>(rows) * 8) == 0) ? 1 : 0;
+            if (*fullEqual)
+                return rows;
+            int match = 0;
+            for (int i = 0; i < rows; ++i)
+            {
+                const std::uint8_t* ra = a + static_cast<size_t>(i) * 8;
+                const std::uint8_t* rb = b + static_cast<size_t>(i) * 8;
+                if (*reinterpret_cast<const std::uint16_t*>(ra + 0)
+                        == *reinterpret_cast<const std::uint16_t*>(rb + 0)
+                    && *reinterpret_cast<const std::uint16_t*>(ra + 4)
+                        == *reinterpret_cast<const std::uint16_t*>(rb + 4))
+                    ++match;
+            }
+            return match;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return -1;
+        }
+    }
+
+    static int DumpRowBytesSEH(const std::uint8_t* p, char* out, size_t outLen)
+    {
+        __try
+        {
+            for (int i = 0; i < 16 && (static_cast<size_t>(i) * 3 + 3) < outLen; ++i)
+                std::snprintf(out + i * 3, 4, "%02X ", p[i]);
+            return 1;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return 0;
+        }
+    }
+
+    static void HealSupplyAmmoCountTable()
+    {
+        void* getQuark = ResolveGameAddress(gAddr.GetQuarkSystemTable);
+        if (!getQuark)
+            return;
+        std::lock_guard<std::recursive_mutex> lock(g_Mutex);
+        if (!g_Magazine.active || g_Magazine.shadow.empty() || !g_Magazine.origBuf)
+            return;
+        void** loc = nullptr;
+        std::uint8_t* cur = nullptr;
+        if (ProbeSupplyCountLocSEH(getQuark, &loc, &cur) != 1 || !loc || !cur)
+            return;
+        if (cur == g_Magazine.shadow.data())
+            return;
+        const int rows = g_Magazine.stockCount;
+        bool confirmed = (cur == g_Magazine.origBuf);
+        int fullEq = confirmed ? 1 : 0;
+        int match = confirmed ? rows : 0;
+        if (!confirmed)
+        {
+            match = CompareMagazineRowsSEH(cur, g_Magazine.origBuf, rows, &fullEq);
+            confirmed = (match >= rows - 8);
+        }
+        if (confirmed)
+        {
+            if (WritePtrSEH(loc, g_Magazine.shadow.data()) == 1)
+            {
+                static std::atomic<bool> s_healLogged{ false };
+                if (!s_healLogged.exchange(true))
+                    LogDebug("[EquipParam] supply ammo-count table healed: the supply "
+                        "refill reads its amounts through a magazine-data pointer at "
+                        "supplyParams+0xa0 that held %p (content-verified against the "
+                        "stock table: %d/%d rows match, fullEqual=%d) - a vanilla-only "
+                        "copy the shadow redirect never touched, so custom ammoIds "
+                        "%d..%d read past its %d rows and every ammo supply granted 0. "
+                        "Repointed to the live shadow %p.\n",
+                        static_cast<void*>(cur), match, rows, fullEq,
+                        g_Magazine.stockCount + 1, g_Magazine.maxId, rows,
+                        static_cast<void*>(g_Magazine.shadow.data()));
+            }
+            return;
+        }
+        static std::atomic<bool> s_probeLogged{ false };
+        if (!s_probeLogged.exchange(true))
+        {
+            char curHex[64] = {};
+            char stockHex[64] = {};
+            DumpRowBytesSEH(cur, curHex, sizeof(curHex));
+            DumpRowBytesSEH(g_Magazine.origBuf, stockHex, sizeof(stockHex));
+            LogDebug("[EquipParam] supply ammo-count probe: ptr at supplyParams+0xa0 is "
+                "%p (stock=%p shadow=%p) and its content does NOT match the magazine "
+                "table (%d/%d rows) - left untouched. first 16 bytes there: %s| stock: "
+                "%s\n",
+                static_cast<void*>(cur), static_cast<void*>(g_Magazine.origBuf),
+                static_cast<void*>(g_Magazine.shadow.data()), match, rows,
+                curHex, stockHex);
+        }
     }
 
     struct WidePartState
@@ -1010,8 +1157,11 @@ namespace
     using GetUnderBarrelType_t = unsigned int(__fastcall*)(void* self, unsigned int underBarrelId);
     static GetUnderBarrelType_t g_OrigGetUnderBarrelType = nullptr;
 
+    unsigned int PartCode_TapPartId(int slot, unsigned int partId);
+
     static unsigned int __fastcall hkGetUnderBarrelType(void* self, unsigned int underBarrelId)
     {
+        underBarrelId = PartCode_TapPartId(4, underBarrelId);
         if (!g_UbTypeExtReady)
             EnsureUbTypeExt();
         if (g_UbTypeExtReady && underBarrelId < kPartTypeExtCount)
@@ -1064,6 +1214,7 @@ namespace
 
     static unsigned int __fastcall hkGetBarrelType(void* self, unsigned int barrelId)
     {
+        barrelId = PartCode_TapPartId(1, barrelId);
         EnsurePartTypeExt(g_BarrelTypeExt, g_BarrelTypeExtReady,
                           gAddr.MotionLoaderImpl_BarrelTypeTable,
                           kBarrelTypeVanillaRows);
@@ -1074,6 +1225,7 @@ namespace
 
     static unsigned int __fastcall hkGetMagazineType(void* self, unsigned int magazineId)
     {
+        magazineId = PartCode_TapPartId(2, magazineId);
         EnsurePartTypeExt(g_MagazineTypeExt, g_MagazineTypeExtReady,
                           gAddr.MotionLoaderImpl_MagazineTypeTable,
                           kMagazineTypeVanillaRows);
@@ -1084,6 +1236,7 @@ namespace
 
     static unsigned int __fastcall hkGetSightType(void* self, unsigned int sightId)
     {
+        sightId = PartCode_TapPartId(3, sightId);
         EnsurePartTypeExt(g_SightTypeExt, g_SightTypeExtReady,
                           gAddr.MotionLoaderImpl_SightTypeTable,
                           kSightTypeVanillaRows);
@@ -2120,6 +2273,17 @@ int __cdecl l_SetMagazine(lua_State* L)
         EquipParam_VanillaPostWrite(kVanillaSpace_Magazine, ammoId, rowPtr, 8);
     if (wideRow)
         SyncWideRowToAlias(g_Magazine, ammoId);
+
+    int rootAmmoId = wideRow ? 0 : writeId;
+    if (wideRow)
+    {
+        WidePartState* w = WideStateFor(kVanillaSpace_Magazine, ammoId);
+        if (w && w->alias)
+            rootAmmoId = w->alias;
+    }
+    if (eqpAmmoId > 0 && rootAmmoId > 0)
+        TppEquip_NoteAmmoRootParam(eqpAmmoId, rootAmmoId);
+    HealSupplyAmmoCountTable();
 
 #ifdef _DEBUG
     LogDebug("[EquipParam] SetMagazine ammoId=%d eqpAmmo=%d cap=%d total=%d bullet=%d -> native slot\n",
@@ -8415,6 +8579,9 @@ namespace
         g_ResolverB = rB;
         void* rtHookTarget = ResolveGameAddress(gAddr.MotionLoaderImpl_GetReceiverType);
         void* ubHookTarget = ResolveGameAddress(gAddr.MotionLoaderImpl_GetUnderBarrelType);
+        void* brHookTarget = ResolveGameAddress(gAddr.MotionLoaderImpl_GetBarrelType);
+        void* mgHookTarget = ResolveGameAddress(gAddr.MotionLoaderImpl_GetMagazineType);
+        void* stHookTarget = ResolveGameAddress(gAddr.MotionLoaderImpl_GetSightType);
         for (int k = 0; k < 5; ++k)
         {
             void* mB = VtblSlotSEH(rB, kPartVtblOff[k]);
@@ -8428,6 +8595,12 @@ namespace
                 note = "=GetReceiverType";
             else if (ubHookTarget && mB == ubHookTarget)
                 note = "=GetUnderBarrelType";
+            else if (brHookTarget && mB == brHookTarget)
+                note = "=GetBarrelType";
+            else if (mgHookTarget && mB == mgHookTarget)
+                note = "=GetMagazineType";
+            else if (stHookTarget && mB == stHookTarget)
+                note = "=GetSightType";
             else
             {
                 int prev = -1;
@@ -8465,6 +8638,47 @@ namespace
                     "donor part substitution incomplete for this slot\n", k, cs, es);
 #endif
         }
+    }
+
+    unsigned int PartCode_TapPartId(int slot, unsigned int partId)
+    {
+        g_PartCallCount.fetch_add(1, std::memory_order_relaxed);
+        if (!g_InSetupWeaponInfo || g_TlsVanillaEquip == 0)
+            return partId;
+        FamilyGb van;
+        if (!GetGbForEquipId(g_TlsVanillaEquip, van))
+        {
+            static unsigned long long lastMs = 0;
+            const unsigned long long now = GetTickCount64();
+            if (now - lastMs > 2000)
+            {
+                lastMs = now;
+                Log("[WeaponKey] WARNING: donor equipId=%u gunBasic unresolved at "
+                    "draw time - part substitution skipped (slot %d); the weapon "
+                    "may not animate correctly\n", g_TlsVanillaEquip, slot);
+            }
+            return partId;
+        }
+        unsigned int use = van.gb[kPartGbByte[slot]];
+        if ((slot == 3 || slot == 4) && use != 0)
+        {
+            FamilyGb cus;
+            if (GetGbForEquipId(g_TlsCustomEquip, cus)
+                && cus.gb[kPartGbByte[slot]] == 0)
+                use = partId;
+        }
+#ifdef _DEBUG
+        if (use != partId)
+        {
+            static std::atomic<int> logged{ 0 };
+            const int bit = 1 << slot;
+            if (!(logged.fetch_or(bit, std::memory_order_relaxed) & bit))
+                LogDebug("[WeaponKey] part-code tap slot%d: %u -> donor %u "
+                    "(served through the EquipParam type hook)\n",
+                    slot, partId, use);
+        }
+#endif
+        return use;
     }
 
     unsigned int PartCode_TapReceiverType(unsigned int receiverId, unsigned int result)
@@ -9638,6 +9852,7 @@ namespace
 
     static void __fastcall hkUpdateLoadoutRequest(void* self, std::uint32_t slot)
     {
+        HealSupplyAmmoCountTable();
         FillCustomMotionEntriesEarly();
         std::int32_t pinned[3] = {};
         int pinnedCount = 0;

@@ -403,6 +403,8 @@ namespace outfit
     void Uninstall_OutfitGetCamoufValue_Hook();
     bool Install_OutfitMotionMtar_Hook();
     void Uninstall_OutfitMotionMtar_Hook();
+    bool Install_OutfitAbilities_Hooks();
+    void Uninstall_OutfitAbilities_Hooks();
 }
 namespace EquipDevelopAdd
 {
@@ -1623,11 +1625,13 @@ namespace
             const bool camo  = outfit::Install_OutfitCamoBonus_Hook();
             const bool value = outfit::Install_OutfitGetCamoufValue_Hook();
             const bool mtar  = outfit::Install_OutfitMotionMtar_Hook();
-            (void)head; (void)camo; (void)value; (void)mtar;
+            const bool abil  = outfit::Install_OutfitAbilities_Hooks();
+            (void)head; (void)camo; (void)value; (void)mtar; (void)abil;
             return true;
         }
         void Uninstall() override
         {
+            outfit::Uninstall_OutfitAbilities_Hooks();
             outfit::Uninstall_OutfitMotionMtar_Hook();
             outfit::Uninstall_OutfitGetCamoufValue_Hook();
             outfit::Uninstall_OutfitCamoBonus_Hook();
