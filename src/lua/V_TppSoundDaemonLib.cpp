@@ -26,14 +26,14 @@ namespace
 
         if (typeRaw < GAME_OVER_GENERAL || typeRaw > GAME_OVER_CYPRUS)
         {
-            Log("[GameOverMusic] SetGameOverMusic: invalid type=%d (expected 0..3)\n", typeRaw);
+            LogDebug("[GameOverMusic] SetGameOverMusic: invalid type=%d (expected 0..3)\n", typeRaw);
             PushLuaBool(L, false);
             return 1;
         }
 
         if (isEnable && (playHash == 0 || stopHash == 0))
         {
-            Log("[GameOverMusic] SetGameOverMusic: enable=true requires a valid play/stop event (name string or hash number)\n");
+            LogDebug("[GameOverMusic] SetGameOverMusic: enable=true requires a valid play/stop event (name string or hash number)\n");
             PushLuaBool(L, false);
             return 1;
         }
@@ -48,9 +48,6 @@ namespace
 
     static luaL_Reg g_VTppSoundDaemonLib[] =
     {
-        { "SetSoldierVoicePitch",           l_SetSoldierVoicePitch },
-        { "UnsetSoldierVoicePitch",         l_UnsetSoldierVoicePitch },
-
         { "SetGameOverMusic",               l_SetGameOverMusic },
 
         { nullptr, nullptr }

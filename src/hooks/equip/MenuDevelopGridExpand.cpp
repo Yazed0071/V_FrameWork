@@ -134,7 +134,7 @@ namespace
             return;
 
         g_RailSeen[g_RailSeenCount++] = cell;
-        Log("[RailProbe] row=%u draws a rail to parentRow=%u "
+        LogDebug("[RailProbe] row=%u draws a rail to parentRow=%u "
             "(a=%d b=%d, parent %s the tab grid)\n",
             cell, parent, a, b,
             RailGridHasRow(parent) ? "IS on" : "is NOT on");
@@ -298,7 +298,7 @@ namespace
         if (logKey != s_lastLog)
         {
             s_lastLog = logKey;
-            Log("[MenuDevelopGrid] fill tab=%u: rootCount=%u valid=%d "
+            LogDebug("[MenuDevelopGrid] fill tab=%u: rootCount=%u valid=%d "
                 "garbage-skipped=%d rows=%u\n",
                 typeId, rootCount, validRoots, garbageRoots, rowAcc);
         }
@@ -328,10 +328,10 @@ namespace
                                 hex + p, sizeof(hex) - static_cast<size_t>(p),
                                 "%02X", b & 0xFF);
                         }
-                        Log("[MenuDevelopGrid] record flow=%u: %s\n",
+                        LogDebug("[MenuDevelopGrid] record flow=%u: %s\n",
                             rows[r], hex);
                     }
-                    Log("[MenuDevelopGrid] flow 507/512 are VANILLA lone "
+                    LogDebug("[MenuDevelopGrid] flow 507/512 are VANILLA lone "
                         "grade-3 rows, 948/949 are custom outfit rows with "
                         "the same grid shape - any field that differs is why "
                         "the tree draws a parent rail for one and not the "
@@ -728,7 +728,7 @@ namespace
                             " r%dc%d=%u", topRow + row, topCol + col,
                             GridAt(g));
                     }
-                Log("[MenuDevelopGrid] visible window tab=%u topRow=%d "
+                LogDebug("[MenuDevelopGrid] visible window tab=%u topRow=%d "
                     "topCol=%d:%s (1024 = empty cell; >= 922 = a custom "
                     "V_FrameWork row, < 922 = vanilla)\n",
                     At<std::uint32_t>(self, 0x2144), topRow, topCol, buf);
@@ -946,7 +946,7 @@ namespace equip
         equip::DevelopLookupTakeCounters(findCalls, findIndexed, findBuilds,
                                          findStale);
         if (any)
-            Log("[MenuPerf] last 5s: %s| develop visibility predicate %llu "
+            LogDebug("[MenuPerf] last 5s: %s| develop visibility predicate %llu "
                 "calls, %llu served from the per-fill cache | row lookups %llu "
                 "calls, %llu served from the developId/equipId index (%llu "
                 "index rebuilds, %llu stale hits re-verified); an unindexed "
@@ -963,7 +963,7 @@ namespace equip
     {
         if (!kEnableGridExpand)
         {
-            Log("[MenuDevelopGrid] grid expansion disabled in this build - "
+            LogDebug("[MenuDevelopGrid] grid expansion disabled in this build - "
                 "develop menu runs the native 114-row grid with window paging.\n");
             return true;
         }
@@ -978,7 +978,7 @@ namespace equip
             || !gAddr.MenuDevelopGrid_CopyFlat
             || !fill || !copy || !badge || !fillFlat || !copyFlat)
         {
-            Log("[MenuDevelopGrid] not installed (addresses unresolved on this "
+            LogDebug("[MenuDevelopGrid] not installed (addresses unresolved on this "
                 "build) - develop grid stays at the native 114-row cap.\n");
             return true;
         }

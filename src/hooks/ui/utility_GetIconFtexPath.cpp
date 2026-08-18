@@ -51,7 +51,7 @@ void EquipIcon_DebugArmProbe(int calls)
 {
 #ifdef _DEBUG
     g_IconProbeRemaining.store(calls, std::memory_order_relaxed);
-    Log("[IconProbe] armed for next %d GetIconFtexPath calls\n", calls);
+    LogDebug("[IconProbe] armed for next %d GetIconFtexPath calls\n", calls);
 #else
     (void)calls;
 #endif
@@ -67,7 +67,7 @@ static std::int64_t* __fastcall hkGetIconFtexPath(std::int64_t* outPathId, std::
             *outPathId = static_cast<std::int64_t>(it->second);
 #ifdef _DEBUG
             if (g_IconProbeRemaining.fetch_sub(1, std::memory_order_relaxed) > 0)
-                Log("[IconProbe] equipId=%u mode=%d -> OVERRIDE hash=0x%016llX\n",
+                LogDebug("[IconProbe] equipId=%u mode=%d -> OVERRIDE hash=0x%016llX\n",
                     equipId, mode,
                     static_cast<unsigned long long>(it->second));
             else
@@ -80,7 +80,7 @@ static std::int64_t* __fastcall hkGetIconFtexPath(std::int64_t* outPathId, std::
     std::int64_t* r = g_OrigGetIconFtexPath(outPathId, equipId, mode);
 #ifdef _DEBUG
     if (g_IconProbeRemaining.fetch_sub(1, std::memory_order_relaxed) > 0)
-        Log("[IconProbe] equipId=%u mode=%d -> orig hash=0x%016llX\n",
+        LogDebug("[IconProbe] equipId=%u mode=%d -> orig hash=0x%016llX\n",
             equipId, mode,
             r ? static_cast<unsigned long long>(*r) : 0ull);
     else
@@ -115,7 +115,7 @@ bool Install_EquipIconFtexPath_Hook()
 
     g_EquipIconFtexPathHookInstalled = true;
 #ifdef _DEBUG
-    Log("[EquipIcon] hook installed\n");
+    LogDebug("[EquipIcon] hook installed\n");
 #endif
     return true;
 }
@@ -134,7 +134,7 @@ bool Uninstall_EquipIconFtexPath_Hook()
     g_EquipIconFtexPathHookInstalled = false;
 
 #ifdef _DEBUG
-    Log("[EquipIcon] hook removed\n");
+    LogDebug("[EquipIcon] hook removed\n");
 #endif
     return true;
 }

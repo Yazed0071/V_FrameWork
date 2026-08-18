@@ -2,6 +2,8 @@
 
 #include "OutfitRegistry.h"
 #include "ShadowState.h"
+#include "FoxHashes.h"
+#include "AdditionalMotionTable_GetMtarPathId.h"
 
 #include <array>
 #include <atomic>
@@ -199,7 +201,7 @@ namespace
         if (reservedSel || reservedPt || conflicts)
         {
 #ifdef _DEBUG
-            Log("[OutfitRegistry] reservation pass: %zu selector(s) + %zu "
+            LogDebug("[OutfitRegistry] reservation pass: %zu selector(s) + %zu "
                 "partsType(s) reserved for persisted outfit keys%s\n",
                 reservedSel, reservedPt,
                 conflicts ? " (persisted-value CONFLICTS detected - "
@@ -248,7 +250,7 @@ namespace
             if (takenBy(candidate)) continue;
             if (IsKeyHashRegistered_NoLock(g_PartsTypeReservedBy[candidate]))
                 continue;
-            Log("[OutfitRegistry] partsType pool exhausted - consuming "
+            LogDebug("[OutfitRegistry] partsType pool exhausted - consuming "
                 "reserved value 0x%02X from an absent key\n", candidate);
             return candidate;
         }
@@ -291,7 +293,7 @@ namespace
                                                 std::uint64_t keyHash)
     {
         if (IsCustomSelector(hint) && !IsAllocatableSelector(hint))
-            Log("[OutfitRegistry] selector hint 0x%02X is inside the vanilla "
+            LogDebug("[OutfitRegistry] selector hint 0x%02X is inside the vanilla "
                 "event-camo band 0x83-0x88 (legacy allocation) - migrating to "
                 "a clean selector\n", hint);
 
@@ -317,7 +319,7 @@ namespace
             if (IsVirtualIdTaken_NoLock(candidate)) continue;
             if (IsKeyHashRegistered_NoLock(g_SelectorReservedBy[candidate]))
                 continue;
-            Log("[OutfitRegistry] selector pool exhausted - consuming reserved "
+            LogDebug("[OutfitRegistry] selector pool exhausted - consuming reserved "
                 "value 0x%02X from an absent key\n", candidate);
             return candidate;
         }
@@ -413,7 +415,7 @@ namespace
         if (partsType == 0xFF)
         {
             if (ShouldLogBindRefusal_NoLock(e.keyHash, reason))
-                Log("[OutfitRegistry] BIND REFUSED key=%s reason=%s: partsType "
+                LogDebug("[OutfitRegistry] BIND REFUSED key=%s reason=%s: partsType "
                     "pool exhausted (%d live) - unequip or clear loadout slots "
                     "to free live bytes (menu-stamp refusals log once per "
                     "key)\n", e.key, reason ? reason : "?",
@@ -422,7 +424,7 @@ namespace
         }
         if (requireHintExact && partsType != e.partsTypeHint)
         {
-            Log("[OutfitRegistry] recognition bind key=%s: reserved partsType "
+            LogDebug("[OutfitRegistry] recognition bind key=%s: reserved partsType "
                 "0x%02X unavailable (got 0x%02X) - no bind, degrades to "
                 "vanilla\n", e.key, e.partsTypeHint, partsType);
             return false;
@@ -434,7 +436,7 @@ namespace
         if (selector == 0xFF)
         {
             if (ShouldLogBindRefusal_NoLock(e.keyHash, reason))
-                Log("[OutfitRegistry] BIND REFUSED key=%s reason=%s: selector "
+                LogDebug("[OutfitRegistry] BIND REFUSED key=%s reason=%s: selector "
                     "pool exhausted (%d live)\n",
                     e.key, reason ? reason : "?",
                     kCustomSelectorEnd - kCustomSelectorStart + 1
@@ -444,7 +446,7 @@ namespace
         }
         if (requireHintExact && selector != e.selectorCodeHint)
         {
-            Log("[OutfitRegistry] recognition bind key=%s: reserved selector "
+            LogDebug("[OutfitRegistry] recognition bind key=%s: reserved selector "
                 "0x%02X unavailable (got 0x%02X) - no bind, degrades to "
                 "vanilla\n", e.key, e.selectorCodeHint, selector);
             return false;
@@ -490,7 +492,7 @@ namespace
                     if (!IsAllocatableSelector(c)) continue;
                     if (IsSelectorTaken_NoLock(c)) continue;
                     if (usedEarlier(c)) continue;
-                    Log("[OutfitRegistry] selector pool exhausted - variant %u "
+                    LogDebug("[OutfitRegistry] selector pool exhausted - variant %u "
                         "consumes reserved value 0x%02X from an absent key\n",
                         static_cast<unsigned>(vi), c);
                     alloc = c; break;
@@ -499,7 +501,7 @@ namespace
             if (alloc == 0xFF)
             {
                 if (ShouldLogBindRefusal_NoLock(e.keyHash, reason))
-                    Log("[OutfitRegistry] BIND REFUSED key=%s reason=%s: no "
+                    LogDebug("[OutfitRegistry] BIND REFUSED key=%s reason=%s: no "
                         "free selector for variant %u of %u\n",
                         e.key, reason ? reason : "?",
                         static_cast<unsigned>(vi),
@@ -522,7 +524,7 @@ namespace
             const std::uint8_t vid = AllocateVirtualId_NoLock();
             if (vid == 0xFF)
             {
-                Log("[OutfitRegistry] camo virtual-id pool exhausted while "
+                LogDebug("[OutfitRegistry] camo virtual-id pool exhausted while "
                     "binding PT=%u of '%s' - branch runs without a unique "
                     "bonus row\n", static_cast<unsigned>(pt), e.key);
                 b.hasCamoBonusValues = false;
@@ -543,7 +545,7 @@ namespace
                 e.key, e.variantSelectorCodes + 1,
                 static_cast<std::size_t>(e.variantCount) - 1);
 #ifdef _DEBUG
-        Log("[OutfitRegistry] bound key=%s partsType=0x%02X selector=0x%02X "
+        LogDebug("[OutfitRegistry] bound key=%s partsType=0x%02X selector=0x%02X "
             "(%s)\n", e.key, e.partsType, e.selectorCode,
             reason ? reason : "?");
 #endif
@@ -722,7 +724,7 @@ namespace
         for (std::size_t i = 0; i < outfit::kMaxVariantsPerOutfit; ++i)
             vVars[i] = victim.variantSelectorCodes[i];
 
-        Log("[OutfitRegistry] recycled live bytes of key=%s (%s) to "
+        LogDebug("[OutfitRegistry] recycled live bytes of key=%s (%s) to "
             "make room for key=%s\n", victim.key, tier, forKey ? forKey : "?");
         UnbindOutfit_NoLock(victim);
 
@@ -854,7 +856,7 @@ namespace
             if (here < pinned.size() && pinned[here])
             {
                 if (!probeOnly)
-                    Log("[OutfitRegistry] reclaim of 0x%02X for key=%s refused: "
+                    LogDebug("[OutfitRegistry] reclaim of 0x%02X for key=%s refused: "
                         "holder key=%s is pinned (worn / loadout / supply) - "
                         "holder keeps it, requester degrades to vanilla\n",
                         wanted, forKey ? forKey : "?", e.key);
@@ -868,7 +870,7 @@ namespace
             for (std::size_t i = 0; i < outfit::kMaxVariantsPerOutfit; ++i)
                 rVars[i] = e.variantSelectorCodes[i];
 
-            Log("[OutfitRegistry] reclaimed 0x%02X from key=%s for its persisted "
+            LogDebug("[OutfitRegistry] reclaimed 0x%02X from key=%s for its persisted "
                 "owner key=%s\n", wanted, e.key, forKey ? forKey : "?");
             UnbindOutfit_NoLock(e);
 
@@ -1290,6 +1292,67 @@ namespace outfit
         return v->diamondFpk;
     }
 
+    static const char* const kMotionMtarNames[kMotionMtarSlotCount] = {
+        "avatar_edit", "behind", "camera", "carry",
+        "cbox", "cqc", "cure", "cypr",
+        "ddf_facial", "ddm_facial", "elude", "facial_ddf_helispace",
+        "facial_ddm_helispace", "facial_snake_helispace", "gimmick", "heli",
+        "horse", "jump", "ladder", "liquid",
+        "ocelot_facial", "okb_zero", "online", "paz",
+        "pipe", "quiet_facial", "resident", "timecigarette",
+        "trashbox", "vehicle", "vram_resident", "TppPlayer2Facial",
+    };
+
+    static std::uint64_t g_MotionMtarVanillaHashes[kMotionMtarSlotCount] = {};
+    static std::once_flag g_MotionMtarHashOnce;
+
+    static void BuildMotionMtarHashes()
+    {
+        for (std::size_t i = 0; i < kMotionMtarSlotCount; ++i)
+        {
+            std::string p = "/Assets/tpp/motion/mtar/player2/";
+            if (std::strcmp(kMotionMtarNames[i], "TppPlayer2Facial") == 0)
+                p += "TppPlayer2Facial.mtar";
+            else
+                p += std::string("player2_") + kMotionMtarNames[i] + ".mtar";
+            g_MotionMtarVanillaHashes[i] = FoxHashes::PathCode64Ext(p);
+        }
+    }
+
+    int MotionMtarSlotFromName(const char* name)
+    {
+        if (!name || !*name) return -1;
+        for (std::size_t i = 0; i < kMotionMtarSlotCount; ++i)
+            if (_stricmp(name, kMotionMtarNames[i]) == 0)
+                return static_cast<int>(i);
+        return -1;
+    }
+
+    std::uint64_t MotionMtarVanillaHash(std::size_t slot)
+    {
+        if (slot >= kMotionMtarSlotCount) return 0;
+        std::call_once(g_MotionMtarHashOnce, BuildMotionMtarHashes);
+        return g_MotionMtarVanillaHashes[slot];
+    }
+
+    int MotionMtarSlotFromVanillaHash(std::uint64_t pathHash)
+    {
+        if (pathHash == 0) return -1;
+        std::call_once(g_MotionMtarHashOnce, BuildMotionMtarHashes);
+        for (std::size_t i = 0; i < kMotionMtarSlotCount; ++i)
+            if (g_MotionMtarVanillaHashes[i] == pathHash)
+                return static_cast<int>(i);
+        return -1;
+    }
+
+    std::uint64_t OutfitEntry::GetMotionMtarOverride(
+        std::uint8_t playerType, std::size_t slot) const
+    {
+        if (slot >= kMotionMtarSlotCount) return 0;
+        const auto* d = GetPTData(playerType);
+        return d ? d->motionMtars[slot] : 0;
+    }
+
     std::uint64_t OutfitEntry::GetVariantDiamondFv2(
         std::uint8_t playerType, std::uint8_t variantIdx) const
     {
@@ -1347,7 +1410,7 @@ namespace outfit
 
         if (branchCount == 0)
         {
-            Log("[OutfitRegistry] reject: no playerType branches populated. "
+            LogDebug("[OutfitRegistry] reject: no playerType branches populated. "
                 "At least one of {snake, ddMale, ddFemale, avatar} must "
                 "supply partsPath/fpkPath. (key=%s)\n",
                 def.key ? def.key : "(unkeyed)");
@@ -1361,7 +1424,7 @@ namespace outfit
             if (!b.used) continue;
             if (b.partsPathCode64 == 0 || b.fpkPathCode64 == 0)
             {
-                Log("[OutfitRegistry] reject: playerType=%u branch is missing "
+                LogDebug("[OutfitRegistry] reject: playerType=%u branch is missing "
                     "required partsPath or fpkPath (key=%s)\n",
                     static_cast<unsigned>(pt),
                     def.key ? def.key : "(unkeyed)");
@@ -1371,7 +1434,7 @@ namespace outfit
 
         if (def.developId == 0)
         {
-            Log("[OutfitRegistry] reject: developId must be non-zero "
+            LogDebug("[OutfitRegistry] reject: developId must be non-zero "
                 "(key=%s)\n", def.key ? def.key : "(unkeyed)");
             return false;
         }
@@ -1380,7 +1443,7 @@ namespace outfit
         constexpr std::uint16_t kEdcRowCapacity = 0x400;
         if (def.flowIndex >= kEdcRowCapacity)
         {
-            Log("[OutfitRegistry] reject: flowIndex=%u out of EDC capacity "
+            LogDebug("[OutfitRegistry] reject: flowIndex=%u out of EDC capacity "
                 "(max 0x3FF). (key=%s)\n",
                 static_cast<unsigned>(def.flowIndex),
                 def.key ? def.key : "(unkeyed)");
@@ -1404,7 +1467,7 @@ namespace outfit
                 else if (e.flowIndex == 0)
                     e.flowIndex = ResolvePersistedFlowIndex(def.key);
 #ifdef _DEBUG
-                Log("[OutfitRegistry] re-registration of same outfit "
+                LogDebug("[OutfitRegistry] re-registration of same outfit "
                     "developId=%u flowIndex=%u partsType=0x%02X - "
                     "returning existing entry (idempotent)\n",
                     static_cast<unsigned>(e.developId),
@@ -1417,7 +1480,7 @@ namespace outfit
 
             if (e.flowIndex != 0 && e.flowIndex == def.flowIndex)
             {
-                Log("[OutfitRegistry] flowIndex %u transferred to developId=%u "
+                LogDebug("[OutfitRegistry] flowIndex %u transferred to developId=%u "
                     "(previous claim by developId=%u was released for "
                     "paging)\n",
                     static_cast<unsigned>(def.flowIndex),
@@ -1505,7 +1568,7 @@ namespace outfit
         if (hasPersistedBytes || demandPinned)
         {
             if (!BindOutfit_NoLock(*slot, false, "register"))
-                Log("[OutfitRegistry] '%s' has persisted live bytes but could "
+                LogDebug("[OutfitRegistry] '%s' has persisted live bytes but could "
                     "not take them back - registered UNBOUND, re-acquires on "
                     "first equip, order, or menu stamp\n",
                     slot->key[0] ? slot->key : "(unkeyed)");
@@ -1513,7 +1576,7 @@ namespace outfit
 #ifdef _DEBUG
         else
         {
-            Log("[OutfitRegistry] '%s' registered UNBOUND (lazy) - live bytes "
+            LogDebug("[OutfitRegistry] '%s' registered UNBOUND (lazy) - live bytes "
                 "assigned on first equip, order, or menu stamp\n",
                 slot->key[0] ? slot->key : "(unkeyed)");
         }
@@ -1530,7 +1593,7 @@ namespace outfit
                 slot->displaySummaryIconHash = it->second.iconHash;
             g_PendingSummaryDisplay.erase(it);
 #ifdef _DEBUG
-            Log("[OutfitRegistry] drained pending summary display for "
+            LogDebug("[OutfitRegistry] drained pending summary display for "
                 "developId=%u (nameHash=0x%016llX iconHash=0x%016llX)\n",
                 static_cast<unsigned>(slot->developId),
                 static_cast<unsigned long long>(slot->displaySummaryNameHash),
@@ -1938,7 +2001,7 @@ namespace outfit
             if (nameHash != 0) e.displaySummaryNameHash = nameHash;
             if (iconHash != 0) e.displaySummaryIconHash = iconHash;
 #ifdef _DEBUG
-            Log("[OutfitRegistry] summary display set developId=%u "
+            LogDebug("[OutfitRegistry] summary display set developId=%u "
                 "nameHash=0x%016llX iconHash=0x%016llX\n",
                 static_cast<unsigned>(developId),
                 static_cast<unsigned long long>(e.displaySummaryNameHash),
@@ -1950,7 +2013,7 @@ namespace outfit
         if (nameHash != 0) p.nameHash = nameHash;
         if (iconHash != 0) p.iconHash = iconHash;
 #ifdef _DEBUG
-        Log("[OutfitRegistry] summary display stashed (pending) developId=%u "
+        LogDebug("[OutfitRegistry] summary display stashed (pending) developId=%u "
             "nameHash=0x%016llX iconHash=0x%016llX\n",
             static_cast<unsigned>(developId),
             static_cast<unsigned long long>(p.nameHash),
@@ -2049,7 +2112,7 @@ namespace outfit
     {
         bool expected = true;
         if (g_BootRestoreScrubArmed.compare_exchange_strong(expected, false))
-            Log("[OutfitRegistry] BOOT-SCRUB disarmed (%s) - custom outfit "
+            LogDebug("[OutfitRegistry] BOOT-SCRUB disarmed (%s) - custom outfit "
                 "restore/resolve is live again for the rest of the session\n",
                 reason ? reason : "unspecified");
     }
@@ -2072,10 +2135,99 @@ namespace outfit
         return state ? state[0xFB] : static_cast<std::uint8_t>(0xFF);
     }
 
+    static std::atomic<std::uint16_t> g_MotionOutfitHint{ 0 };
+
+    void SetMotionOutfitHint(std::uint8_t partsType, std::uint8_t playerType)
+    {
+        g_MotionOutfitHint.store(
+            static_cast<std::uint16_t>(partsType
+                | (static_cast<std::uint16_t>(playerType) << 8)),
+            std::memory_order_relaxed);
+    }
+
+    void ClearMotionOutfitHint()
+    {
+        g_MotionOutfitHint.store(0, std::memory_order_relaxed);
+    }
+
+    std::uint8_t GetMotionOutfitHintPartsType()
+    {
+        return static_cast<std::uint8_t>(
+            g_MotionOutfitHint.load(std::memory_order_relaxed) & 0xFF);
+    }
+
+    std::uint8_t GetMotionOutfitHintPlayerType()
+    {
+        return static_cast<std::uint8_t>(
+            g_MotionOutfitHint.load(std::memory_order_relaxed) >> 8);
+    }
+
+    namespace
+    {
+        constexpr std::size_t kMaxMotionMtarOverrideHashes = 512;
+
+        struct MotionMtarOverrideHash
+        {
+            std::uint64_t hash = 0;
+            int           slot = -1;
+        };
+        MotionMtarOverrideHash   g_MotionMtarOverrideHashes[kMaxMotionMtarOverrideHashes] = {};
+        std::atomic<std::size_t> g_MotionMtarOverrideHashCount{ 0 };
+    }
+
+    void RegisterMotionMtarOverrideHash(std::uint64_t pathHash, int slot)
+    {
+        if (pathHash == 0) return;
+
+        const std::size_t count =
+            g_MotionMtarOverrideHashCount.load(std::memory_order_acquire);
+        for (std::size_t i = 0; i < count; ++i)
+            if (g_MotionMtarOverrideHashes[i].hash == pathHash)
+                return;
+
+        if (count >= kMaxMotionMtarOverrideHashes)
+        {
+            Log("[OutfitRegistry] WARN: motionMtars override hash table full "
+                "(%zu entries) - hash %016llX (slot %d) not registered; if this "
+                "archive fails to resolve from the additional-motion block the "
+                "load falls back to the vanilla archive instead of the custom one\n",
+                kMaxMotionMtarOverrideHashes, pathHash, slot);
+            return;
+        }
+
+        g_MotionMtarOverrideHashes[count].hash = pathHash;
+        g_MotionMtarOverrideHashes[count].slot = slot;
+        g_MotionMtarOverrideHashCount.store(count + 1, std::memory_order_release);
+    }
+
+    bool IsMotionMtarOverrideHash(std::uint64_t pathHash, int* outSlot)
+    {
+        if (pathHash == 0) return false;
+
+        const std::size_t count =
+            g_MotionMtarOverrideHashCount.load(std::memory_order_acquire);
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            if (g_MotionMtarOverrideHashes[i].hash == pathHash)
+            {
+                if (outSlot) *outSlot = g_MotionMtarOverrideHashes[i].slot;
+                return true;
+            }
+        }
+        return false;
+    }
+
     bool WriteLivePlayerOutfit(std::uint8_t partsType,
                                std::uint8_t selectorCode,
                                std::uint8_t playerType)
     {
+        if (partsType >= kCustomPartsTypeStart
+            && partsType <= kCustomPartsTypeEnd)
+            SetMotionOutfitHint(partsType, playerType);
+        else
+            ClearMotionOutfitHint();
+        RequestAdditionalMotionReresolve();
+
         auto* state = GetQuarkLiveState();
         if (!state) return false;
 
@@ -2355,7 +2507,7 @@ namespace outfit
             }
             else
             {
-                Log("[OutfitRegistry] vext partsType=0x%02X sourceCamo=0x%02X "
+                LogDebug("[OutfitRegistry] vext partsType=0x%02X sourceCamo=0x%02X "
                     "band (base=%d size=%u) not tail - cannot grow for pt=%u "
                     "(%u variants); %u extra dropped\n",
                     static_cast<unsigned>(vanillaPartsType),

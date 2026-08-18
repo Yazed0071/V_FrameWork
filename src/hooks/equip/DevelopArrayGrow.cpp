@@ -12,6 +12,7 @@
 
 #include "AddressSet.h"
 #include "HookUtils.h"
+#include "MissionCodeGuard.h"
 #include "DevelopArrayGrow.h"
 #include "EquipDevelop_SetEquipUndeveloped.h"
 #include "../outfit/EquipDevelopControllerImpl_GetSuitDevelopInfoIndex.h"
@@ -28,7 +29,7 @@ namespace equip
         constexpr std::uint32_t kParStride      = 0x10;
         constexpr std::uint32_t kOldAllocSize   = 0x1FFD0;
         constexpr std::uint32_t kOldCtlOff      = 0x1E028;
-        constexpr std::uint32_t kNewCtlOff      = 0x80000;
+        constexpr std::uint32_t kNewCtlOff      = 0x700000;
         constexpr std::uint32_t kCtlSize        = kOldAllocSize - kOldCtlOff;
         constexpr std::uint32_t kCtlDelta       = kNewCtlOff - kOldCtlOff;
         constexpr std::uint32_t kNewParallelOff =
@@ -155,7 +156,7 @@ namespace equip
             }
             if (!g_CaptureBackTrace)
             {
-                Log("[DevelopArrayGrow] RtlCaptureStackBackTrace unresolved - the "
+                LogDebug("[DevelopArrayGrow] RtlCaptureStackBackTrace unresolved - the "
                     "develop-scan caller cannot be identified\n");
                 return;
             }
@@ -2076,6 +2077,10 @@ namespace equip
             0x14274839D, 0x1430A6147, 0x1430B5DBE, 0x1430BA26F,
             0x1431034EF, 0x14310566B, 0x14310B923, 0x1434C8182,
             0x148C7381E, 0x149A7361C, 0x149A7CBC8,
+            0x14308066F, 0x14308C91B, 0x14308F67B, 0x14309FCCF,
+            0x1457E24E7, 0x145AAD062, 0x149C8B054, 0x149CAB88C,
+            0x149CAE708, 0x149CE09D8, 0x149CF0EF8, 0x149CF9170,
+            0x149D7C1C9,
         };
 
         const std::uintptr_t kSweepFpJp154[] = { 0 };
@@ -2102,6 +2107,7 @@ namespace equip
             std::uintptr_t blockVtblB;
             std::uintptr_t base20VtblA;
             std::uintptr_t base20VtblB;
+            std::uintptr_t edcDtor;
 
             const CtlDispSite*    ctl;
             std::size_t           ctlCount;
@@ -2127,6 +2133,7 @@ namespace equip
             0x140F6A660, 0x140F6D150,
             0x140BFF0E0,
             0x14239B460, 0x14239BCD0, 0x14239B530, 0x14239BDA0,
+            0x140F64BC0,
             tbl_en154::kCtlDispSites,
             sizeof(tbl_en154::kCtlDispSites)
                 / sizeof(tbl_en154::kCtlDispSites[0]),
@@ -2153,6 +2160,7 @@ namespace equip
             0x140F6A6C0, 0x140F6D1B0,
             0x140BFF060,
             0x14239B770, 0x14239BFE0, 0x14239B840, 0x14239C0B0,
+            0x140F64C20,
             tbl_jp154::kCtlDispSites,
             sizeof(tbl_jp154::kCtlDispSites)
                 / sizeof(tbl_jp154::kCtlDispSites[0]),
@@ -2180,6 +2188,7 @@ namespace equip
             0x1495140E0, 0x140F6D8E0,
             0x140BFF480,
             0x14239B5C0, 0x14239BE30, 0x14239B690, 0x14239BF00,
+            0,
             tbl_en153::kCtlDispSites,
             sizeof(tbl_en153::kCtlDispSites)
                 / sizeof(tbl_en153::kCtlDispSites[0]),
@@ -2204,6 +2213,7 @@ namespace equip
             0x149F2D110, 0x140F6D9E0,
             0x140BFF010,
             0x14239B5F0, 0x14239BE60, 0x14239B6C0, 0x14239BF30,
+            0,
             tbl_jp153::kCtlDispSites,
             sizeof(tbl_jp153::kCtlDispSites)
                 / sizeof(tbl_jp153::kCtlDispSites[0]),
@@ -2270,6 +2280,7 @@ namespace equip
             VerifyFailed,
             ApplyFailed,
             RacedMidPatch,
+            RetryPending,
         };
         PrePatchState g_PrePatch       = PrePatchState::NotAttempted;
         int           g_PrePatchDetail = -1;
@@ -2298,12 +2309,12 @@ namespace equip
             va_start(args, fmt);
             vsnprintf(g_PreVerifyDetail, sizeof(g_PreVerifyDetail), fmt, args);
             va_end(args);
-            Log("[DevelopArrayGrow] %s\n", g_PreVerifyDetail);
+            LogDebug("[DevelopArrayGrow] %s\n", g_PreVerifyDetail);
         }
 
         std::atomic<std::uintptr_t> g_ArmedBase20{ 0 };
 
-        constexpr std::size_t kFlagsShadowSize = 0x1000;
+        constexpr std::size_t kFlagsShadowSize = 0x10000;
         static_assert(kFlagsShadowSize >= kNewRows, "shadow must cover all rows");
         std::uint8_t  g_FlagsShadow[kFlagsShadowSize] = {};
         std::uint8_t* g_SvarsFlags = nullptr;
@@ -2312,6 +2323,7 @@ namespace equip
         std::uint8_t  g_SyncMirror[kOldRows] = {};
         std::uint32_t g_LastSyncTick   = 0;
         bool          g_SyncPullLogged = false;
+        bool          g_SyncReassertLogged = false;
 
         using BlockReset_t     = void (__fastcall*)(std::uintptr_t block);
         using SetDeveloped_t   = void (__fastcall*)(std::uintptr_t base20,
@@ -2336,7 +2348,10 @@ namespace equip
         using GetBaseId_t      = std::uint16_t (__fastcall*)(std::uintptr_t base20,
                                                              std::uint16_t row);
 
+        using EdcDtor_t = void* (__fastcall*)(void* self, unsigned int flags);
+
         BlockReset_t     g_OrigBlockReset     = nullptr;
+        EdcDtor_t        g_OrigEdcDtor        = nullptr;
         SetDeveloped_t   g_OrigSetDeveloped   = nullptr;
         SetUndeveloped_t g_OrigSetUndeveloped = nullptr;
         FindFlow_t       g_OrigFindByDevId    = nullptr;
@@ -2357,12 +2372,32 @@ namespace equip
         void*            g_HookEquipIdCount   = nullptr;
         void*            g_HookEquipIdRow     = nullptr;
         void*            g_HookGetBaseId      = nullptr;
+        void*            g_HookEdcDtor        = nullptr;
+        bool             g_DtorGuardInstalled = false;
+
+        void* __fastcall hkEdcDtorGuard(void* self, unsigned int flags)
+        {
+            __try
+            {
+                return g_OrigEdcDtor ? g_OrigEdcDtor(self, flags) : self;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                LogDebug("[DevelopArrayGrow] EquipDevelopController destructor "
+                    "faulted freeing its work buffers (the allocator is "
+                    "already torn down at process exit, or a control field "
+                    "held garbage) - swallowed so shutdown finishes instead "
+                    "of crashing at 'close game'\n");
+                return self;
+            }
+        }
 
 #define kAddr_BlockReset     (g_A->blockReset)
 #define kAddr_SetDeveloped   (g_A->setDeveloped)
 #define kAddr_SetUndeveloped (g_A->setUndeveloped)
 #define kAddr_FindByDevId    (g_A->findByDevId)
 #define kAddr_FindByEquipId  (g_A->findByEquipId)
+#define kAddr_EdcDtor        (g_A->edcDtor)
 #define kAddr_ListDevCount   (g_A->listDevCount)
 #define kAddr_ListDevFill    (g_A->listDevFill)
 #define kAddr_EquipIdCount   (g_A->equipIdCount)
@@ -2381,7 +2416,8 @@ namespace equip
         constexpr std::size_t kBase20_FlagsPtrOff = kNewCtlOff - 0x20;
         constexpr std::size_t kBase20_RecFieldOff = 0x8;
 
-        constexpr std::uint8_t kReqAnnouncedBit = 0x4;
+        constexpr std::uint8_t  kReqAnnouncedBit = 0x4;
+        constexpr std::uint32_t kFirstCustomRow  = 922;
 
         void RestoreGrownAnnouncedBits()
         {
@@ -2392,7 +2428,7 @@ namespace equip
                         return;
                     const std::uint32_t row =
                         static_cast<std::uint32_t>(flowIndex);
-                    if (row < kOldRows || row >= kNewRows)
+                    if (row < kFirstCustomRow || row >= kNewRows)
                         return;
                     g_FlagsShadow[row] |= kReqAnnouncedBit;
                 });
@@ -2409,7 +2445,7 @@ namespace equip
                         return;
                     const std::uint32_t row =
                         static_cast<std::uint32_t>(flowIndex);
-                    if (row < kOldRows || row >= kNewRows)
+                    if (row < kFirstCustomRow || row >= kNewRows)
                         return;
                     if (g_FlagsShadow[row] & kReqAnnouncedBit)
                         justAnnounced.push_back(developId);
@@ -2441,6 +2477,7 @@ namespace equip
                 g_LastSyncTick = now;
             }
             std::uint32_t pulled = 0;
+            std::uint32_t reasserted = 0;
             __try
             {
                 for (std::uint32_t i = 0; i < kOldRows; ++i)
@@ -2450,6 +2487,14 @@ namespace equip
                     if (s == h)
                     {
                         g_SyncMirror[i] = s;
+                        continue;
+                    }
+                    if (i >= kFirstCustomRow)
+                    {
+                        if (s != g_SyncMirror[i])
+                            ++reasserted;
+                        g_SvarsFlags[i] = h;
+                        g_SyncMirror[i] = h;
                         continue;
                     }
                     if (s != g_SyncMirror[i])
@@ -2467,21 +2512,35 @@ namespace equip
             }
             __except (EXCEPTION_EXECUTE_HANDLER)
             {
-                Log("[DevelopArrayGrow] flags sync: exception touching the "
+                LogDebug("[DevelopArrayGrow] flags sync: exception touching the "
                     "save develop-flag array at %p - vanilla develop state "
                     "reads stale until the next sync\n", g_SvarsFlags);
                 return;
             }
             CaptureGrownAnnouncedBits();
             if (pulled)
+            {
                 InvalidateDevelopVisibilityCache();
+                EquipDevelop_RequestDevelopRestore();
+            }
             if (pulled && !g_SyncPullLogged)
             {
                 g_SyncPullLogged = true;
-                Log("[DevelopArrayGrow] flags sync: adopted %u develop flag(s) "
+                LogDebug("[DevelopArrayGrow] flags sync: adopted %u develop flag(s) "
                     "the save load wrote into the save-var array behind the "
                     "shadow - vanilla develop progress is live again\n",
                     pulled);
+            }
+            if (reasserted && !g_SyncReassertLogged)
+            {
+                g_SyncReassertLogged = true;
+                LogDebug("[DevelopArrayGrow] flags sync: the save load rewrote %u "
+                    "custom-band develop byte(s) (rows %u..%u) behind the "
+                    "shadow - the game save cannot carry custom rows, so the "
+                    "state-file values were re-asserted instead of adopted "
+                    "(adopting them is what emptied the loadout lists of "
+                    "custom weapons)\n",
+                    reasserted, kFirstCustomRow, kOldRows - 1);
             }
         }
 
@@ -2597,14 +2656,25 @@ namespace equip
         bool RelocateCloneCtlSites(const std::size_t* failed,
                                    std::size_t nFailed)
         {
-            const CtlDispSite& f0 = kCtlDispSites[failed[0]];
+            std::size_t order[16];
+            for (std::size_t i = 0; i < nFailed; ++i)
+                order[i] = failed[i];
+            for (std::size_t i = 1; i < nFailed; ++i)
+                for (std::size_t j = i;
+                     j > 0 && kCtlDispSites[order[j - 1]].addr
+                              > kCtlDispSites[order[j]].addr; --j)
+                {
+                    const std::size_t t = order[j];
+                    order[j]            = order[j - 1];
+                    order[j - 1]        = t;
+                }
+
             const std::uint8_t* base = reinterpret_cast<const std::uint8_t*>(
                 GetModuleHandleW(nullptr));
             if (!base)
                 return false;
 
-            std::intptr_t deltas[4] = {};
-            std::size_t   nDeltas   = 0;
+            std::uintptr_t placed[16] = {};
             __try
             {
                 const IMAGE_DOS_HEADER* dos =
@@ -2615,69 +2685,118 @@ namespace equip
                 const std::uint8_t* end =
                     base + nt->OptionalHeader.SizeOfImage;
 
-                MEMORY_BASIC_INFORMATION mbi;
-                const std::uint8_t* p = base;
-                while (p < end
-                       && VirtualQuery(p, &mbi, sizeof(mbi)) == sizeof(mbi))
+                std::size_t g0 = 0;
+                while (g0 < nFailed)
                 {
-                    const std::uint8_t* rBeg =
-                        static_cast<const std::uint8_t*>(mbi.BaseAddress);
-                    const std::uint8_t* rEnd = rBeg + mbi.RegionSize;
-                    if (rEnd > end)
-                        rEnd = end;
-                    const bool scannable =
-                        mbi.State == MEM_COMMIT
-                        && (mbi.Protect
-                            & (PAGE_EXECUTE | PAGE_EXECUTE_READ
-                               | PAGE_EXECUTE_READWRITE
-                               | PAGE_EXECUTE_WRITECOPY)) != 0;
-                    if (scannable && rEnd - rBeg >= 8)
+                    std::size_t g1 = g0 + 1;
+                    while (g1 < nFailed
+                           && kCtlDispSites[order[g1]].addr
+                              - kCtlDispSites[order[g1 - 1]].addr <= 0x1000)
+                        ++g1;
+
+                    const CtlDispSite& f0 = kCtlDispSites[order[g0]];
+                    std::uintptr_t best[16] = {};
+                    std::size_t    nComplete = 0;
+
+                    MEMORY_BASIC_INFORMATION mbi;
+                    const std::uint8_t* p = base;
+                    while (p < end
+                           && VirtualQuery(p, &mbi, sizeof(mbi))
+                              == sizeof(mbi))
                     {
-                        for (const std::uint8_t* q = rBeg;
-                             q + 4 <= rEnd; ++q)
+                        const std::uint8_t* rBeg =
+                            static_cast<const std::uint8_t*>(
+                                mbi.BaseAddress);
+                        const std::uint8_t* rEnd = rBeg + mbi.RegionSize;
+                        if (rEnd > end)
+                            rEnd = end;
+                        const bool scannable =
+                            mbi.State == MEM_COMMIT
+                            && (mbi.Protect
+                                & (PAGE_EXECUTE | PAGE_EXECUTE_READ
+                                   | PAGE_EXECUTE_READWRITE
+                                   | PAGE_EXECUTE_WRITECOPY)) != 0;
+                        if (scannable && rEnd - rBeg >= 8)
                         {
-                            if (q[2] != 0x01 || q[3] != 0x00)
-                                continue;
-                            std::uint32_t v = 0;
-                            std::memcpy(&v, q, 4);
-                            if (v != f0.oldDisp)
-                                continue;
-                            const std::uintptr_t va =
-                                0x140000000ull
-                                + static_cast<std::uintptr_t>(q - base);
-                            const int offLo =
-                                f0.dispOff != 0xFF ? f0.dispOff : 1;
-                            const int offHi =
-                                f0.dispOff != 0xFF ? f0.dispOff : f0.maxOff;
-                            for (int off = offLo; off <= offHi; ++off)
+                            for (const std::uint8_t* q = rBeg;
+                                 q + 4 <= rEnd; ++q)
                             {
-                                const std::intptr_t d =
-                                    static_cast<std::intptr_t>(va - off)
-                                    - static_cast<std::intptr_t>(f0.addr);
-                                if (d == 0)
+                                if (q[2] != 0x01 || q[3] != 0x00)
                                     continue;
-                                bool dup = false;
-                                for (std::size_t k = 0; k < nDeltas; ++k)
-                                    if (deltas[k] == d)
-                                        dup = true;
-                                if (dup)
+                                std::uint32_t v = 0;
+                                std::memcpy(&v, q, 4);
+                                if (v != f0.oldDisp)
                                     continue;
-                                bool all = true;
-                                for (std::size_t k = 0; k < nFailed && all;
-                                     ++k)
-                                    all = VerifyCtlSiteAt(
-                                        failed[k],
-                                        kCtlDispSites[failed[k]].addr + d,
-                                        true);
-                                if (!all)
-                                    continue;
-                                if (nDeltas < 4)
-                                    deltas[nDeltas] = d;
-                                ++nDeltas;
+                                const std::uintptr_t qva =
+                                    0x140000000ull
+                                    + static_cast<std::uintptr_t>(q - base);
+                                const int offLo =
+                                    f0.dispOff != 0xFF ? f0.dispOff : 1;
+                                const int offHi =
+                                    f0.dispOff != 0xFF ? f0.dispOff
+                                                       : f0.maxOff;
+                                for (int off = offLo; off <= offHi; ++off)
+                                {
+                                    const std::uintptr_t anchor = qva - off;
+                                    if (anchor == f0.addr)
+                                        continue;
+                                    if (!VerifyCtlSiteAt(order[g0], anchor,
+                                                         true))
+                                        continue;
+                                    std::uintptr_t cur[16];
+                                    cur[0] = anchor;
+                                    bool ok = true;
+                                    for (std::size_t gi = g0 + 1;
+                                         gi < g1 && ok; ++gi)
+                                    {
+                                        const std::uintptr_t expect =
+                                            anchor
+                                            + (kCtlDispSites[order[gi]].addr
+                                               - f0.addr);
+                                        std::uintptr_t found = 0;
+                                        for (std::uintptr_t c =
+                                                 expect - 0x80;
+                                             c <= expect + 0x80; ++c)
+                                        {
+                                            if (c <= cur[gi - g0 - 1])
+                                                continue;
+                                            if (VerifyCtlSiteAt(order[gi],
+                                                                c, true))
+                                            {
+                                                found = c;
+                                                break;
+                                            }
+                                        }
+                                        if (!found)
+                                            ok = false;
+                                        else
+                                            cur[gi - g0] = found;
+                                    }
+                                    if (!ok)
+                                        continue;
+                                    if (nComplete == 0)
+                                        for (std::size_t k = 0;
+                                             k < g1 - g0; ++k)
+                                            best[k] = cur[k];
+                                    ++nComplete;
+                                }
                             }
                         }
+                        p = rEnd < end ? rEnd : end;
                     }
-                    p = rEnd < end ? rEnd : end;
+
+                    if (nComplete != 1)
+                    {
+                        NoteVerifyFail(
+                            "clone relocation: %zu candidate placements for "
+                            "a %zu-site moved clone block (need exactly 1) "
+                            "- the clone table must be re-ported by hand",
+                            nComplete, g1 - g0);
+                        return false;
+                    }
+                    for (std::size_t k = 0; k < g1 - g0; ++k)
+                        placed[g0 + k] = best[k];
+                    g0 = g1;
                 }
             }
             __except (EXCEPTION_EXECUTE_HANDLER)
@@ -2687,36 +2806,45 @@ namespace equip
                 return false;
             }
 
-            if (nDeltas != 1)
+            const std::uintptr_t firstOld = kCtlDispSites[order[0]].addr;
+            for (std::size_t i = 0; i < nFailed; ++i)
             {
-                NoteVerifyFail("clone relocation: %zu candidate deltas for "
-                               "%zu moved ctl sites (need exactly 1) - the "
-                               "clone table must be re-ported by hand",
-                               nDeltas, nFailed);
-                return false;
-            }
-
-            for (std::size_t k = 0; k < nFailed; ++k)
-            {
-                g_CtlMut[failed[k]].addr += deltas[0];
-                if (!VerifyCtlSiteAt(failed[k],
-                                     kCtlDispSites[failed[k]].addr, false))
+                const std::intptr_t d =
+                    static_cast<std::intptr_t>(placed[i])
+                    - static_cast<std::intptr_t>(
+                        kCtlDispSites[order[i]].addr);
+                g_CtlMut[order[i]].addr = placed[i];
+                if (!VerifyCtlSiteAt(order[i],
+                                     kCtlDispSites[order[i]].addr, false))
                     return false;
+                bool dup = false;
+                for (std::size_t k = 0; k < g_CloneDeltaCount; ++k)
+                    if (g_CloneDelta[k] == d)
+                        dup = true;
+                if (!dup && g_CloneDeltaCount < 4)
+                    g_CloneDelta[g_CloneDeltaCount++] = d;
             }
-            if (g_CloneDeltaCount < 4)
-                g_CloneDelta[g_CloneDeltaCount++] = deltas[0];
-            Log("[DevelopArrayGrow] %zu Arxan clone ctl site(s) moved by this "
-                "game update - relocated by %+lld bytes (first now 0x%llX) "
-                "and byte-verified; the grow proceeds without a hand re-port\n",
-                nFailed, static_cast<long long>(deltas[0]),
-                static_cast<unsigned long long>(
-                    kCtlDispSites[failed[0]].addr));
+            Log("[DevelopArrayGrow] %zu Arxan clone ctl site(s) re-laid by "
+                "this game update - relocated per-site (0x%llX -> 0x%llX) "
+                "and byte-verified; the grow proceeds without a hand "
+                "re-port\n",
+                nFailed,
+                static_cast<unsigned long long>(firstOld),
+                static_cast<unsigned long long>(placed[0]));
             return true;
         }
 
         constexpr std::uint32_t kSweepValLo = 0x1A008;
         constexpr std::uint32_t kSweepValHi = 0x1FFD0;
         constexpr int           kSweepReportCap = 64;
+
+        struct SweepFind
+        {
+            std::uintptr_t va;
+            std::uint32_t  disp;
+        };
+        SweepFind g_SweepUnknown[kSweepReportCap];
+        int       g_SweepUnknownCount = 0;
 
         bool           g_SweepValue[kSweepValHi - kSweepValLo] = {};
         std::uintptr_t g_SweepAllow[600];
@@ -2740,9 +2868,10 @@ namespace equip
             return false;
         }
 
-        bool SweepImageForUnknownSites()
+        bool SweepImageForUnknownSites(bool quiet = false)
         {
             g_SweepAllowCount = 0;
+            g_SweepUnknownCount = 0;
             for (std::size_t i = 0; i < kCtlSiteCount; ++i)
             {
                 g_SweepValue[kCtlDispSites[i].oldDisp - kSweepValLo] = true;
@@ -2829,18 +2958,50 @@ namespace equip
                                 ++benign;
                                 continue;
                             }
-                            if (unknown == 0)
+                            bool detourTail = false;
+                            for (int k = 1; k <= 4 && !detourTail; ++k)
+                            {
+                                if (q - k < rBeg)
+                                    break;
+                                if (q[-k] != 0xE9 && q[-k] != 0xE8)
+                                    continue;
+                                std::int32_t rel = 0;
+                                std::memcpy(&rel, q - k + 1, 4);
+                                const std::uintptr_t next =
+                                    0x140000000ull
+                                    + static_cast<std::uintptr_t>(
+                                        (q - k + 5) - base);
+                                const std::uintptr_t tgt = next
+                                    + static_cast<std::uintptr_t>(
+                                        static_cast<std::intptr_t>(rel));
+                                if (tgt < 0x140000000ull
+                                    || tgt >= 0x140000000ull
+                                        + nt->OptionalHeader.SizeOfImage)
+                                    detourTail = true;
+                            }
+                            if (detourTail)
+                            {
+                                ++benign;
+                                continue;
+                            }
+                            if (unknown == 0 && !quiet)
                                 NoteVerifyFail(
                                     "image sweep: unknown develop-field "
                                     "reference at %p (disp 0x%X) - an "
                                     "unpatched code copy exists",
                                     reinterpret_cast<const void*>(va), v);
                             if (unknown < kSweepReportCap)
-                                Log("[DevelopArrayGrow] sweep unknown site "
-                                    "%d: 0x%llX disp 0x%X prot 0x%X\n",
-                                    unknown + 1,
-                                    static_cast<unsigned long long>(va),
-                                    v, static_cast<unsigned>(mbi.Protect));
+                            {
+                                if (!quiet)
+                                    LogDebug("[DevelopArrayGrow] sweep unknown "
+                                        "site %d: 0x%llX disp 0x%X prot "
+                                        "0x%X\n",
+                                        unknown + 1,
+                                        static_cast<unsigned long long>(va),
+                                        v, static_cast<unsigned>(mbi.Protect));
+                                g_SweepUnknown[unknown] = SweepFind{ va, v };
+                                g_SweepUnknownCount = unknown + 1;
+                            }
                             ++unknown;
                         }
                     }
@@ -2853,11 +3014,11 @@ namespace equip
                                "game image");
                 return false;
             }
-            if (unknown > kSweepReportCap)
-                Log("[DevelopArrayGrow] sweep found %d unknown sites, only "
+            if (unknown > kSweepReportCap && !quiet)
+                LogDebug("[DevelopArrayGrow] sweep found %d unknown sites, only "
                     "the first %d are listed\n", unknown, kSweepReportCap);
-            if (unknown != 0 && benign != 0)
-                Log("[DevelopArrayGrow] sweep also skipped %d match(es) in "
+            if (unknown != 0 && benign != 0 && !quiet)
+                LogDebug("[DevelopArrayGrow] sweep also skipped %d match(es) in "
                     "non-executable memory (data coincidences, not code)\n",
                     benign);
             return unknown == 0;
@@ -2914,7 +3075,7 @@ namespace equip
                                    : 0;
             if (n > kSiblingListCap)
             {
-                Log("[DevelopArrayGrow] develop row %u has %u same-group rows; "
+                LogDebug("[DevelopArrayGrow] develop row %u has %u same-group rows; "
                     "the engine collects them into a fixed 1024-entry stack "
                     "array, so the count is clamped - siblings past 1024 are "
                     "not retired when a higher grade is developed, which "
@@ -2931,7 +3092,7 @@ namespace equip
                 && g_VisArmed
                 && g_VisThread == GetCurrentThreadId())
             {
-                Log("[DevelopArrayGrow] the develop variant-chain walk has run "
+                LogDebug("[DevelopArrayGrow] the develop variant-chain walk has run "
                     "200000 times in one list build - a normal build is a few "
                     "hundred, so an end sentinel is not being reached; caller "
                     "chain follows\n");
@@ -2940,11 +3101,31 @@ namespace equip
             return n;
         }
 
+        bool CustomRowLive(const void* self, std::uint16_t row)
+        {
+            __try
+            {
+                const std::uint8_t* rec =
+                    static_cast<const std::uint8_t*>(self)
+                    + static_cast<std::size_t>(row) * kRecStride;
+                return *reinterpret_cast<const std::uint16_t*>(rec + 0x8) != 0;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                return false;
+            }
+        }
+
         bool __fastcall hkIsVisible(void* self, std::uint16_t row)
         {
             ++g_VisWinCalls;
             if (outfit::IsDevelopHidden(row))
                 return false;
+            if (row >= kFirstCustomRow && row < kNewRows
+                && !IsReservedFlowRow(row)
+                && !MissionCodeGuard::ShouldBypassHooks()
+                && CustomRowLive(self, row))
+                return true;
             if (row >= kNewRows || g_VisThread != GetCurrentThreadId())
                 return g_OrigIsVisible ? g_OrigIsVisible(self, row) : false;
 
@@ -3023,7 +3204,7 @@ namespace equip
             for (const ByteFix& f : kSiblingLoopFixes)
                 if (WriteByteFix(f, f.oldBytes))
                     ++reverted;
-            Log("[DevelopArrayGrow] REVERTED (%s): %d site(s) restored - "
+            LogDebug("[DevelopArrayGrow] REVERTED (%s): %d site(s) restored - "
                 "develop bound back at 1024 rows this session\n",
                 why, reverted);
         }
@@ -3032,7 +3213,7 @@ namespace equip
         {
             g_Active = false;
             g_ArmedBase20.store(0, std::memory_order_relaxed);
-            Log("[DevelopArrayGrow] CRITICAL (%s): grown band deactivated - "
+            LogDebug("[DevelopArrayGrow] CRITICAL (%s): grown band deactivated - "
                 "DLL-side use of rows >= 1024 stops now; restart the game "
                 "before developing anything\n", why);
         }
@@ -3056,20 +3237,56 @@ namespace equip
             return true;
         }
 
+        std::atomic<std::uint32_t> g_GunsmithClaimMask{ 0 };
+
+        void ClaimReservedRows(std::uintptr_t block)
+        {
+            std::uint32_t mask = 0;
+            for (std::uint32_t row = kGunsmithFlowFirst;
+                 row <= kFlowSentinel; ++row)
+            {
+                std::uint8_t* rec = reinterpret_cast<std::uint8_t*>(
+                    block + 0x28
+                    + static_cast<std::size_t>(row) * kRecStride);
+                const std::uint16_t word0 =
+                    *reinterpret_cast<std::uint16_t*>(rec);
+                if (word0 != 0 && word0 != 0xFFFF)
+                {
+                    static std::atomic<int> s_occupied{ 0 };
+                    if (s_occupied.fetch_add(1, std::memory_order_relaxed) < 4)
+                        Log("[DevelopArrayGrow] WARNING: develop row %u already "
+                            "holds a live record (developId=%u) - the loadout "
+                            "commit hard-maps rows 0x3FD-0x3FF to the gunsmith "
+                            "equips 871/873/875, so this row is left to the game "
+                            "instead of being reserved; if a custom weapon ends "
+                            "up on it, picking that weapon equips a gunsmith "
+                            "pseudo-weapon\n",
+                            row, static_cast<unsigned>(word0));
+                    continue;
+                }
+                if (word0 != 0xFFFF)
+                {
+                    std::memset(rec, 0, kRecStride);
+                    *reinterpret_cast<std::uint16_t*>(rec) = 0xFFFF;
+                    rec[0x36] = 0xFF;
+                }
+                if (row != kFlowSentinel)
+                    mask |= 1u << (row - kGunsmithFlowFirst);
+            }
+            g_GunsmithClaimMask.store(mask, std::memory_order_relaxed);
+        }
+
         void ArmFromBase20(std::uintptr_t base20)
         {
             __try
             {
                 const std::uintptr_t block = base20 - 0x20;
-                std::uint8_t* sentinelRec = reinterpret_cast<std::uint8_t*>(
-                    block + 0x28
-                    + static_cast<std::size_t>(kFlowSentinel) * kRecStride);
                 std::uint8_t** slot = reinterpret_cast<std::uint8_t**>(
                     block + kBlock_FlagsPtrOff);
 
                 if (!ProbeGrownRowsClean(base20))
                 {
-                    Log("[DevelopArrayGrow] CRITICAL: rows 1024..%u of develop "
+                    LogDebug("[DevelopArrayGrow] CRITICAL: rows 1024..%u of develop "
                         "block %p hold foreign data (the block predates the "
                         "grow patches) - refusing to use the grown band\n",
                         kNewRows - 1, reinterpret_cast<void*>(block));
@@ -3077,12 +3294,7 @@ namespace equip
                     return;
                 }
 
-                if (*reinterpret_cast<std::uint16_t*>(sentinelRec) != 0xFFFF)
-                {
-                    std::memset(sentinelRec, 0, kRecStride);
-                    *reinterpret_cast<std::uint16_t*>(sentinelRec) = 0xFFFF;
-                    sentinelRec[0x36] = 0xFF;
-                }
+                ClaimReservedRows(block);
 
                 std::uint8_t* svarsFlags = *slot;
                 if (!svarsFlags)
@@ -3105,10 +3317,10 @@ namespace equip
                     InvalidateDevelopVisibilityCache();
                     InvalidateDevelopLookupIndex();
                     EquipDevelop_RequestDevelopRestore();
-                    Log("[DevelopArrayGrow] develop block %p armed at first "
+                    LogDebug("[DevelopArrayGrow] develop block %p armed at first "
                         "use (its reset ran before the hooks went live): "
-                        "flags shadow bound (svars=%p), sentinel row 0x400 "
-                        "claimed\n",
+                        "flags shadow bound (svars=%p), reserved rows "
+                        "0x3FD-0x400 claimed\n",
                         reinterpret_cast<void*>(block), svarsFlags);
                 }
                 else if (!g_BlockSeen)
@@ -3119,7 +3331,7 @@ namespace equip
             }
             __except (EXCEPTION_EXECUTE_HANDLER)
             {
-                Log("[DevelopArrayGrow] ArmFromBase20: exception probing the "
+                LogDebug("[DevelopArrayGrow] ArmFromBase20: exception probing the "
                     "develop block - grown rows stay unarmed this pass\n");
             }
         }
@@ -3142,12 +3354,7 @@ namespace equip
             g_OrigBlockReset(block);
             __try
             {
-                std::uint8_t* sentinelRec = reinterpret_cast<std::uint8_t*>(
-                    block + 0x28
-                    + static_cast<std::size_t>(kFlowSentinel) * kRecStride);
-                std::memset(sentinelRec, 0, kRecStride);
-                *reinterpret_cast<std::uint16_t*>(sentinelRec) = 0xFFFF;
-                sentinelRec[0x36] = 0xFF;
+                ClaimReservedRows(block);
 
                 std::uint8_t** slot = reinterpret_cast<std::uint8_t**>(
                     block + kBlock_FlagsPtrOff);
@@ -3170,13 +3377,13 @@ namespace equip
                 InvalidateDevelopVisibilityCache();
                 InvalidateDevelopLookupIndex();
                 EquipDevelop_RequestDevelopRestore();
-                Log("[DevelopArrayGrow] develop block reset: flags shadow "
-                    "re-armed (svars=%p rows=%u), sentinel row 0x400 "
+                LogDebug("[DevelopArrayGrow] develop block reset: flags shadow "
+                    "re-armed (svars=%p rows=%u), reserved rows 0x3FD-0x400 "
                     "pre-claimed\n", svarsFlags, kNewRows);
             }
             __except (EXCEPTION_EXECUTE_HANDLER)
             {
-                Log("[DevelopArrayGrow] hkBlockReset: exception re-arming "
+                LogDebug("[DevelopArrayGrow] hkBlockReset: exception re-arming "
                     "the flags shadow\n");
             }
         }
@@ -3185,13 +3392,13 @@ namespace equip
         {
             if (idx >= equip::NativeFlowBound())
             {
-                Log("[DevelopArrayGrow] SetEquipDeveloped REFUSED garbage "
+                LogDebug("[DevelopArrayGrow] SetEquipDeveloped REFUSED garbage "
                     "index %u (bound %u)\n", idx, equip::NativeFlowBound());
                 return;
             }
             if (idx >= kOldRows && !GrownRowFlagsBound(base20))
             {
-                Log("[DevelopArrayGrow] SetEquipDeveloped REFUSED grown index "
+                LogDebug("[DevelopArrayGrow] SetEquipDeveloped REFUSED grown index "
                     "%u: the flags shadow is not bound - writing would land "
                     "in the online develop array\n", idx);
                 return;
@@ -3209,13 +3416,13 @@ namespace equip
         {
             if (idx >= equip::NativeFlowBound())
             {
-                Log("[DevelopArrayGrow] SetEquipUndeveloped REFUSED garbage "
+                LogDebug("[DevelopArrayGrow] SetEquipUndeveloped REFUSED garbage "
                     "index %u (bound %u)\n", idx, equip::NativeFlowBound());
                 return;
             }
             if (idx >= kOldRows && !GrownRowFlagsBound(base20))
             {
-                Log("[DevelopArrayGrow] SetEquipUndeveloped REFUSED grown "
+                LogDebug("[DevelopArrayGrow] SetEquipUndeveloped REFUSED grown "
                     "index %u: the flags shadow is not bound - writing would "
                     "land in the online develop array\n", idx);
                 return;
@@ -3230,8 +3437,9 @@ namespace equip
         constexpr std::uint32_t kEquipIdSlots = 0x1000;
         constexpr std::uint64_t kLookupTtlMs  = 16;
 
-        std::uint16_t  g_DevIdRow[kDevIdSlots]     = {};
-        std::uint16_t  g_EquipIdRow[kEquipIdSlots] = {};
+        std::uint16_t  g_DevIdRow[kDevIdSlots]          = {};
+        std::uint16_t  g_EquipIdRow[kEquipIdSlots]      = {};
+        std::uint16_t  g_EquipIdRowManaged[kEquipIdSlots] = {};
         bool           g_LookupValid  = false;
         std::uintptr_t g_LookupBase   = 0;
         std::uint32_t  g_LookupBound  = 0;
@@ -3241,15 +3449,20 @@ namespace equip
         std::uint64_t  g_FindIndexed  = 0;
         std::uint64_t  g_FindStale    = 0;
 
+        std::uint64_t g_VanIdentityBits[kEquipIdSlots / 64] = {};
+        bool          g_VanIdentityDirty = false;
+
         void BuildLookupIndex(std::uintptr_t base20, std::uint32_t bound)
         {
             std::memset(g_DevIdRow, 0xFF, sizeof(g_DevIdRow));
             std::memset(g_EquipIdRow, 0xFF, sizeof(g_EquipIdRow));
+            std::memset(g_EquipIdRowManaged, 0xFF, sizeof(g_EquipIdRowManaged));
+            std::uint64_t vanBits[kEquipIdSlots / 64] = {};
             const std::uint8_t* base =
                 reinterpret_cast<const std::uint8_t*>(base20);
             for (std::uint32_t i = 0; i < bound; ++i)
             {
-                if (i == kFlowSentinel)
+                if (IsReservedFlowRow(i))
                     continue;
                 const std::uint8_t* rec =
                     base + static_cast<std::size_t>(i) * kRecStride;
@@ -3261,6 +3474,18 @@ namespace equip
                     *reinterpret_cast<const std::uint16_t*>(rec + 0xC) >> 4);
                 if (eqp < kEquipIdSlots && g_EquipIdRow[eqp] == 0xFFFF)
                     g_EquipIdRow[eqp] = static_cast<std::uint16_t>(i);
+                if (eqp != 0 && eqp < kEquipIdSlots)
+                {
+                    if (i < kFirstCustomRow)
+                        vanBits[eqp >> 6] |= 1ull << (eqp & 63);
+                    else if (g_EquipIdRowManaged[eqp] == 0xFFFF)
+                        g_EquipIdRowManaged[eqp] = static_cast<std::uint16_t>(i);
+                }
+            }
+            if (std::memcmp(vanBits, g_VanIdentityBits, sizeof(vanBits)) != 0)
+            {
+                std::memcpy(g_VanIdentityBits, vanBits, sizeof(vanBits));
+                g_VanIdentityDirty = true;
             }
             g_LookupBase  = base20;
             g_LookupBound = bound;
@@ -3269,12 +3494,32 @@ namespace equip
             ++g_LookupBuilds;
         }
 
+        void PushVanillaIdentityIds()
+        {
+            if (!g_VanIdentityDirty)
+                return;
+            g_VanIdentityDirty = false;
+            std::vector<std::int32_t> ids;
+            ids.reserve(512);
+            for (std::uint32_t w = 0; w < kEquipIdSlots / 64; ++w)
+            {
+                if (g_VanIdentityBits[w] == 0)
+                    continue;
+                for (std::uint32_t b = 0; b < 64; ++b)
+                    if (g_VanIdentityBits[w] & (1ull << b))
+                        ids.push_back(static_cast<std::int32_t>(w * 64 + b));
+            }
+            if (ids.size() < 64)
+                return;
+            V_FrameWorkState::SetVanillaIdentityEquipIds(ids.data(), ids.size());
+        }
+
         std::uint32_t g_LookupProbe = 0;
 
         bool RecordFieldAt(std::uintptr_t base20, std::uint16_t row,
                            bool equipField, std::uint16_t& out)
         {
-            if (row >= equip::NativeFlowBound() || row == kFlowSentinel)
+            if (row >= equip::NativeFlowBound() || IsReservedFlowRow(row))
                 return false;
             __try
             {
@@ -3314,6 +3559,7 @@ namespace equip
                 g_LookupValid = false;
                 return false;
             }
+            PushVanillaIdentityIds();
             return true;
         }
 
@@ -3357,7 +3603,7 @@ namespace equip
                 reinterpret_cast<const std::uint8_t*>(base20);
             for (std::uint32_t i = 0; i < equip::NativeFlowBound(); ++i)
             {
-                if (i == kFlowSentinel)
+                if (IsReservedFlowRow(i))
                     continue;
                 if (*reinterpret_cast<const std::uint16_t*>(
                         base + static_cast<std::size_t>(i) * kRecStride
@@ -3373,6 +3619,19 @@ namespace equip
             if (equipId == 0)
                 return kFlowSentinel;
             ++g_FindCalls;
+            if (equipId < kEquipIdSlots
+                && !MissionCodeGuard::ShouldBypassHooks()
+                && V_FrameWorkState::IsClaimedEquipId(
+                       static_cast<std::int32_t>(equipId))
+                && EnsureLookupIndex(base20))
+            {
+                const std::uint16_t mrow = g_EquipIdRowManaged[equipId];
+                std::uint16_t live = 0;
+                if (mrow != 0xFFFF
+                    && RecordFieldAt(base20, mrow, true, live)
+                    && live == equipId)
+                    return mrow;
+            }
             std::uint16_t served = 0;
             if (equipId < kEquipIdSlots
                 && ServeFromIndex(base20, equipId, true, served))
@@ -3384,7 +3643,7 @@ namespace equip
                 reinterpret_cast<const std::uint8_t*>(base20);
             for (std::uint32_t i = 0; i < equip::NativeFlowBound(); ++i)
             {
-                if (i == kFlowSentinel)
+                if (IsReservedFlowRow(i))
                     continue;
                 const std::uint16_t packed =
                     *reinterpret_cast<const std::uint16_t*>(
@@ -3431,7 +3690,7 @@ namespace equip
                 std::uint32_t n = 0;
                 for (std::uint32_t i = 0; i < kNewRows; ++i)
                 {
-                    if (i == kFlowSentinel)
+                    if (IsReservedFlowRow(i))
                         continue;
                     if (RowQualifiesForList(base20, i))
                         ++n;
@@ -3444,7 +3703,7 @@ namespace equip
                     if (!logged)
                     {
                         logged = true;
-                        Log("[DevelopArrayGrow] menu candidate count %u "
+                        LogDebug("[DevelopArrayGrow] menu candidate count %u "
                             "exceeds the native 1024-entry list buffer - "
                             "clamped, items past the cap will not list\n", n);
                     }
@@ -3454,7 +3713,7 @@ namespace equip
             }
             __except (EXCEPTION_EXECUTE_HANDLER)
             {
-                Log("[DevelopArrayGrow] hkListDevCount: exception scanning "
+                LogDebug("[DevelopArrayGrow] hkListDevCount: exception scanning "
                     "grown rows - falling back to the native 1024 scan\n");
                 return g_OrigListDevCount(base20);
             }
@@ -3477,7 +3736,7 @@ namespace equip
                 std::uint16_t w = 0;
                 for (std::uint32_t i = 0; i < kNewRows && w < maxCount; ++i)
                 {
-                    if (i == kFlowSentinel)
+                    if (IsReservedFlowRow(i))
                         continue;
                     if (RowQualifiesForList(base20, i))
                         outBuf[w++] = static_cast<std::uint16_t>(i);
@@ -3487,7 +3746,7 @@ namespace equip
             }
             __except (EXCEPTION_EXECUTE_HANDLER)
             {
-                Log("[DevelopArrayGrow] hkListDevFill: exception scanning "
+                LogDebug("[DevelopArrayGrow] hkListDevFill: exception scanning "
                     "grown rows - falling back to the native 1024 scan\n");
                 g_OrigListDevFill(base20, maxCount, outBuf);
             }
@@ -3573,17 +3832,17 @@ namespace equip
                                              std::uint16_t row)
         {
             if (row >= static_cast<std::uint16_t>(kNewRows)
-                || row == kFlowSentinel)
+                || IsReservedFlowRow(row))
                 return kFlowSentinel;
             const std::uint16_t parent = g_OrigGetBaseId(base20, row);
             if (parent >= static_cast<std::uint16_t>(kNewRows)
-                || parent == kFlowSentinel)
+                || IsReservedFlowRow(parent))
                 return kFlowSentinel;
             if (parent == row)
             {
                 static std::atomic<int> s_selfParent{ 0 };
                 if (s_selfParent.fetch_add(1, std::memory_order_relaxed) < 4)
-                    Log("[DevelopArrayGrow] develop row %u resolves to ITSELF as "
+                    LogDebug("[DevelopArrayGrow] develop row %u resolves to ITSELF as "
                         "its parent - reported as no-parent instead, because the "
                         "menu's parent walk follows this chain until it hits the "
                         "sentinel and a self-reference would hang it\n",
@@ -3731,6 +3990,406 @@ namespace equip
         using QuarkAlloc_t = void* (__fastcall*)(std::uint64_t size,
                                                  std::uint32_t align,
                                                  std::uint32_t flags);
+
+        QuarkAlloc_t g_OrigQuarkAlloc      = nullptr;
+        void*        g_HookQuarkAlloc      = nullptr;
+        bool         g_AllocGuardInstalled = false;
+
+        void* __fastcall hkQuarkBlockAlloc(std::uint64_t size,
+                                           std::uint32_t align,
+                                           std::uint32_t flags)
+        {
+            std::uint64_t realSize = size;
+            if (size == kOldAllocSize && align == 0x10 && flags == 0x3002C)
+            {
+                realSize = kNewAllocSize;
+                LogDebug("[DevelopArrayGrow] CRITICAL: a develop-block-sized "
+                    "allocation still asked for the OLD size 0x%X after the "
+                    "size patch was applied - the game's protector restored "
+                    "original bytes somewhere; the allocation is grown to "
+                    "0x%X here so a 4096-row init cannot overrun it\n",
+                    kOldAllocSize, kNewAllocSize);
+            }
+            void* p = g_OrigQuarkAlloc(realSize, align, flags);
+            if (p && realSize == kNewAllocSize && align == 0x10
+                && flags == 0x3002C)
+                std::memset(p, 0, kNewAllocSize);
+            return p;
+        }
+
+        bool TryReadU32(std::uintptr_t va, std::uint32_t off,
+                        std::uint32_t& out)
+        {
+            const std::uint8_t* addr = reinterpret_cast<const std::uint8_t*>(
+                ResolveGameAddress(va));
+            if (!addr)
+                return false;
+            __try
+            {
+                std::memcpy(&out, addr + off, 4);
+                return true;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                return false;
+            }
+        }
+
+        bool TryReadBytes(std::uintptr_t va, void* out, std::size_t n)
+        {
+            const std::uint8_t* addr = reinterpret_cast<const std::uint8_t*>(
+                ResolveGameAddress(va));
+            if (!addr)
+                return false;
+            __try
+            {
+                std::memcpy(out, addr, n);
+                return true;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                return false;
+            }
+        }
+
+        struct HealedSite
+        {
+            std::uint8_t  cls;
+            std::uint16_t idx;
+        };
+        constexpr std::size_t kMaxHealed = 600;
+
+        void RepairHealedPatches()
+        {
+            static HealedSite healed[kMaxHealed];
+            std::size_t nHealed        = 0;
+            int         nForeign       = 0;
+            std::uintptr_t foreignAddr = 0;
+            std::uint32_t  foreignVal  = 0;
+            const char*    foreignWhat = nullptr;
+
+            for (std::size_t i = 0; i < kPatchCount && nHealed < kMaxHealed;
+                 ++i)
+            {
+                const ImmPatch& p = kPatches[i];
+                if (!p.addr)
+                    continue;
+                std::uint32_t v = 0;
+                if (!TryReadU32(p.addr, p.opLen, v))
+                    continue;
+                if (v == p.oldImm)
+                    healed[nHealed++] =
+                        { 0, static_cast<std::uint16_t>(i) };
+                else if (v != p.newImm)
+                {
+                    if (nForeign++ == 0)
+                    {
+                        foreignAddr = p.addr;
+                        foreignVal  = v;
+                        foreignWhat = p.what;
+                    }
+                }
+            }
+            for (std::size_t i = 0; i < kCtlSiteCount && nHealed < kMaxHealed;
+                 ++i)
+            {
+                std::uint32_t v = 0;
+                if (!TryReadU32(kCtlDispSites[i].addr, g_CtlDispOff[i], v))
+                    continue;
+                if (v == kCtlDispSites[i].oldDisp)
+                    healed[nHealed++] =
+                        { 1, static_cast<std::uint16_t>(i) };
+                else if (v != kCtlDispSites[i].oldDisp + kCtlDelta)
+                {
+                    if (nForeign++ == 0)
+                    {
+                        foreignAddr = kCtlDispSites[i].addr;
+                        foreignVal  = v;
+                        foreignWhat = "ctl disp";
+                    }
+                }
+            }
+            for (std::size_t i = 0;
+                 i < kBoundSiteCount && nHealed < kMaxHealed; ++i)
+            {
+                std::uint32_t v = 0;
+                if (!TryReadU32(kBoundImmSites[i].addr,
+                                kBoundImmSites[i].immOff, v))
+                    continue;
+                if (v == 0x400)
+                    healed[nHealed++] =
+                        { 2, static_cast<std::uint16_t>(i) };
+                else if (v != kNewRows)
+                {
+                    if (nForeign++ == 0)
+                    {
+                        foreignAddr = kBoundImmSites[i].addr;
+                        foreignVal  = v;
+                        foreignWhat = "scan bound";
+                    }
+                }
+            }
+            for (std::size_t i = 0;
+                 i < kSiblingLoopFixCount && nHealed < kMaxHealed; ++i)
+            {
+                const ByteFix& f = kSiblingLoopFixes[i];
+                std::uint8_t cur[4] = {};
+                if (!f.addr || f.len > 4
+                    || !TryReadBytes(f.addr, cur, f.len))
+                    continue;
+                if (std::memcmp(cur, f.oldBytes, f.len) == 0)
+                    healed[nHealed++] =
+                        { 3, static_cast<std::uint16_t>(i) };
+            }
+
+            static int foreignLogged = 0;
+            if (nForeign != 0 && foreignLogged < 3)
+            {
+                ++foreignLogged;
+                Log("[DevelopArrayGrow] WARNING: %d patched site(s) hold "
+                    "neither the original nor the patched value (first: %s "
+                    "@0x%llX = 0x%X) - a hook detour on the same bytes or an "
+                    "encrypted clone region; left untouched, rechecked next "
+                    "integrity pass\n",
+                    nForeign,
+                    foreignWhat ? foreignWhat : "?",
+                    static_cast<unsigned long long>(foreignAddr),
+                    foreignVal);
+            }
+            if (nHealed == 0)
+                return;
+
+            static HANDLE suspended[kMaxSuspendedThreads];
+            const int nSuspended = SuspendOtherThreads(suspended);
+            std::size_t repaired = 0;
+            for (std::size_t i = 0; i < nHealed; ++i)
+            {
+                bool ok = false;
+                switch (healed[i].cls)
+                {
+                case 0:
+                {
+                    const ImmPatch& p = kPatches[healed[i].idx];
+                    ok = WriteImmAt(p, p.newImm);
+                    break;
+                }
+                case 1:
+                {
+                    const std::size_t k = healed[i].idx;
+                    ok = WriteU32At(kCtlDispSites[k].addr, g_CtlDispOff[k],
+                                    kCtlDispSites[k].oldDisp + kCtlDelta);
+                    break;
+                }
+                case 2:
+                {
+                    const std::size_t k = healed[i].idx;
+                    ok = WriteU32At(kBoundImmSites[k].addr,
+                                    kBoundImmSites[k].immOff, kNewRows);
+                    break;
+                }
+                case 3:
+                {
+                    const ByteFix& f = kSiblingLoopFixes[healed[i].idx];
+                    ok = WriteByteFix(f, f.newBytes);
+                    break;
+                }
+                }
+                if (ok)
+                    ++repaired;
+            }
+            ResumeOtherThreads(suspended, nSuspended);
+
+            Log("[DevelopArrayGrow] WARNING: the game's protector restored "
+                "%zu patched site(s) to their original bytes - %zu "
+                "re-applied; develop data touched through a healed site in "
+                "that window may be inconsistent until the next R&D menu "
+                "rebuild\n", nHealed, repaired);
+            InvalidateDevelopVisibilityCache();
+            InvalidateDevelopLookupIndex();
+        }
+
+        std::uintptr_t g_LateCloneLogged[16] = {};
+        std::size_t    g_LateCloneLoggedCount = 0;
+
+        bool LateCloneAlreadyLogged(std::uintptr_t va)
+        {
+            for (std::size_t i = 0; i < g_LateCloneLoggedCount; ++i)
+                if (g_LateCloneLogged[i] == va)
+                    return true;
+            if (g_LateCloneLoggedCount
+                < sizeof(g_LateCloneLogged) / sizeof(g_LateCloneLogged[0]))
+                g_LateCloneLogged[g_LateCloneLoggedCount++] = va;
+            return false;
+        }
+
+        void RecheckForLateClones()
+        {
+            if (SweepImageForUnknownSites(true))
+                return;
+            const int nFind = g_SweepUnknownCount;
+            if (nFind == 0)
+                return;
+
+            static std::uint16_t order[kMaxCtlSites];
+            for (std::size_t i = 0; i < kCtlSiteCount; ++i)
+                order[i] = static_cast<std::uint16_t>(i);
+            for (std::size_t a = 1; a < kCtlSiteCount; ++a)
+            {
+                const std::uint16_t key = order[a];
+                const std::uintptr_t kv =
+                    kCtlDispSites[key].addr + g_CtlDispOff[key];
+                std::size_t b = a;
+                while (b > 0
+                       && kCtlDispSites[order[b - 1]].addr
+                              + g_CtlDispOff[order[b - 1]] > kv)
+                {
+                    order[b] = order[b - 1];
+                    --b;
+                }
+                order[b] = key;
+            }
+
+            int g0 = 0;
+            while (g0 < nFind)
+            {
+                int g1 = g0 + 1;
+                while (g1 < nFind
+                       && g_SweepUnknown[g1].va - g_SweepUnknown[g1 - 1].va
+                              <= 0x1000)
+                    ++g1;
+                const int n = g1 - g0;
+
+                std::size_t matchStart = 0;
+                int matches = 0;
+                if (n >= 2 && static_cast<std::size_t>(n) <= kCtlSiteCount)
+                {
+                    for (std::size_t j = 0;
+                         j + static_cast<std::size_t>(n) <= kCtlSiteCount;
+                         ++j)
+                    {
+                        bool fit = true;
+                        for (int i = 0; i < n && fit; ++i)
+                        {
+                            const CtlDispSite& s =
+                                kCtlDispSites[order[j + i]];
+                            if (s.oldDisp != g_SweepUnknown[g0 + i].disp)
+                                fit = false;
+                        }
+                        for (int i = 0; i + 1 < n && fit; ++i)
+                        {
+                            const std::intptr_t fg = static_cast<std::intptr_t>(
+                                g_SweepUnknown[g0 + i + 1].va
+                                - g_SweepUnknown[g0 + i].va);
+                            const std::intptr_t kg = static_cast<std::intptr_t>(
+                                (kCtlDispSites[order[j + i + 1]].addr
+                                 + g_CtlDispOff[order[j + i + 1]])
+                                - (kCtlDispSites[order[j + i]].addr
+                                   + g_CtlDispOff[order[j + i]]));
+                            if (fg - kg > 0x80 || kg - fg > 0x80)
+                                fit = false;
+                        }
+                        if (fit)
+                        {
+                            ++matches;
+                            matchStart = j;
+                        }
+                    }
+                }
+
+                if (matches == 1)
+                {
+                    static HANDLE suspended[kMaxSuspendedThreads];
+                    const int nSuspended = SuspendOtherThreads(suspended);
+                    int patched = 0;
+                    for (int i = 0; i < n; ++i)
+                        if (WriteU32At(g_SweepUnknown[g0 + i].va, 0,
+                                       g_SweepUnknown[g0 + i].disp
+                                           + kCtlDelta))
+                            ++patched;
+                    ResumeOtherThreads(suspended, nSuspended);
+                    Log("[DevelopArrayGrow] WARNING: a late-materialized "
+                        "code clone surfaced with %d unpatched develop-field "
+                        "reference(s) at 0x%llX (clone of the %zu-site run "
+                        "near 0x%llX) - %d patched in place\n",
+                        n,
+                        static_cast<unsigned long long>(
+                            g_SweepUnknown[g0].va),
+                        static_cast<std::size_t>(n),
+                        static_cast<unsigned long long>(
+                            kCtlDispSites[order[matchStart]].addr),
+                        patched);
+                }
+                else if (!LateCloneAlreadyLogged(g_SweepUnknown[g0].va))
+                {
+                    LogDebug("[DevelopArrayGrow] CRITICAL: %d unpatched "
+                        "develop-field reference(s) surfaced at 0x%llX and "
+                        "match %d known-site runs (need exactly 1%s) - NOT "
+                        "patched; develop code running through that copy "
+                        "reads and writes the OLD control offsets, which "
+                        "overlap grown rows 1024..1259\n",
+                        n,
+                        static_cast<unsigned long long>(
+                            g_SweepUnknown[g0].va),
+                        matches,
+                        n < 2 ? "; a lone site is never matched, the run "
+                                "matcher needs two or more" : "");
+                    for (int i = 0; i < n; ++i)
+                    {
+                        const SweepFind& f = g_SweepUnknown[g0 + i];
+                        std::size_t owners = 0;
+                        std::uintptr_t firstOwner = 0;
+                        for (std::size_t k = 0; k < kCtlSiteCount; ++k)
+                            if (kCtlDispSites[k].oldDisp == f.disp)
+                            {
+                                if (owners == 0)
+                                    firstOwner = kCtlDispSites[k].addr;
+                                ++owners;
+                            }
+                        char bytes[80];
+                        bytes[0] = '\0';
+                        __try
+                        {
+                            const std::uint8_t* p =
+                                reinterpret_cast<const std::uint8_t*>(
+                                    f.va - 6);
+                            for (int b = 0; b < 14; ++b)
+                                std::snprintf(bytes + b * 3, 4, "%02X ", p[b]);
+                        }
+                        __except (EXCEPTION_EXECUTE_HANDLER)
+                        {
+                            std::snprintf(bytes, sizeof(bytes),
+                                          "<unreadable>");
+                        }
+                        LogDebug("[DevelopArrayGrow]   site %d: 0x%llX disp 0x%X "
+                            "held by %zu known site(s), first 0x%llX | "
+                            "bytes (va-6..va+7) %s\n",
+                            i + 1,
+                            static_cast<unsigned long long>(f.va),
+                            f.disp, owners,
+                            static_cast<unsigned long long>(firstOwner),
+                            bytes);
+                    }
+                }
+                g0 = g1;
+            }
+        }
+
+        std::atomic<bool> g_IntegrityThreadStarted{ false };
+
+        DWORD WINAPI GrowIntegrityThread(LPVOID)
+        {
+            SetThreadPriority(GetCurrentThread(),
+                              THREAD_PRIORITY_BELOW_NORMAL);
+            for (int pass = 0; ; ++pass)
+            {
+                Sleep(pass < 36 ? 5000 : 30000);
+                if (!g_Active)
+                    continue;
+                RepairHealedPatches();
+                if ((pass & 3) == 3)
+                    RecheckForLateClones();
+            }
+        }
 
         bool MigrateExistingBlock()
         {
@@ -3904,8 +4563,8 @@ namespace equip
         const double ms = (g_VisT0.QuadPart && f.QuadPart)
             ? (double)(t1.QuadPart - g_VisT0.QuadPart) * 1000.0 / (double)f.QuadPart
             : 0.0;
-        Log("[DevelopArrayGrow] list build took %.1f ms\n", ms);
-        Log("[DevelopArrayGrow] scan counters (%s): visibility predicate %llu "
+        LogDebug("[DevelopArrayGrow] list build took %.1f ms\n", ms);
+        LogDebug("[DevelopArrayGrow] scan counters (%s): visibility predicate %llu "
             "calls / %llu cached; sibling-count %llu calls, %llu total collected "
             "rows, largest group %u. Total collected rows is the sibling retire "
             "loop's iteration count for the whole build - if that is in the "
@@ -3962,6 +4621,14 @@ namespace equip
     std::uint32_t NativeFlowBound()
     {
         return g_Active ? kNewRows : kOldRows;
+    }
+
+    bool GunsmithFlowRowClaimed(std::uint32_t row)
+    {
+        if (row < kGunsmithFlowFirst || row > kGunsmithFlowLast)
+            return false;
+        return ((g_GunsmithClaimMask.load(std::memory_order_relaxed)
+                 >> (row - kGunsmithFlowFirst)) & 1u) != 0;
     }
 
     std::size_t DevFlagsPtrOffsetBase20()
@@ -4031,6 +4698,37 @@ namespace equip
         SyncFlagsWithSvars(false);
     }
 
+    std::size_t CollectVanillaIdentityEquipIds(std::int32_t* out,
+                                               std::size_t capacity)
+    {
+        if (!out || capacity == 0)
+            return 0;
+        const std::uintptr_t base20 =
+            g_ArmedBase20.load(std::memory_order_relaxed);
+        if (!base20)
+            return 0;
+        __try
+        {
+            BuildLookupIndex(base20, equip::NativeFlowBound());
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            g_LookupValid = false;
+            return 0;
+        }
+
+        std::size_t n = 0;
+        for (std::uint32_t w = 0; w < kEquipIdSlots / 64 && n < capacity; ++w)
+        {
+            if (g_VanIdentityBits[w] == 0)
+                continue;
+            for (std::uint32_t b = 0; b < 64 && n < capacity; ++b)
+                if (g_VanIdentityBits[w] & (1ull << b))
+                    out[n++] = static_cast<std::int32_t>(w * 64 + b);
+        }
+        return n;
+    }
+
     void PreApplyDevelopArrayGrowPatches()
     {
         if (g_PrePatch != PrePatchState::NotAttempted)
@@ -4068,14 +4766,14 @@ namespace equip
             if (nCtlFailed > 16)
             {
                 VerifyCtlSite(ctlFirstFail);
-                g_PrePatch       = PrePatchState::VerifyFailed;
+                g_PrePatch       = PrePatchState::RetryPending;
                 g_PrePatchDetail = 1000 + static_cast<int>(ctlFirstFail);
                 return;
             }
             if (nCtlFailed > 0
                 && !RelocateCloneCtlSites(ctlFailed, nCtlFailed))
             {
-                g_PrePatch       = PrePatchState::VerifyFailed;
+                g_PrePatch       = PrePatchState::RetryPending;
                 g_PrePatchDetail = 1000 + static_cast<int>(ctlFirstFail);
                 return;
             }
@@ -4133,31 +4831,27 @@ namespace equip
         g_PrePatch = PrePatchState::Applied;
     }
 
-    bool Install_DevelopArrayGrow()
+    namespace
     {
-        if (g_Active)
-            return true;
-
-        if (g_PrePatch == PrePatchState::NotAttempted)
-            PreApplyDevelopArrayGrowPatches();
-
+        bool LogGrowInstallGate()
+        {
         switch (g_PrePatch)
         {
         case PrePatchState::Applied:
-            break;
+            return true;
         case PrePatchState::WrongBuild:
-            Log("[DevelopArrayGrow] no relocation table for this build (only "
+            LogDebug("[DevelopArrayGrow] no relocation table for this build (only "
                 "EN/JP 1.0.15.4 are ported) - develop record array stays at "
                 "1024 rows\n");
             return false;
         case PrePatchState::DisabledByMarker:
-            Log("[DevelopArrayGrow] DISABLED by "
+            LogDebug("[DevelopArrayGrow] DISABLED by "
                 "V_FrameWork_no_develop_grow.txt next to mgsvtpp.exe - no "
                 "patches, no block migration, bound stays 1024 rows; delete "
                 "that file to re-enable the grown band\n");
             return false;
         case PrePatchState::BlockExists:
-            Log("[DevelopArrayGrow] REFUSING install: the develop record "
+            LogDebug("[DevelopArrayGrow] REFUSING install: the develop record "
                 "block existed before the DLL loaded AND could not be "
                 "migrated to the grown layout (%s) - bound stays 1024 this "
                 "session\n",
@@ -4172,19 +4866,22 @@ namespace equip
                 g_PreVerifyDetail[0] ? g_PreVerifyDetail : "no detail");
             return false;
         case PrePatchState::ApplyFailed:
-            Log("[DevelopArrayGrow] REFUSING install: only %d patch sites "
+            LogDebug("[DevelopArrayGrow] REFUSING install: only %d patch sites "
                 "applied at DllMain - everything reverted, bound stays "
                 "1024\n", g_PrePatchDetail);
             return false;
         case PrePatchState::RacedMidPatch:
-            Log("[DevelopArrayGrow] REFUSING install: the develop block was "
+            LogDebug("[DevelopArrayGrow] REFUSING install: the develop block was "
                 "constructed while the patches were being applied at DllMain "
                 "- everything reverted, bound stays 1024\n");
             return false;
         default:
             return false;
         }
+        }
 
+        bool InstallGrowHooksAndFinalize()
+        {
         const bool hooks =
             CreateAndEnableHook(ResolveGameAddress(kAddr_BlockReset),
                                 reinterpret_cast<void*>(&hkBlockReset),
@@ -4258,12 +4955,55 @@ namespace equip
                 "once per scanned row per list row; weapon lists spend seconds "
                 "inside it because each ask walks the QuarkSystemTable\n");
 
+        g_AllocGuardInstalled = CreateAndEnableHook(
+            ResolveGameAddress(kAddr_QuarkBlockHeapAlloc),
+            reinterpret_cast<void*>(&hkQuarkBlockAlloc),
+            reinterpret_cast<void**>(&g_OrigQuarkAlloc));
+        if (g_AllocGuardInstalled)
+            g_HookQuarkAlloc = ResolveGameAddress(kAddr_QuarkBlockHeapAlloc);
+        else
+            Log("[DevelopArrayGrow] block-alloc guard hook failed - a fresh "
+                "develop block keeps an uninitialized grown tail, so a "
+                "protector-healed constructor would leave garbage where the "
+                "relocated control fields live and the block destructor "
+                "would free that garbage\n");
+
+        if (kAddr_EdcDtor != 0)
+        {
+            g_DtorGuardInstalled = CreateAndEnableHook(
+                ResolveGameAddress(kAddr_EdcDtor),
+                reinterpret_cast<void*>(&hkEdcDtorGuard),
+                reinterpret_cast<void**>(&g_OrigEdcDtor));
+            if (g_DtorGuardInstalled)
+                g_HookEdcDtor = ResolveGameAddress(kAddr_EdcDtor);
+            else
+                Log("[DevelopArrayGrow] destructor guard hook failed - a "
+                    "teardown fault in the EquipDevelopController destructor "
+                    "(allocator already gone at process exit) crashes the "
+                    "game at quit instead of being swallowed\n");
+        }
+
         g_Active = true;
-        Log("[DevelopArrayGrow] INSTALLED: develop record array 1024 -> %u "
+
+        if (!g_IntegrityThreadStarted.exchange(true))
+        {
+            HANDLE h = CreateThread(nullptr, 0, &GrowIntegrityThread,
+                                    nullptr, 0, nullptr);
+            if (h)
+                CloseHandle(h);
+            else
+            {
+                g_IntegrityThreadStarted.store(false);
+                Log("[DevelopArrayGrow] patch-integrity watchdog thread "
+                    "failed to start - protector byte-restores and "
+                    "late-materialized clones go undetected this session\n");
+            }
+        }
+        LogDebug("[DevelopArrayGrow] INSTALLED: develop record array 1024 -> %u "
             "rows (%s at DllMain: %zu core + %zu "
             "control-field disps + %zu scan bounds + %zu loop/sentinel byte "
             "fixes; 10 hooks + %s); custom flow "
-            "band %u..%u minus sentinel 0x400; control fields relocated "
+            "band %u..%u minus reserved rows 0x3FD-0x400; control fields relocated "
             "0x%X -> 0x%X; flags rows >= 1024 shadow-backed\n",
             kNewRows,
             g_Migrated ? "pre-existing block MIGRATED + patches applied"
@@ -4273,10 +5013,82 @@ namespace equip
             g_ClampInstalled ? "sibling-count clamp" : "NO clamp",
             922, kNewRows - 1, kOldCtlOff, kNewCtlOff);
         return true;
+        }
+
+        DWORD WINAPI GrowRetryThread(LPVOID)
+        {
+            for (int i = 0; i < 60; ++i)
+            {
+                Sleep(250);
+                g_PrePatch = PrePatchState::NotAttempted;
+                PreApplyDevelopArrayGrowPatches();
+                if (g_PrePatch != PrePatchState::RetryPending)
+                    break;
+            }
+            if (g_PrePatch == PrePatchState::RetryPending)
+            {
+                g_PrePatch = PrePatchState::VerifyFailed;
+                Log("[DevelopArrayGrow] REFUSING install: patch site %d still "
+                    "failed verification after 15s of background retries (%s) "
+                    "- the game's protector never materialized that region "
+                    "with the expected bytes; no patches applied, bound stays "
+                    "1024\n", g_PrePatchDetail,
+                    g_PreVerifyDetail[0] ? g_PreVerifyDetail : "no detail");
+                return 0;
+            }
+            if (LogGrowInstallGate())
+                InstallGrowHooksAndFinalize();
+            return 0;
+        }
+    }
+
+    bool Install_DevelopArrayGrow()
+    {
+        if (g_Active)
+            return true;
+
+        if (g_PrePatch == PrePatchState::NotAttempted)
+            PreApplyDevelopArrayGrowPatches();
+
+        if (g_PrePatch == PrePatchState::RetryPending)
+        {
+            LogDebug("[DevelopArrayGrow] ctl site %d is not verifiable yet - the "
+                "game's protector has not materialized that clone region "
+                "this early in boot (%s); the grow retries in the background "
+                "for up to 15s and installs the moment verification passes\n",
+                g_PrePatchDetail >= 1000 ? g_PrePatchDetail - 1000
+                                         : g_PrePatchDetail,
+                g_PreVerifyDetail[0] ? g_PreVerifyDetail : "no detail");
+            HANDLE h = CreateThread(nullptr, 0, &GrowRetryThread, nullptr,
+                                    0, nullptr);
+            if (h)
+            {
+                CloseHandle(h);
+                return true;
+            }
+            g_PrePatch = PrePatchState::VerifyFailed;
+            LogDebug("[DevelopArrayGrow] REFUSING install: could not start the "
+                "background retry thread - bound stays 1024\n");
+            return false;
+        }
+
+        if (!LogGrowInstallGate())
+            return false;
+        return InstallGrowHooksAndFinalize();
     }
 
     void Uninstall_DevelopArrayGrow()
     {
+        if (g_AllocGuardInstalled)
+        {
+            DisableAndRemoveHook(g_HookQuarkAlloc
+                                     ? g_HookQuarkAlloc
+                                     : ResolveGameAddress(
+                                           kAddr_QuarkBlockHeapAlloc));
+            g_AllocGuardInstalled = false;
+            g_OrigQuarkAlloc     = nullptr;
+            g_HookQuarkAlloc     = nullptr;
+        }
         if (g_IsVisibleInstalled)
         {
             DisableAndRemoveHook(ResolveGameAddress(kAddr_IsVisible));
@@ -4289,6 +5101,13 @@ namespace equip
             DisableAndRemoveHook(ResolveGameAddress(kAddr_SiblingCount));
             g_ClampInstalled   = false;
             g_OrigSiblingCount = nullptr;
+        }
+        if (g_HookEdcDtor)
+        {
+            DisableAndRemoveHook(g_HookEdcDtor);
+            g_HookEdcDtor        = nullptr;
+            g_OrigEdcDtor        = nullptr;
+            g_DtorGuardInstalled = false;
         }
         if (g_HookGetBaseId)      DisableAndRemoveHook(g_HookGetBaseId);
         if (g_HookEquipIdRow)     DisableAndRemoveHook(g_HookEquipIdRow);

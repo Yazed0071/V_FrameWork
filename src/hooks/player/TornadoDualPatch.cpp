@@ -38,21 +38,21 @@ bool Install_TornadoDualPatch()
 
     if (!gAddr.TornadoDualPatch)
     {
-        Log("[TornadoDual] patch address not set for current build\n");
+        LogDebug("[TornadoDual] patch address not set for current build\n");
         return false;
     }
 
     void* target = ResolveGameAddress(gAddr.TornadoDualPatch);
     if (!target)
     {
-        Log("[TornadoDual] ResolveGameAddress returned null\n");
+        LogDebug("[TornadoDual] ResolveGameAddress returned null\n");
         return false;
     }
 
     const auto* cur = static_cast<const std::uint8_t*>(target);
     if (cur[0] != kOriginalBytes[0] || cur[1] != kOriginalBytes[1])
     {
-        Log("[TornadoDual] unexpected bytes at %p (%02X %02X) - not patching\n", target, cur[0], cur[1]);
+        LogDebug("[TornadoDual] unexpected bytes at %p (%02X %02X) - not patching\n", target, cur[0], cur[1]);
         return false;
     }
 
@@ -61,7 +61,7 @@ bool Install_TornadoDualPatch()
 
     g_Applied = true;
 #ifdef _DEBUG
-    Log("[TornadoDual] enabled by default (wrote 90 90 at %p)\n", target);
+    LogDebug("[TornadoDual] enabled by default (wrote 90 90 at %p)\n", target);
 #endif
     return true;
 }

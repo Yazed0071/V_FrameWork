@@ -67,7 +67,7 @@ bool Install_SubtitlesEventMessage_Hook()
 {
     if (!gAddr.SubtitlesObjectSendMessage)
     {
-        Log("[SubtitlesEvent] address not set for this build -- skipped\n");
+        LogDebug("[SubtitlesEvent] address not set for this build -- skipped\n");
         return false;
     }
 

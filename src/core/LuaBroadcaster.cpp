@@ -210,7 +210,7 @@ namespace
             if (s_skipLines < kMaxHazardLogLines)
             {
                 ++s_skipLines;
-                Log("[LuaBroadcast] dropped category=%s msg=%s frameFree=%d physicalFree=%d "
+                LogDebug("[LuaBroadcast] dropped category=%s msg=%s frameFree=%d physicalFree=%d "
                     "needed=%d - pushing here would run past the running Lua function's "
                     "ci->top and corrupt the VM, so this message is dropped instead.\n",
                     category, msg, room.frameFree, room.physicalFree, kBroadcastPushSlots);
@@ -219,7 +219,7 @@ namespace
         }
 
         if (newMin)
-            Log("[LuaBroadcast] closest approach so far: frameFree=%d physicalFree=%d "
+            LogDebug("[LuaBroadcast] closest approach so far: frameFree=%d physicalFree=%d "
                 "needed=%d category=%s msg=%s\n",
                 room.frameFree, room.physicalFree, kBroadcastPushSlots, category, msg);
 
@@ -326,7 +326,7 @@ namespace
     {
         const char* errMsg = lua.tolstring ? lua.tolstring(L, -1, nullptr) : nullptr;
 
-        Log("[V_FrameWork] Mission.SendMessage pcall err=%d category=%s msg=%s: %s\n",
+        LogDebug("[V_FrameWork] Mission.SendMessage pcall err=%d category=%s msg=%s: %s\n",
             err,
             category,
             msg,
@@ -368,7 +368,7 @@ static void EmitInline(const char* category,
         if (s_loggedDepth < 12)
         {
             ++s_loggedDepth;
-            Log("[LuaBroadcast] re-entrant dispatch depth>=8: DROPPING category=%s msg=%s to "
+            LogDebug("[LuaBroadcast] re-entrant dispatch depth>=8: DROPPING category=%s msg=%s to "
                 "break a message-recursion loop - a receiver of a prior message re-triggered an "
                 "emit that led back here. If this is a WalkMan message, a walkman event is "
                 "feeding itself (tape-finish auto-advance).\n",
@@ -382,7 +382,7 @@ static void EmitInline(const char* category,
     if (traceWalk && s_walkTrace < 40)
     {
         ++s_walkTrace;
-        Log("[LuaBroadcast] dispatch BEGIN %s.%s depth=%d - if no matching 'dispatch END' "
+        LogDebug("[LuaBroadcast] dispatch BEGIN %s.%s depth=%d - if no matching 'dispatch END' "
             "follows, TppMain.OnMessage for this walkman message hung (freeze is inside the "
             "Lua dispatch / a receiver)\n",
             category, msg, s_dispatchDepth);
@@ -423,7 +423,7 @@ static void EmitInline(const char* category,
             if (err != 0)
             {
                 const char* errMsg = lua.tolstring(L, -1, nullptr);
-                Log("[V_FrameWork] TppMain.OnMessage pcall err=%d category=%s msg=%s: %s\n",
+                LogDebug("[V_FrameWork] TppMain.OnMessage pcall err=%d category=%s msg=%s: %s\n",
                     err, category, msg, errMsg ? errMsg : "<no message>");
             }
         }
@@ -439,13 +439,13 @@ static void EmitInline(const char* category,
     {
         if (sehKind)
         {
-            Log("[V_FrameWork] BroadcastMessage SEH category=%s msg=%s code=0x%08X at=%p faulting=0x%llX\n",
+            LogDebug("[V_FrameWork] BroadcastMessage SEH category=%s msg=%s code=0x%08X at=%p faulting=0x%llX\n",
                 category, msg, sehCode, sehAddr,
                 static_cast<unsigned long long>(sehFault));
         }
         else
         {
-            Log("[V_FrameWork] BroadcastMessage SEH category=%s msg=%s code=0x%08X at=%p\n",
+            LogDebug("[V_FrameWork] BroadcastMessage SEH category=%s msg=%s code=0x%08X at=%p\n",
                 category, msg, sehCode, sehAddr);
         }
     }
@@ -454,7 +454,7 @@ static void EmitInline(const char* category,
 
 #ifdef _DEBUG
     if (traceWalk && s_walkTrace <= 40)
-        Log("[LuaBroadcast] dispatch END   %s.%s\n", category, msg);
+        LogDebug("[LuaBroadcast] dispatch END   %s.%s\n", category, msg);
 #endif
 }
 

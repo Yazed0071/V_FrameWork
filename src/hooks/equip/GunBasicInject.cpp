@@ -40,7 +40,9 @@ namespace
 
     static constexpr int kEssentialDefaultId = 1;
 
-    static constexpr int kGunBasicMaxId = 1022;
+    static constexpr int kGunBasicMaxId = 65535;
+
+    static constexpr int kPackedSubIdMax = 1023;
 
     static std::vector<std::uint8_t> g_GunBasicShadow;
     static bool g_GunBasicShadowActive = false;
@@ -87,7 +89,7 @@ namespace
 
     static int StockSlotCount()
     {
-        return static_cast<int>(gAddr.GunBasicParameters2SlotCount);
+        return kGunBasicParameters2StockSlots;
     }
 
     static bool EnsureGunBasicShadow()
@@ -120,7 +122,7 @@ namespace
         if (!g_GunBasicShadowActive)
         {
             g_GunBasicShadowActive = true;
-            Log("[GunBasic] buffer shadow active (stock %d -> %d slots; custom weaponIds up to %d)\n",
+            LogDebug("[GunBasic] buffer shadow active (stock %d -> %d slots; custom weaponIds up to %d)\n",
                 stock, kGunBasicMaxId, kGunBasicMaxId);
         }
         return true;
@@ -207,7 +209,7 @@ namespace
         }
 #ifdef _DEBUG
         if (!snapshot.empty())
-            Log("[GunBasic] re-applied %zu native gunBasic row(s) after reload\n",
+            LogDebug("[GunBasic] re-applied %zu native gunBasic row(s) after reload\n",
                 snapshot.size());
 #endif
     }
@@ -268,33 +270,55 @@ int GunBasic_AllocateWeaponIdForName(const char* name)
         g_ReservedIds.erase(persisted);
         g_ClaimedIds.insert(persisted);
         g_WpNameToId[name] = persisted;
-        Log("[GunBasic] '%s' -> weaponId %d (persisted slot)\n", name, persisted);
+        LogDebug("[GunBasic] '%s' -> weaponId %d (persisted slot)\n", name, persisted);
         return persisted;
     }
     if (persisted != 0)
-        Log("[GunBasic] persisted weaponId %d for '%s' no longer free - reallocating\n",
+        LogDebug("[GunBasic] persisted weaponId %d for '%s' no longer free - reallocating\n",
             persisted, name);
 
-    for (int idx = cap - 1; idx >= 1; --idx)
+    const int packedHi = (cap < kPackedSubIdMax) ? cap : kPackedSubIdMax;
+    for (int pass = 0; pass < 2; ++pass)
     {
-        const int weaponId = idx + 1;
-        if (g_ClaimedIds.count(weaponId) || g_ReservedIds.count(weaponId))
-            continue;
-        if (SlotIsZeroSEH(buf, idx) != 1)
+        const int from = (pass == 0) ? packedHi - 1 : cap - 1;
+        const int to   = (pass == 0) ? 1 : packedHi;
+        if (from < to)
             continue;
 
-        g_ClaimedIds.insert(weaponId);
-        g_WpNameToId[name] = weaponId;
-        V_FrameWorkState::SetPersistedConstant("WPSLOT", name, weaponId);
-        Log("[GunBasic] '%s' -> weaponId %d (free native slot; cap=%d)\n",
-            name, weaponId, cap);
-        return weaponId;
+        for (int idx = from; idx >= to; --idx)
+        {
+            const int weaponId = idx + 1;
+            if (g_ClaimedIds.count(weaponId) || g_ReservedIds.count(weaponId))
+                continue;
+            if (SlotIsZeroSEH(buf, idx) != 1)
+                continue;
+
+            g_ClaimedIds.insert(weaponId);
+            g_WpNameToId[name] = weaponId;
+            V_FrameWorkState::SetPersistedConstant("WPSLOT", name, weaponId);
+            if (weaponId > kPackedSubIdMax)
+                LogDebug("[GunBasic] '%s' -> weaponId %d: past the %d-id packed-word ceiling, so this "
+                    "weapon MUST hold an extended equipId - a native equip row cannot carry a "
+                    "subId this large and would silently truncate it to %d\n",
+                    name, weaponId, kPackedSubIdMax, weaponId & 0x3FF);
+            return weaponId;
+        }
     }
 
-    Log("[GunBasic] no free native gunBasic slot for '%s' (cap=%d full) - "
+    LogDebug("[GunBasic] no free native gunBasic slot for '%s' (cap=%d full) - "
         "custom weapon behavior unavailable; falls back to the default id space\n",
         name, cap);
     return 0;
+}
+
+int GunBasic_MaxWeaponId()
+{
+    return kGunBasicMaxId;
+}
+
+int GunBasic_PackedSubIdMax()
+{
+    return kPackedSubIdMax;
 }
 
 bool GunBasic_ReadRowBytes(int weaponId, unsigned char* out12)
@@ -309,6 +333,121 @@ bool GunBasic_ReadRowBytes(int weaponId, unsigned char* out12)
         return false;
 
     return CopyRowBytesSEH(buf + static_cast<size_t>(weaponId - 1) * 12, out12) == 1;
+}
+
+bool GunBasic_WeaponNeedsLaneBind(int weaponId)
+{
+    std::lock_guard<std::recursive_mutex> lock(g_Mutex);
+    for (const auto& r : g_Rows)
+    {
+        if (r.f[0] != weaponId)
+            continue;
+        for (int i = 1; i <= 11; ++i)
+        {
+            if (r.slotSpace[i] < 0 || r.logical[i] < 0x100)
+                continue;
+            const int alias = EquipParam_GetWideAlias(r.slotSpace[i], r.logical[i]);
+            if (alias <= 0 || r.f[i] != alias)
+                return true;
+        }
+        return false;
+    }
+    return false;
+}
+
+// space-filtered on purpose: barrels/sights/etc are player-swappable in the
+// gunsmith, so the desc can legitimately hold a customised part there and must
+// not be overwritten. Only slots this build actually defers may be restamped.
+int GunBasic_GetLogicalPart(int weaponId, int space)
+{
+    std::lock_guard<std::recursive_mutex> lock(g_Mutex);
+    for (const auto& r : g_Rows)
+    {
+        if (r.f[0] != weaponId)
+            continue;
+        for (int i = 1; i <= 11; ++i)
+            if (r.slotSpace[i] == space && r.logical[i] > 0)
+                return r.logical[i];
+        return 0;
+    }
+    return 0;
+}
+
+bool GunBasic_GetLogicalParts(int weaponId, int out11[11])
+{
+    for (int i = 0; i < 11; ++i)
+        out11[i] = 0;
+
+    std::lock_guard<std::recursive_mutex> lock(g_Mutex);
+    for (const auto& r : g_Rows)
+    {
+        if (r.f[0] != weaponId)
+            continue;
+        for (int i = 1; i <= 11; ++i)
+        {
+            const int slot = i - 1;
+            if (slot < 0 || slot >= 11)
+                continue;
+            out11[slot] = (r.logical[i] > 0) ? r.logical[i] : r.f[i];
+        }
+        return true;
+    }
+    return false;
+}
+
+int GunBasic_GetWideSlotLanes(int weaponId, int space, unsigned char outLanes[12])
+{
+    for (int i = 0; i < 12; ++i)
+        outLanes[i] = 0;
+
+    std::lock_guard<std::recursive_mutex> lock(g_Mutex);
+    for (const auto& r : g_Rows)
+    {
+        if (r.f[0] != weaponId)
+            continue;
+        int n = 0;
+        for (int i = 1; i <= 11; ++i)
+        {
+            if (r.slotSpace[i] != space || r.logical[i] < 0x100)
+                continue;
+            if (r.f[i] <= 0 || r.f[i] > 0xFF)
+                continue;
+            outLanes[i - 1] = static_cast<unsigned char>(r.f[i]);
+            ++n;
+        }
+        return n;
+    }
+    return 0;
+}
+
+int GunBasic_ClearLaneFromRows(int space, int lane)
+{
+    if (space < 0 || lane <= 0 || lane > 0xFF)
+        return 0;
+
+    std::lock_guard<std::recursive_mutex> lock(g_Mutex);
+    const int cap = BufferSlotCount();
+    std::uint8_t* buf = BufferBase();
+
+    int cleared = 0;
+    for (auto& r : g_Rows)
+    {
+        bool dirty = false;
+        for (int i = 1; i <= 11; ++i)
+        {
+            if (r.slotSpace[i] != space || r.logical[i] < 0x100)
+                continue;
+            if (r.f[i] != lane)
+                continue;
+            const int donor = EquipParam_GetWideReceiverDonor(r.logical[i]);
+            r.f[i] = (donor > 0) ? donor : kEssentialDefaultId;
+            dirty = true;
+            ++cleared;
+        }
+        if (dirty && buf && r.f[0] >= 1 && r.f[0] <= cap)
+            WriteNativeRowSEH(buf, r.f[0], &r.f[1]);
+    }
+    return cleared;
 }
 
 int GunBasic_RebindWidePartsForWeapon(int weaponId)
@@ -355,14 +494,14 @@ int __cdecl l_SetGunBasic(lua_State* L)
 
     if (g_lua_type(L, 1) != LUA_TTABLE)
     {
-        Log("[GunBasic] SetGunBasic: argument #1 must be a table\n");
+        LogDebug("[GunBasic] SetGunBasic: argument #1 must be a table\n");
         return 0;
     }
 
     int weaponId = 0;
     if (!ReadNamedInt(L, 1, "weaponId", weaponId) || weaponId <= 0)
     {
-        Log("[GunBasic] SetGunBasic: missing/invalid weaponId\n");
+        LogDebug("[GunBasic] SetGunBasic: missing/invalid weaponId\n");
         return 0;
     }
 
@@ -385,7 +524,7 @@ int __cdecl l_SetGunBasic(lua_State* L)
         if (i < 3 && (!present || v <= 0))
         {
             row.f[i + 1] = kEssentialDefaultId;
-            Log("[GunBasic] SetGunBasic: weaponId=%d %s is missing/unresolved - the mod "
+            LogDebug("[GunBasic] SetGunBasic: weaponId=%d %s is missing/unresolved - the mod "
                 "that defines that part id may not be installed. Substituting vanilla "
                 "default id %d so the weapon still loads (generic stats for that part "
                 "until the dependency is installed).\n",
@@ -418,15 +557,35 @@ int __cdecl l_SetGunBasic(lua_State* L)
 
     for (int i = 0; i < 11; ++i)
     {
-        if (kSlotSpaces[i] >= 0 && row.f[i + 1] >= 0x100)
-            row.f[i + 1] = EquipParam_ResolvePartByte(kSlotSpaces[i], row.f[i + 1]);
+        if (kSlotSpaces[i] < 0 || row.f[i + 1] < 0x100)
+            continue;
+        if (kSlotSpaces[i] == kVanillaSpace_Receiver)
+        {
+            const int wideRc = row.f[i + 1];
+            const int donor  = EquipParam_GetWideReceiverDonor(wideRc);
+            row.f[i + 1] = (donor > 0) ? donor : kEssentialDefaultId;
+            if (donor <= 0)
+                LogDebug("[GunBasic] SetGunBasic: weaponId=%d receiverId=%d does not fit the "
+                    "one-byte gunBasic row field and has no motionFrom donor to stand in "
+                    "for it - the row falls back to vanilla receiver %d, so this weapon "
+                    "takes THAT receiver's motion type, reload clip set and sound root "
+                    "instead of its own (a rifle on receiver 1 animates as a handgun and "
+                    "cannot reload). Give receiverId=%d a motionFrom in SetReceiver, and "
+                    "call SetReceiver before SetGunBasic.\n",
+                    weaponId, wideRc, kEssentialDefaultId, wideRc);
+            continue;
+        }
+        row.f[i + 1] = EquipParam_ResolvePartByte(kSlotSpaces[i], row.f[i + 1]);
     }
 
     for (int i = 1; i <= 3; ++i)
     {
+        if (row.slotSpace[i] == kVanillaSpace_Receiver
+            && row.logical[i] >= 0x100)
+            continue;   // deferred to the late bind, not a missing part
         if (row.f[i] <= 0)
         {
-            Log("[GunBasic] SetGunBasic: weaponId=%d %s did not resolve to a valid part "
+            LogDebug("[GunBasic] SetGunBasic: weaponId=%d %s did not resolve to a valid part "
                 "byte - substituting vanilla default id %d (weapon will use generic "
                 "stats for that part until the defining mod is installed).\n",
                 weaponId, kEssentialLabel[i - 1], kEssentialDefaultId);
@@ -438,7 +597,7 @@ int __cdecl l_SetGunBasic(lua_State* L)
     {
         if (row.f[i] > 0xFF)
         {
-            Log("[GunBasic] SetGunBasic: weaponId=%d field #%d value %d exceeds 255; "
+            LogDebug("[GunBasic] SetGunBasic: weaponId=%d field #%d value %d exceeds 255; "
                 "gunBasic part fields are one byte each - custom parts must reuse a "
                 "vanilla receiver/barrel/ammo id. Truncated.\n",
                 weaponId, i, row.f[i]);
@@ -479,15 +638,44 @@ int __cdecl l_SetGunBasic(lua_State* L)
         }
         else
         {
-            Log("[GunBasic] SetGunBasic: weaponId=%d out of native buffer range [1,%d] "
+            LogDebug("[GunBasic] SetGunBasic: weaponId=%d out of native buffer range [1,%d] "
                 "(or buffer unresolved for this build) - NOT written. A gunBasic weaponId "
                 "must be a WP declared via V_TppEquip.DeclareWPs so it gets an in-range "
                 "slot.\n", weaponId, cap);
         }
+
+        const int donorRc = EquipParam_GetWideReceiverDonor(row.f[1]);
+        if (buf && donorRc > 0 && donorRc != row.f[1])
+        {
+            const int stock = StockSlotCount();
+            int donorBa = 0, donorAm = 0, donorSt = 0;
+            for (int id = 1; id <= stock && id <= cap; ++id)
+            {
+                const std::uint8_t* r =
+                    buf + static_cast<size_t>(id - 1) * 12;
+                if (r[0] != static_cast<std::uint8_t>(donorRc))
+                    continue;
+                donorBa = r[1];
+                donorAm = r[2];
+                donorSt = r[6];
+                break;
+            }
+            int eligible = 0;
+            const int applied = EquipParam_InheritPartMotionTypes(
+                row.f[2], donorBa, row.f[3], donorAm, row.f[7], donorSt, &eligible);
+            if (eligible > 0 && applied == 0)
+                LogDebug("[ChimeraMotion] weaponId=%d: %d custom part(s) could inherit an "
+                    "animation type but the motionFrom donor receiver %d has none to give "
+                    "(its vanilla weapon row uses ba=%d am=%d st=%d, each reporting type "
+                    "0) - those parts contribute no motion set, so this weapon's parts "
+                    "control is built with no motion archive and the slide/magazine stay "
+                    "frozen\n",
+                    weaponId, eligible, donorRc, donorBa, donorAm, donorSt);
+        }
     }
 
 #ifdef _DEBUG
-    Log("[GunBasic] SetGunBasic weaponId=%d rc=%d ba=%d am=%d grade=%d -> native slot\n",
+    LogDebug("[GunBasic] SetGunBasic weaponId=%d rc=%d ba=%d am=%d grade=%d -> native slot\n",
         row.f[0], row.f[1], row.f[2], row.f[3], row.f[12]);
 #endif
     return 0;
@@ -498,7 +686,7 @@ bool Install_TppEquip_ReloadEquipParameterTables2_Hook()
     void* target = ResolveGameAddress(gAddr.ReloadEquipParameterTables2);
     if (!target)
     {
-        Log("[GunBasic] ReloadEquipParameterTables2 address not set for this build - reapply guard skipped\n");
+        LogDebug("[GunBasic] ReloadEquipParameterTables2 address not set for this build - reapply guard skipped\n");
         return true;
     }
 
@@ -512,7 +700,7 @@ bool Install_TppEquip_ReloadEquipParameterTables2_Hook()
 #ifdef _DEBUG
     else
     {
-        Log("[GunBasic] Reload reapply-guard hook Install -> OK (target=%p)\n", target);
+        LogDebug("[GunBasic] Reload reapply-guard hook Install -> OK (target=%p)\n", target);
     }
 #endif
     return ok;

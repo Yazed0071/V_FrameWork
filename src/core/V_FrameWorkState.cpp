@@ -3,6 +3,7 @@
 #include "log.h"
 #include "AddressSet.h"
 #include "../hooks/equip/EquipIdCompression.h"
+#include "../hooks/equip/DevelopArrayGrow.h"
 
 #include <algorithm>
 #include <atomic>
@@ -34,6 +35,13 @@ namespace V_FrameWorkState
         static constexpr std::int32_t kFirstCustomEquipIdMinimum = 1;
         static constexpr std::int32_t kFirstCustomDevelopId = 0x1000;
         static constexpr std::int32_t kFirstCustomFlowIndex = 922;
+        static constexpr std::int32_t kGunsmithFlowFirst    = 0x3FD;
+        static constexpr std::int32_t kGunsmithFlowLast     = 0x3FF;
+
+        static bool IsReservedFlowIndex(std::int32_t i)
+        {
+            return i >= kGunsmithFlowFirst && i <= kGunsmithFlowLast;
+        }
         static constexpr std::int32_t kNativeFlowSentinel   = 0x400;
 
         static std::int32_t NativeFlowIndexBound()
@@ -109,6 +117,16 @@ namespace V_FrameWorkState
         static bool g_PinSetFreshThisSession = false;
 
         static std::unordered_map<std::string, std::int32_t> g_SessionEquipIds;
+
+        static std::uint64_t g_ClaimedEquipBits[4096 / 64] = {};
+
+        static void NoteClaimedEquipId_NoLock(std::int32_t equipId)
+        {
+            if (equipId > 0 && equipId < 4096)
+                g_ClaimedEquipBits[equipId >> 6] |= 1ull << (equipId & 63);
+        }
+
+        static std::unordered_set<std::int32_t> g_VanillaIdentityIds;
 
         static std::unordered_map<std::string, std::int32_t> g_SessionFlowIndices;
 
@@ -384,7 +402,7 @@ namespace V_FrameWorkState
                     {
                         g_State.tapes[key] = entry;
                         g_TapeSaveIndexInUse.insert(entry.saveIndex);
-                        Log("[CustomTapes] tape loaded: '%s' (saveIndex %d)\n", key.c_str(), static_cast<int>(entry.saveIndex));
+                        LogDebug("[CustomTapes] tape loaded: '%s' (saveIndex %d)\n", key.c_str(), static_cast<int>(entry.saveIndex));
                     }
                 }
                 else if (section == Constants)
@@ -417,7 +435,7 @@ namespace V_FrameWorkState
             {
                 if (it->second.misses >= kTapeOrphanGraceLaunches)
                 {
-                    Log("[CustomTapes] tape deleted: '%s' (saveIndex %d) - mod uninstalled; freeing the save slot.\n", it->first.c_str(), static_cast<int>(it->second.saveIndex));
+                    LogDebug("[CustomTapes] tape deleted: '%s' (saveIndex %d) - mod uninstalled; freeing the save slot.\n", it->first.c_str(), static_cast<int>(it->second.saveIndex));
                     it = g_State.tapes.erase(it);
                     gcChanged = true;
                 }
@@ -436,7 +454,7 @@ namespace V_FrameWorkState
                     (mit != g_State.constantMisses.end()) ? mit->second : 0;
                 if (misses >= kConstantOrphanGraceLaunches)
                 {
-                    Log("[Constants] \"%s\" (value %d) has not been referenced for %d "
+                    LogDebug("[Constants] \"%s\" (value %d) has not been referenced for %d "
                         "launches - entry removed; its value returns to the free pool.\n",
                         it->first.c_str(), it->second, misses);
                     if (mit != g_State.constantMisses.end())
@@ -464,7 +482,7 @@ namespace V_FrameWorkState
                         }
                     if (pinned)
                     {
-                        Log("[V_FrameWorkState] '%s' is orphaned but its equipId "
+                        LogDebug("[V_FrameWorkState] '%s' is orphaned but its equipId "
                             "0x%X is still referenced by a saved loadout - id "
                             "kept reserved.\n",
                             it->first.c_str(), it->second.equipId);
@@ -474,7 +492,7 @@ namespace V_FrameWorkState
                 }
                 if (it->second.misses >= kEquipOrphanGraceLaunches)
                 {
-                    Log("[V_FrameWorkState] \"%s\" (developId %d, equipId 0x%X, partsType 0x%02X, "
+                    LogDebug("[V_FrameWorkState] \"%s\" (developId %d, equipId 0x%X, partsType 0x%02X, "
                         "selector 0x%02X) has not registered for %d launches - entry removed; its ids "
                         "return to the free pool.\n",
                         it->first.c_str(), it->second.developId, it->second.equipId,
@@ -539,7 +557,7 @@ namespace V_FrameWorkState
                 WriteToDisk_NoLock();
 
                 if (coalesced > 1)
-                    Log("[V_FrameWorkState] coalesced %llu state writes into 1 "
+                    LogDebug("[V_FrameWorkState] coalesced %llu state writes into 1 "
                         "(%llu forced disk commits avoided)\n",
                         coalesced, coalesced - 1);
             }
@@ -833,6 +851,40 @@ namespace V_FrameWorkState
 
         static bool g_NativeTableSynced = false;
 
+        static constexpr std::int32_t kItemCategoryRowFirst = 0x1F2;
+        static constexpr std::int32_t kItemCategoryRowLast  = 0x1FC;
+
+        static bool IsItemCategoryRow(std::int32_t equipId)
+        {
+            return equipId >= kItemCategoryRowFirst
+                && equipId <= kItemCategoryRowLast;
+        }
+
+        static void BuildVanillaIdentitySet_NoLock()
+        {
+            static bool s_attempted = false;
+            if (s_attempted)
+                return;
+            s_attempted = true;
+
+            std::vector<std::int32_t> ids(4096);
+            const std::size_t n =
+                equip::CollectVanillaIdentityEquipIds(ids.data(), ids.size());
+            if (n < 64)
+            {
+                Log("[V_FrameWorkState] WARNING: the vanilla equip-identity set is "
+                    "still empty at first allocation (develop lookup returned %zu "
+                    "id(s), below the %d-id sanity floor) - custom ids can land on "
+                    "rows the game's own tables own, and a suit that takes a weapon "
+                    "row renders in the prep list with a damage tag\n",
+                    n, 64);
+                return;
+            }
+            for (std::size_t i = 0; i < n; ++i)
+                if (ids[i] > 0)
+                    g_VanillaIdentityIds.insert(ids[i]);
+        }
+
         static std::int32_t AllocateNextFreeEquipId_NoLock(std::int32_t minimum,
                                                            bool isWeapon)
         {
@@ -847,8 +899,14 @@ namespace V_FrameWorkState
                     ? minimum
                     : kFirstCustomEquipIdMinimum;
 
-            const auto inUse = [](std::int32_t equipId) {
-                return IsEquipIdInUse_NoLock(equipId);
+            if (g_VanillaIdentityIds.empty())
+                BuildVanillaIdentitySet_NoLock();
+
+            const auto inUse = [isWeapon](std::int32_t equipId) {
+                if (isWeapon && IsItemCategoryRow(equipId))
+                    return true;
+                return IsEquipIdInUse_NoLock(equipId)
+                    || g_VanillaIdentityIds.count(equipId) != 0;
             };
 
             std::int32_t result = -1;
@@ -872,12 +930,12 @@ namespace V_FrameWorkState
             {
                 result = EquipIdCompression::FindLowestFreeExtendedEquipId();
                 if (result >= 0)
-                    Log("[V_FrameWorkState] AllocateNextFreeEquipId: native bands "
+                    LogDebug("[V_FrameWorkState] AllocateNextFreeEquipId: native bands "
                         "full above floor=0x%X - allocated EXTENDED equipId 0x%X "
                         "(DLL-side table, served via hooked accessors)\n",
                         floor, result);
                 else
-                    Log("[V_FrameWorkState] AllocateNextFreeEquipId: native bands "
+                    LogDebug("[V_FrameWorkState] AllocateNextFreeEquipId: native bands "
                         "AND the extended 0x289-0x3FF range are exhausted above "
                         "floor=0x%X; allocation fails.\n", floor);
             }
@@ -992,6 +1050,7 @@ namespace V_FrameWorkState
         auto it = g_SessionEquipIds.find(key);
         if (it != g_SessionEquipIds.end() && it->second != 0)
         {
+            NoteClaimedEquipId_NoLock(it->second);
             outEquipId = it->second;
             return true;
         }
@@ -1012,20 +1071,39 @@ namespace V_FrameWorkState
             const bool bandOk = isWeapon
                 || slot < EquipIdCompression::kWeaponBandFirst;
             if (!bandOk)
-                Log("[V_FrameWorkState] persisted equipId 0x%X for '%s' sits in "
+                LogDebug("[V_FrameWorkState] persisted equipId 0x%X for '%s' sits in "
                     "the weapon band but the item is not a weapon - native "
                     "GetEquipType would return 0 for it; reallocating into the "
                     "item band\n", persisted, key);
-            if (!sessionTaken && bandOk
+            if (g_VanillaIdentityIds.empty())
+                BuildVanillaIdentitySet_NoLock();
+            const bool identityClash =
+                g_VanillaIdentityIds.count(persisted) != 0;
+            if (identityClash)
+                LogDebug("[V_FrameWorkState] persisted equipId 0x%X for '%s' is a vanilla "
+                    "equip identity the game's own tables still own - keeping it "
+                    "overwrites that row, and the prep list then renders the vanilla "
+                    "entry with this item's damage tag; reallocating\n",
+                    persisted, key);
+            const bool itemListClash = isWeapon && IsItemCategoryRow(persisted);
+            if (itemListClash)
+                LogDebug("[V_FrameWorkState] persisted equipId 0x%X for '%s' is a weapon "
+                    "sitting in the vanilla item-category row span 0x%X-0x%X - that "
+                    "list enumerates the whole span and does not filter on equip "
+                    "type, so the weapon renders as a supply-drop item; "
+                    "reallocating\n",
+                    persisted, key, kItemCategoryRowFirst, kItemCategoryRowLast);
+            if (!sessionTaken && bandOk && !identityClash && !itemListClash
                 && !EquipIdCompression::IsCompressedSlotUsed(slot))
             {
                 g_SessionEquipIds[key] = persisted;
+                NoteClaimedEquipId_NoLock(persisted);
                 pit->second.misses = 0;
                 outEquipId = persisted;
                 return true;
             }
             if (bandOk)
-                Log("[V_FrameWorkState] persisted equipId 0x%X for '%s' is no longer free "
+                LogDebug("[V_FrameWorkState] persisted equipId 0x%X for '%s' is no longer free "
                     "(vanilla layout change or conflict) - reallocating; loadout references "
                     "to the old id will be healed or blanked.\n", persisted, key);
         }
@@ -1040,6 +1118,7 @@ namespace V_FrameWorkState
         }
 
         g_SessionEquipIds[key] = newId;
+        NoteClaimedEquipId_NoLock(newId);
         g_State.equips[key].equipId = newId;
         g_State.equips[key].misses = 0;
         g_State.dirty = true;
@@ -1047,6 +1126,24 @@ namespace V_FrameWorkState
         outEquipId = newId;
 
         return true;
+    }
+
+    bool IsClaimedEquipId(std::int32_t equipId)
+    {
+        if (equipId <= 0 || equipId >= 4096)
+            return false;
+        return (g_ClaimedEquipBits[equipId >> 6]
+                & (1ull << (equipId & 63))) != 0;
+    }
+
+    void SetVanillaIdentityEquipIds(const std::int32_t* equipIds,
+                                    std::size_t count)
+    {
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        g_VanillaIdentityIds.clear();
+        for (std::size_t i = 0; i < count; ++i)
+            if (equipIds[i] > 0)
+                g_VanillaIdentityIds.insert(equipIds[i]);
     }
 
     static bool IsOwnedEquipId_NoLock(std::int32_t equipId)
@@ -1345,8 +1442,17 @@ namespace V_FrameWorkState
         auto sit = g_SessionFlowIndices.find(key);
         if (sit != g_SessionFlowIndices.end())
         {
-            outFlowIndex = sit->second;
-            return true;
+            if (!IsReservedFlowIndex(sit->second))
+            {
+                outFlowIndex = sit->second;
+                return true;
+            }
+            Log("[V_FrameWorkState] WARNING: '%s' held develop flow index %d, which the "
+                "loadout commit reads as a gunsmith slot (flows 0x3FD-0x3FF resolve to "
+                "equip 871/873/875) - picking it would equip a gunsmith pseudo-weapon "
+                "instead. Reallocating outside the reserved range.\n",
+                key, sit->second);
+            g_SessionFlowIndices.erase(sit);
         }
 
         const std::int32_t flowBound = NativeFlowIndexBound();
@@ -1363,7 +1469,7 @@ namespace V_FrameWorkState
             for (std::int32_t i = kFirstCustomFlowIndex;
                  i < flowBound; ++i)
             {
-                if (i == kNativeFlowSentinel)
+                if (i == kNativeFlowSentinel || IsReservedFlowIndex(i))
                     continue;
                 if (!used[static_cast<std::size_t>(i - kFirstCustomFlowIndex)])
                 {
@@ -1374,7 +1480,7 @@ namespace V_FrameWorkState
         }
         if (newIdx == 0)
         {
-            Log("[V_FrameWorkState] ResolveOrCreateFlowIndex: REFUSED '%s' - the native "
+            LogDebug("[V_FrameWorkState] ResolveOrCreateFlowIndex: REFUSED '%s' - the native "
                 "develop flow array holds %d rows and indices %d..%d are all allocated. "
                 "Registering this row would corrupt memory past the array. The item will "
                 "not appear in R&D until develop-row paging frees window space.\n",
@@ -1521,7 +1627,7 @@ namespace V_FrameWorkState
         SaveToDisk_NoLock();
 
 #ifdef _DEBUG
-        Log("[Constants] allocated %s = %d\n", key.c_str(), value);
+        LogDebug("[Constants] allocated %s = %d\n", key.c_str(), value);
 #endif
         return true;
     }
@@ -1769,7 +1875,7 @@ namespace V_FrameWorkState
         g_State.dirty = true;
         outSaveIndex = newIdx;
 #ifdef _DEBUG
-        Log("[CustomTapes] tape added: '%s' (saveIndex %d) - first time; saved to V_FrameWork_State.lua.\n", key, static_cast<int>(newIdx));
+        LogDebug("[CustomTapes] tape added: '%s' (saveIndex %d) - first time; saved to V_FrameWork_State.lua.\n", key, static_cast<int>(newIdx));
 #endif
 
         SaveToDisk_NoLock();

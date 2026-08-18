@@ -54,6 +54,8 @@ namespace outfit
 
     int DrainPendingHeads();
 
+    bool HasPendingCustomHeads();
+
 
     const CustomHeadEntry* TryGetCustomHeadByName(const char* name);
 

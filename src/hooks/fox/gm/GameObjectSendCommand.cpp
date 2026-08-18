@@ -15,6 +15,7 @@ extern "C" {
 #include "../../../core/AddressSet.h"
 #include "../../../core/HookUtils.h"
 #include "../../../core/MissionCodeGuard.h"
+#include "../../../core/MissionStateReset.h"
 #include "../../sahelan/PhaseSneakAiImpl_PreUpdate.h"
 #include "../../sahelan/RealizedSahelanFovaHook.h"
 #include "../../sahelan/SetEyeLampColorHook.h"
@@ -27,6 +28,9 @@ extern "C" {
 #include "../../soldier/ActionCoreImpl_UpdateOptCamo.h"
 #include "../../soldier/NoticeControllerImpl_GetOccasionalChat.h"
 #include "../../soldier/CautionStepNormalTimerHook.h"
+#include "../../soldier/SoldierObjectRtpc.h"
+#include "../../soldier/NoticeControllerImpl_CheckSightNoticePlayer.h"
+#include "GetGameObjectIdWithIndex.h"
 #include "../../soldier/InterrogationVoiceEvent.h"
 #include "../../bullet/Bullet3Impl_ActivateBulletAtEmptyWorkPatch.h"
 #include "../../../core/FoxHashes.h"
@@ -114,20 +118,28 @@ namespace
         __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
     }
 
-    static std::uint32_t ReadCommandFnvHash(lua_State* L, int cmdStackIdx, const char* key)
+    static std::uint32_t ReadCommandFnvHash(lua_State* L, int cmdStackIdx, const char* key,
+                                            bool* present)
     {
         g_lua_pushstring(L, const_cast<char*>(key));
         g_lua_gettable(L, cmdStackIdx);
         std::uint32_t v = 0;
+        bool have = false;
         const int t = g_lua_type(L, -1);
         if (t == LUA_TNUMBER)
+        {
             v = static_cast<std::uint32_t>(static_cast<long long>(g_lua_tonumber(L, -1)));
+            have = true;
+        }
         else if (t == LUA_TSTRING)
         {
             const char* s = g_lua_tolstring(L, -1, nullptr);
             if (s && s[0])
                 v = FnvHash32Of(s);
+            have = true;
         }
+        if (present)
+            *present = have;
         return v;
     }
 
@@ -226,7 +238,11 @@ namespace
 
         MISSION_GUARD_ORIGINAL_RET(g_OrigSendCommand, L);
 
+        MissionStateReset::PollMissionChange();
+
         if (!ResolveLuaApi()) return g_OrigSendCommand(L);
+
+        MissionStateReset::EnsureFinalizerRegistered(L);
 
         const int top = g_lua_gettop(L);
         if (top < 2 || g_lua_type(L, 2) != LUA_TTABLE)
@@ -290,12 +306,6 @@ namespace
             const std::size_t n = ReadLabelArray(L, 2, labels, "labels");
             g_lua_settop(L, top);
             ::RemoveFromOccasionalChatList(labels, n);
-            return 0;
-        }
-        if (idStr == "ResetOccasionalChatList")
-        {
-            g_lua_settop(L, top);
-            ::ClearOccasionalChatListOverride();
             return 0;
         }
 
@@ -370,6 +380,38 @@ namespace
             return 1;
         }
 
+        if (idStr == "SetRestrictNotice")
+        {
+            const std::uint32_t id = ReadCommandTargetId(L);
+
+            std::uint8_t mask = 0;
+            if (ReadCommandBool(L, 2, "enabled"))
+            {
+                if (ReadCommandBool(L, 2, "ignorePlayer"))       mask |= SoldierNoticeIgnore::kPlayer;
+                if (ReadCommandBool(L, 2, "ignoreHostage"))      mask |= SoldierNoticeIgnore::kHostage;
+                if (ReadCommandBool(L, 2, "ignoreNoticeObject")) mask |= SoldierNoticeIgnore::kNoticeObject;
+                if (ReadCommandBool(L, 2, "ignoreCBox"))         mask |= SoldierNoticeIgnore::kCBox;
+                if (ReadCommandBool(L, 2, "ignoreNoise"))        mask |= SoldierNoticeIgnore::kNoise;
+            }
+            g_lua_settop(L, top);
+
+            const int r = g_OrigSendCommand(L);
+
+            if ((id >> 9) == TppGameObjectType::kSoldier2)
+                ::Set_SoldierNoticeIgnoreMask(id, mask);
+            return r;
+        }
+        if (idStr == "SetVoicePitch")
+        {
+            const std::uint32_t id = ReadCommandTargetId(L);
+            const float cents = static_cast<float>(ReadCommandNumber(L, 2, "pitch"));
+            g_lua_settop(L, top);
+            if (!::Set_SoldierVoicePitch(id, cents))
+                Log("[SoldierVoicePitch] ERROR: SetVoicePitch could not apply pitch %.2f to game "
+                    "object 0x%X - that soldier has no live sound object, so it keeps its vanilla "
+                    "voice pitch.\n", cents, id);
+            return 0;
+        }
         if (idStr == "SetVIPImportant")
         {
             const std::uint32_t id = ReadCommandTargetId(L);
@@ -388,14 +430,6 @@ namespace
             ::Remove_VIPSleepFaintImportantGameObjectId(id);
             ::Remove_VIPHoldupImportantGameObjectId(id);
             ::Remove_VIPRadioImportantGameObjectId(id);
-            return 0;
-        }
-        if (idStr == "ClearVIPImportant")
-        {
-            g_lua_settop(L, top);
-            ::Clear_VIPSleepFaintImportantGameObjectIds();
-            ::Clear_VIPHoldupImportantGameObjectIds();
-            ::Clear_VIPRadioImportantGameObjectIds();
             return 0;
         }
         if (idStr == "SetUseConcernedHoldupRecovery")
@@ -419,10 +453,11 @@ namespace
             ::Remove_CallSignExtraSoldier(id);
             return 0;
         }
-        if (idStr == "ClearCallSignPatrolSoldiers")
+        if (idStr == "ClearLostHostages")
         {
             g_lua_settop(L, top);
-            ::Clear_CallSignExtraSoldiers();
+            ::Clear_LostHostagesTrap();
+            ::Clear_LostHostageDiscovery();
             return 0;
         }
         if (idStr == "SetLostHostage")
@@ -443,25 +478,12 @@ namespace
             ::Remove_LostHostageDiscovery(id);
             return 0;
         }
-        if (idStr == "ClearLostHostages")
-        {
-            g_lua_settop(L, top);
-            ::Clear_LostHostagesTrap();
-            ::Clear_LostHostageDiscovery();
-            return 0;
-        }
         if (idStr == "EnableSoldierStealthCamo")
         {
             const std::uint32_t mappedIndex = ReadCommandTargetId(L);
             const bool enable = ReadCommandBool(L, 2, "enable");
             g_lua_settop(L, top);
             ::Set_UpdateOptCamoEnableMappedIndex(mappedIndex, enable);
-            return 0;
-        }
-        if (idStr == "ClearSoldierStealthCamoOverrides")
-        {
-            g_lua_settop(L, top);
-            ::Clear_UpdateOptCamoMappedIndexOverrides();
             return 0;
         }
         if (idStr == "SetSahelanFova")
@@ -478,12 +500,6 @@ namespace
             ::Set_SahelanFovaPath(fv2.c_str());
             return 0;
         }
-        if (idStr == "ClearSahelanFova")
-        {
-            g_lua_settop(L, top);
-            ::Clear_SahelanFovaOverride();
-            return 0;
-        }
         if (idStr == "SetEyeLampColor")
         {
             float r, g, b, a;
@@ -491,12 +507,6 @@ namespace
             const int   mode = static_cast<int>(ReadCommandNumberOr(L, 2, "phase", -1.0));
             g_lua_settop(L, top);
             ::Set_EyeLampColor(mode, r, g, b, a);
-            return 0;
-        }
-        if (idStr == "ClearEyeLampColor")
-        {
-            g_lua_settop(L, top);
-            ::Clear_EyeLampColor();
             return 0;
         }
         if (idStr == "SetEyeLampDisco")
@@ -515,12 +525,6 @@ namespace
             const int mode = static_cast<int>(ReadCommandNumberOr(L, 2, "phase", -1.0));
             g_lua_settop(L, top);
             ::Set_HeartLightColor(mode, r, g, b, a);
-            return 0;
-        }
-        if (idStr == "ClearHeartLightColor")
-        {
-            g_lua_settop(L, top);
-            ::Clear_HeartLightColor();
             return 0;
         }
         if (idStr == "SetHeartLightDisco")
@@ -549,14 +553,25 @@ namespace
 
         if (idStr == "AssignInterrogationWithVoice")
         {
-            const std::uint32_t ev = ReadCommandFnvHash(L, 2, "soundDialogueEvent");
+            bool hasEvent = false;
+            const std::uint32_t ev =
+                ReadCommandFnvHash(L, 2, "soundDialogueEvent", &hasEvent);
             g_lua_settop(L, top);
 
             ::Arm_CautionCpCapture();
             const int r = g_OrigSendCommand(L);
             const std::uint32_t cp = ::Take_CautionCpIndex();
-            if (cp != 0xFFFFFFFFu)
-                ::Register_InterrogationVoiceEvent(cp, ev);
+
+            if (hasEvent)
+            {
+                if (cp == 0xFFFFFFFFu)
+                    Log("[InterrogationVoice] ERROR: AssignInterrogationWithVoice did not reach the "
+                        "Command Post dispatcher, so its CP index could not be captured - "
+                        "soundDialogueEvent 0x%X was NOT registered and this CP keeps the vanilla "
+                        "interrogation voice.\n", ev);
+                else
+                    ::Register_InterrogationVoiceEvent(cp, ev);
+            }
             return r;
         }
 
@@ -570,7 +585,7 @@ bool Install_GameObjectSendCommand_Hook()
 
     if (!gAddr.GameObject_SendCommand)
     {
-        Log("[GameObjectSendCommand] address is 0 (unsupported build)\n");
+        LogDebug("[GameObjectSendCommand] address is 0 (unsupported build)\n");
         return false;
     }
 
@@ -596,7 +611,7 @@ bool Install_GameObjectSendCommand_Hook()
     {
         g_Installed = true;
 #ifdef _DEBUG
-        Log("[GameObjectSendCommand] hook installed @ %p (orig=%p)\n",
+        LogDebug("[GameObjectSendCommand] hook installed @ %p (orig=%p)\n",
             target, reinterpret_cast<void*>(g_OrigSendCommand));
 #endif
     }

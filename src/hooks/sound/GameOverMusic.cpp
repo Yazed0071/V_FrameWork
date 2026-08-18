@@ -18,7 +18,7 @@ namespace
     {
         if (!pointer)
         {
-            Log("[GameOverMusic] TogglePatch(%s): address not set for current build\n",
+            LogDebug("[GameOverMusic] TogglePatch(%s): address not set for current build\n",
                 isEnable ? "true" : "false");
             return false;
         }
@@ -26,7 +26,7 @@ namespace
         void* target = ResolveGameAddress(pointer);
         if (!target)
         {
-            Log("[GameOverMusic] TogglePatch(%s): ResolveGameAddress @0x%llx null\n",
+            LogDebug("[GameOverMusic] TogglePatch(%s): ResolveGameAddress @0x%llx null\n",
                 isEnable ? "true" : "false", static_cast<unsigned long long>(pointer));
             return false;
         }

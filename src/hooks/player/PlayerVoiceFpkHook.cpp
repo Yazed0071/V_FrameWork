@@ -148,7 +148,7 @@ static void* __fastcall hkLoadPlayerVoiceFpk(void* fileSlotPath, std::uint32_t p
     if (ResolveVanillaExtVoice(playerType, &vextVoice))
     {
 #ifdef _DEBUG
-        Log("[PlayerVoiceFpk] vanilla-ext voice applied (playerType=%u code=0x%016llX bypass=%d)\n",
+        LogDebug("[PlayerVoiceFpk] vanilla-ext voice applied (playerType=%u code=0x%016llX bypass=%d)\n",
             playerType, static_cast<unsigned long long>(vextVoice),
             MissionCodeGuard::ShouldBypassHooks() ? 1 : 0);
 #endif
@@ -165,7 +165,7 @@ static void* __fastcall hkLoadPlayerVoiceFpk(void* fileSlotPath, std::uint32_t p
     if (ResolveWornOutfitVoice(playerType, &outfitVoice))
     {
 #ifdef _DEBUG
-        Log("[PlayerVoiceFpk] per-outfit voice applied (playerType=%u code=0x%016llX)\n",
+        LogDebug("[PlayerVoiceFpk] per-outfit voice applied (playerType=%u code=0x%016llX)\n",
             playerType, static_cast<unsigned long long>(outfitVoice));
 #endif
         WritePlayerVoicePath(fileSlotPath, outfitVoice);
@@ -223,7 +223,7 @@ bool Uninstall_PlayerVoiceFpk_Hook()
     }
 
 #ifdef _DEBUG
-    Log("[Hook] PlayerVoiceFpk: removed\n");
+    LogDebug("[Hook] PlayerVoiceFpk: removed\n");
 #endif
     return true;
 }
@@ -275,7 +275,7 @@ void Clear_PlayerVoiceFpkPathForType(std::uint32_t playerType)
     }
 
 #ifdef _DEBUG
-    Log("[PlayerVoiceFpk] Type override cleared: playerType=%u\n", playerType);
+    LogDebug("[PlayerVoiceFpk] Type override cleared: playerType=%u\n", playerType);
 #endif
 }
 
@@ -288,6 +288,6 @@ void Clear_AllPlayerVoiceFpkOverrides()
     g_FallbackOverride = {};
 
 #ifdef _DEBUG
-    Log("[PlayerVoiceFpk] All overrides cleared\n");
+    LogDebug("[PlayerVoiceFpk] All overrides cleared\n");
 #endif
 }

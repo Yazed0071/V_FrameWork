@@ -8,6 +8,7 @@
 #include "AddressSet.h"
 #include "HookUtils.h"
 #include "InterrogationVoiceEvent.h"
+#include "MissionStateReset.h"
 #include "log.h"
 
 namespace
@@ -17,14 +18,17 @@ namespace
 
     using UpdateInterrogation_t = void (__fastcall*)(void* soldier2, std::uint32_t index,
                                                      void* knowledge, std::uint32_t hung);
-    using CallVoice_t = char (__fastcall*)(void* self, std::uint32_t slot, std::uint32_t event,
-                                           std::uint32_t voiceType, std::uint64_t a5,
-                                           std::uint64_t a6, std::uint64_t a7);
+    using CallVoice_t = char (__fastcall*)(void* self, std::uint32_t slot,
+                                           std::uint32_t voiceType, std::uint32_t event,
+                                           std::uint64_t a5, std::uint64_t a6, std::uint64_t a7);
 
     std::mutex g_mtx;
     std::unordered_map<std::uint32_t, std::uint32_t> g_eventByCp;
 
     thread_local std::uint32_t t_event = 0;
+
+    std::atomic<std::uint32_t> g_pendingEvent{ 0 };
+    std::atomic<std::uint64_t> g_pendingUntilTick{ 0 };
 
     UpdateInterrogation_t g_OrigUpdate       = nullptr;
     UpdateInterrogation_t g_OrigUpdateMarker = nullptr;
@@ -51,6 +55,8 @@ namespace
 
     std::uint32_t LookupEvent(std::uint32_t cpId)
     {
+        MissionStateReset::PollMissionChange();
+
         std::lock_guard<std::mutex> lk(g_mtx);
         const auto it = g_eventByCp.find(cpId);
         return it != g_eventByCp.end() ? it->second : 0u;
@@ -59,6 +65,12 @@ namespace
     void RunUpdateGuarded(UpdateInterrogation_t orig, void* soldier2, std::uint32_t index,
                           void* knowledge, std::uint32_t hung, std::uint32_t ev)
     {
+        if (ev)
+        {
+            g_pendingEvent.store(ev, std::memory_order_relaxed);
+            g_pendingUntilTick.store(GetTickCount64() + 2000, std::memory_order_relaxed);
+        }
+
         const std::uint32_t prev = t_event;
         t_event = ev;
         __try   { orig(soldier2, index, knowledge, hung); }
@@ -87,23 +99,27 @@ namespace
         RunUpdateGuarded(g_OrigUpdateMarker, soldier2, index, knowledge, hung, ev);
     }
 
-    char __fastcall hk_CallVoice(void* self, std::uint32_t slot, std::uint32_t event,
-                                 std::uint32_t voiceType, std::uint64_t a5,
+    std::uint32_t TakePendingEvent()
+    {
+        if (t_event != 0)
+            return t_event;
+        if (GetTickCount64() >= g_pendingUntilTick.load(std::memory_order_relaxed))
+            return 0;
+        return g_pendingEvent.exchange(0, std::memory_order_relaxed);
+    }
+
+    char __fastcall hk_CallVoice(void* self, std::uint32_t slot, std::uint32_t voiceType,
+                                 std::uint32_t event, std::uint64_t a5,
                                  std::uint64_t a6, std::uint64_t a7)
     {
         std::uint32_t ev = event;
-        if (t_event != 0 && (event == kDdVoxEne || event == kDdVoxEneState))
+        if (event == kDdVoxEne || event == kDdVoxEneState)
         {
-            ev = t_event;
-            static thread_local std::uint32_t s_lastLogged = 0;
-            if (s_lastLogged != t_event)
-            {
-                s_lastLogged = t_event;
-                Log("[InterrogationVoice][diag] swap DD_vox_ene(0x%X) -> 0x%X\n",
-                    event, t_event);
-            }
+            const std::uint32_t pending = TakePendingEvent();
+            if (pending != 0)
+                ev = pending;
         }
-        return g_OrigCallVoice ? g_OrigCallVoice(self, slot, ev, voiceType, a5, a6, a7) : 0;
+        return g_OrigCallVoice ? g_OrigCallVoice(self, slot, voiceType, ev, a5, a6, a7) : 0;
     }
 }
 
@@ -116,16 +132,12 @@ void Register_InterrogationVoiceEvent(std::uint32_t cpIndex, std::uint32_t event
         g_eventByCp.erase(cpIndex);
 }
 
-void Unregister_InterrogationVoiceEvent(std::uint32_t cpIndex)
-{
-    std::lock_guard<std::mutex> lk(g_mtx);
-    g_eventByCp.erase(cpIndex);
-}
-
 void Clear_InterrogationVoiceEvents()
 {
     std::lock_guard<std::mutex> lk(g_mtx);
     g_eventByCp.clear();
+    g_pendingEvent.store(0, std::memory_order_relaxed);
+    g_pendingUntilTick.store(0, std::memory_order_relaxed);
 }
 
 bool Install_InterrogationVoiceEvent_Hook()
@@ -180,5 +192,7 @@ bool Uninstall_InterrogationVoiceEvent_Hook()
         std::lock_guard<std::mutex> lk(g_mtx);
         g_eventByCp.clear();
     }
+    g_pendingEvent.store(0, std::memory_order_relaxed);
+    g_pendingUntilTick.store(0, std::memory_order_relaxed);
     return true;
 }

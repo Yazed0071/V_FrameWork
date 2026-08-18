@@ -29,7 +29,7 @@ bool Install_HideBinocle_Hook()
 {
     if (!gAddr.UiControllerImpl_HideBinocle)
     {
-        Log("[HideBinocle] address not set for this build\n");
+        LogDebug("[HideBinocle] address not set for this build\n");
         return false;
     }
 

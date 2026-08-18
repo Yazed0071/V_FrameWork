@@ -150,7 +150,7 @@ bool Register_CustomRadioCassette(
 
     if (g_Entries.size() >= kMaxCustomRadioCassette)
     {
-        Log("[RadioCassette] register refused: %zu cassettes reached the "
+        LogDebug("[RadioCassette] register refused: %zu cassettes reached the "
             "int16 save-index ceiling (%zu)\n",
             g_Entries.size(), kMaxCustomRadioCassette);
         return false;

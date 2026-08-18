@@ -69,14 +69,14 @@ bool Install_EquipCrossSetEquipItemPatch()
     const BytePatchSite* sites = GetPatchSitesForCurrentBuild(count);
     if (!sites || count == 0)
     {
-        Log("[EquipCrossSetEquipItem] no patch addresses for current build\n");
+        LogDebug("[EquipCrossSetEquipItem] no patch addresses for current build\n");
         return false;
     }
 
     constexpr std::size_t kMaxSites = 16;
     if (count > kMaxSites)
     {
-        Log("[EquipCrossSetEquipItem] too many patch sites (%zu)\n", count);
+        LogDebug("[EquipCrossSetEquipItem] too many patch sites (%zu)\n", count);
         return false;
     }
 
@@ -86,14 +86,14 @@ bool Install_EquipCrossSetEquipItemPatch()
         void* target = ResolveGameAddress(sites[i].address);
         if (!target)
         {
-            Log("[EquipCrossSetEquipItem] ResolveGameAddress returned null for site %zu\n", i);
+            LogDebug("[EquipCrossSetEquipItem] ResolveGameAddress returned null for site %zu\n", i);
             return false;
         }
 
         const auto* cur = static_cast<const std::uint8_t*>(target);
         if (cur[0] != sites[i].original[0] || cur[1] != sites[i].original[1])
         {
-            Log("[EquipCrossSetEquipItem] unexpected bytes at %p (%02X %02X, expected %02X %02X) - not patching\n",
+            LogDebug("[EquipCrossSetEquipItem] unexpected bytes at %p (%02X %02X, expected %02X %02X) - not patching\n",
                 target, cur[0], cur[1], sites[i].original[0], sites[i].original[1]);
             return false;
         }
@@ -107,7 +107,7 @@ bool Install_EquipCrossSetEquipItemPatch()
             return false;
 
 #ifdef _DEBUG
-        Log("[EquipCrossSetEquipItem] patched %p: %02X %02X -> %02X %02X\n",
+        LogDebug("[EquipCrossSetEquipItem] patched %p: %02X %02X -> %02X %02X\n",
             targets[i],
             sites[i].original[0], sites[i].original[1],
             sites[i].patched[0], sites[i].patched[1]);

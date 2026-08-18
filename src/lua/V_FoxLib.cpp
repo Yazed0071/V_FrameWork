@@ -26,7 +26,7 @@ namespace
         {
             size_t len = 0;
             const char* msg = g_lua_tolstring ? g_lua_tolstring(L, 1, &len) : nullptr;
-            Log("[Fox.Log] %s\n", msg ? msg : "(non-string arg)");
+            LogDebug("[Fox.Log] %s\n", msg ? msg : "(non-string arg)");
         }
         return 0;
     }

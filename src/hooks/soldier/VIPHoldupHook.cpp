@@ -231,7 +231,7 @@ static void DispatchNoticeReaction(void* noticeSelf, std::uint32_t actorId, std:
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
-        Log("[Holdup] DispatchNoticeReaction exception\n");
+        LogDebug("[Holdup] DispatchNoticeReaction exception\n");
     }
 }
 
@@ -492,7 +492,7 @@ void Add_VIPHoldupImportantGameObjectId(std::uint32_t gameObjectId, bool isOffic
 
     if (soldierIndex == 0xFFFFu)
     {
-        Log("[Holdup] Add ignored: invalid soldier GameObjectId=0x%08X\n", gameObjectId);
+        LogDebug("[Holdup] Add ignored: invalid soldier GameObjectId=0x%08X\n", gameObjectId);
         return;
     }
 
@@ -514,7 +514,7 @@ void Remove_VIPHoldupImportantGameObjectId(std::uint32_t gameObjectId)
 
     if (soldierIndex == 0xFFFFu)
     {
-        Log("[Holdup] Remove ignored: invalid soldier GameObjectId=0x%08X\n", gameObjectId);
+        LogDebug("[Holdup] Remove ignored: invalid soldier GameObjectId=0x%08X\n", gameObjectId);
         return;
     }
 
@@ -551,7 +551,7 @@ void Set_UseCustomNonVipHoldupRecovery(bool enabled)
     }
 
 #ifdef _DEBUG
-    Log("[Holdup] Custom non-VIP holdup recovery: %s (hash=0x%08X)\n",
+    LogDebug("[Holdup] Custom non-VIP holdup recovery: %s (hash=0x%08X)\n",
         enabled ? "ON" : "OFF",
         static_cast<unsigned>(HASH_HOLDUP_RECOVERY_NONVIP_CUSTOM));
 #endif
@@ -595,7 +595,7 @@ bool Uninstall_VIPHoldup_Hook()
     }
 
 #ifdef _DEBUG
-    Log("[Holdup] Hooks removed and state cleared\n");
+    LogDebug("[Holdup] Hooks removed and state cleared\n");
 #endif
     return true;
 }

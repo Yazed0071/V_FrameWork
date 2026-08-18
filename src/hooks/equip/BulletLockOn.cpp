@@ -624,7 +624,7 @@ namespace
             return false;
         g_OrigGetLockParam = orig;
         g_ProviderSlot = slot;
-        Log("[BulletLockOn] lock provider hooked via vtable slot +0x80 "
+        LogDebug("[BulletLockOn] lock provider hooked via vtable slot +0x80 "
             "(orig=%p)\n", reinterpret_cast<void*>(orig));
         return true;
     }
@@ -746,7 +746,7 @@ namespace
             *slot = reinterpret_cast<void*>(&hkQueryExec);
             VirtualProtect(slot, sizeof(void*), oldProt, &oldProt);
             g_QuerySlot = slot;
-            Log("[BulletLockOn] lock query hooked via executor vtable slot 0 "
+            LogDebug("[BulletLockOn] lock query hooked via executor vtable slot 0 "
                 "(orig=%p)\n", reinterpret_cast<void*>(g_OrigQueryExec));
             return true;
         }
@@ -928,7 +928,7 @@ namespace
                 int& n = s_Cnt[pre.equipId];
                 ++n;
                 if (n <= 6)
-                    Log("[WeaponKey] DoFire eq=%u obj=%p slot=%u hw=%u flags8A=0x%04X "
+                    LogDebug("[WeaponKey] DoFire eq=%u obj=%p slot=%u hw=%u flags8A=0x%04X "
                         "ammo=%u state %u/%u -> %u/%u rate=%.4f "
                         "|| LIVE gunInfo(work) fireRate(+0x68)=%u trigger(+0x88 bits10-12)=%u "
                         "shotType(+0x7e)=%u [+0x88 word=0x%08X] "
@@ -1252,7 +1252,7 @@ namespace
         if (ReuseLockWindowSEH(&win, &winLayout))
         {
             if (g_OurLockWindow != win)
-                Log("[BulletLockOn] lock reticle window found and shown "
+                LogDebug("[BulletLockOn] lock reticle window found and shown "
                     "(window=%p layout=%p)\n", win, winLayout);
             g_OurLockWindow = win;
         }
@@ -1385,7 +1385,7 @@ namespace equip
     {
         if (bulletId <= 0 || bulletId > 255)
         {
-            Log("[BulletLockOn] bulletId=%d rejected: the held-weapon bullet "
+            LogDebug("[BulletLockOn] bulletId=%d rejected: the held-weapon bullet "
                 "id the lock query reads is a single byte, lockOn bullets "
                 "must use ids 1-255.\n", bulletId);
             return;
@@ -1429,7 +1429,7 @@ namespace equip
             std::lock_guard<std::recursive_mutex> lock(g_Mutex);
             g_SpecByBulletId[bulletId] = spec;
         }
-        Log("[BulletLockOn] bulletId=%d lock-on registered: count=%d "
+        LogDebug("[BulletLockOn] bulletId=%d lock-on registered: count=%d "
             "time=%.2fs turnRate=%.0fdeg/s range=%.0f-%.0fm speed=%s "
             "homingStart=%.1fm\n",
             bulletId, c, t, turn, rMin, rMax > 0.0 ? rMax : 50.0,
@@ -1439,7 +1439,7 @@ namespace equip
         {
             g_ProviderHookTried = true;
             if (!EnsureProviderVtableHook())
-                Log("[BulletLockOn] lock provider not yet hookable "
+                LogDebug("[BulletLockOn] lock provider not yet hookable "
                     "(EquipParameterTablesImpl vtable not ready) - will retry "
                     "on next registration.\n");
         }
@@ -1456,7 +1456,7 @@ namespace equip
             std::lock_guard<std::recursive_mutex> lock(g_Mutex);
             g_TypeByBulletId[bulletId] = swap;
         }
-        Log("[BulletLockOn] bulletId=%d locked bulletType=%d (normal=%d) "
+        LogDebug("[BulletLockOn] bulletId=%d locked bulletType=%d (normal=%d) "
             "registered\n", bulletId, lockedType, normalType);
     }
 
@@ -1480,7 +1480,7 @@ namespace equip
             || !fnUpd || !fnSim || !fnAct
             || !g_GetQuarkSystemTable)
         {
-            Log("[BulletLockOn] not installed (addresses unresolved on this "
+            LogDebug("[BulletLockOn] not installed (addresses unresolved on this "
                 "build) - SetBullet lockOn inactive.\n");
             return true;
         }

@@ -83,7 +83,7 @@ namespace
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            Log("[SahelanFova] ApplyFovaWithHash: exception (self=%p, param2=%u, hash=0x%016llX)\n",
+            LogDebug("[SahelanFova] ApplyFovaWithHash: exception (self=%p, param2=%u, hash=0x%016llX)\n",
                 self, param2, static_cast<unsigned long long>(hash));
         }
     }
@@ -167,7 +167,7 @@ bool Uninstall_RealizedSahelanFova_Hook()
     g_OrigRealize = nullptr;
 
 #ifdef _DEBUG
-    Log("[Hook] RealizedSahelanFova: removed\n");
+    LogDebug("[Hook] RealizedSahelanFova: removed\n");
 #endif
     return true;
 }
@@ -181,7 +181,7 @@ void Set_SahelanFovaHash(std::uint64_t hash)
         g_BypassMissionCheck.store(true, std::memory_order_relaxed);
 
 #ifdef _DEBUG
-    Log("[SahelanFova] hash override set to 0x%016llX (bypassMission=%s)\n",
+    LogDebug("[SahelanFova] hash override set to 0x%016llX (bypassMission=%s)\n",
         static_cast<unsigned long long>(hash),
         g_BypassMissionCheck.load() ? "ON" : "OFF");
 #endif
@@ -207,7 +207,7 @@ void Clear_SahelanFovaOverride()
     g_BypassMissionCheck.store(false, std::memory_order_relaxed);
 
 #ifdef _DEBUG
-    Log("[SahelanFova] override cleared (vanilla restored)\n");
+    LogDebug("[SahelanFova] override cleared (vanilla restored)\n");
 #endif
 }
 

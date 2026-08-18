@@ -310,7 +310,7 @@ void Add_CallSignExtraSoldier(std::uint32_t gameObjectId)
 
     if (soldierIndex == 0xFFFFu)
     {
-        Log("[CallSignExtra] Add soldier ignored: invalid GameObjectId=0x%08X\n", gameObjectId);
+        LogDebug("[CallSignExtra] Add soldier ignored: invalid GameObjectId=0x%08X\n", gameObjectId);
         return;
     }
 
@@ -328,7 +328,7 @@ void Remove_CallSignExtraSoldier(std::uint32_t gameObjectId)
 
     if (soldierIndex == 0xFFFFu)
     {
-        Log("[CallSignExtra] Remove soldier ignored: invalid GameObjectId=0x%08X\n", gameObjectId);
+        LogDebug("[CallSignExtra] Remove soldier ignored: invalid GameObjectId=0x%08X\n", gameObjectId);
         return;
     }
 
@@ -383,7 +383,7 @@ bool Uninstall_CallSignExtra_Hook()
     }
 
 #ifdef _DEBUG
-    Log("[Hook] CallSignExtra: removed\n");
+    LogDebug("[Hook] CallSignExtra: removed\n");
 #endif
     return true;
 }

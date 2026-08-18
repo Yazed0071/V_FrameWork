@@ -7,7 +7,7 @@ namespace EquipIdCompression
 {
     constexpr std::int32_t kCompressedSlotBound = 0x289;
 
-    inline std::int32_t ComputeCompressed(std::int32_t equipId)
+    constexpr std::int32_t ComputeCompressed(std::int32_t equipId)
     {
         if (equipId < 0)         return -1;
         if (equipId < 0x400)     return equipId;
@@ -45,7 +45,23 @@ namespace EquipIdCompression
 
 
     constexpr std::int32_t kExtendedEquipIdFirst = kCompressedSlotBound;   // 0x289
-    constexpr std::int32_t kExtendedEquipIdLast  = 0x3FF;
+    constexpr std::int32_t kExtendedEquipIdLast  = 0xFFFF;
+    constexpr std::int32_t kExtendedAllocFirst   = 0x700;
+    constexpr std::int32_t kExtendedFoldedFirst  =
+        ComputeCompressed(kExtendedAllocFirst);
+    constexpr std::int32_t kExtendedFoldedLast   =
+        ComputeCompressed(kExtendedEquipIdLast);
+
+    static_assert(kExtendedFoldedFirst >= kCompressedSlotBound,
+                  "extended ids must fold clear of every vanilla row: vanilla folds "
+                  "all land below the native table bound, so anything at or above it "
+                  "can never alias a vanilla equipId");
+    static_assert(kExtendedFoldedFirst > kChimeraEquipIdLast &&
+                  kExtendedAllocFirst > kChimeraEquipIdLast,
+                  "extended ids must clear the chimera band raw AND folded - an id "
+                  "inside it is rewritten to a gunsmith work-slot id at loadout spawn");
+    static_assert(kExtendedFoldedLast > kExtendedFoldedFirst,
+                  "the fold must stay monotonic across the extended band");
 
     inline bool IsExtendedEquipId(std::int32_t equipId)
     {

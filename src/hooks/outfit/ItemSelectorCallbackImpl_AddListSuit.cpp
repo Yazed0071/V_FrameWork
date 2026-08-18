@@ -139,7 +139,7 @@ namespace
         ResumeThread(h);
         CloseHandle(h);
 
-        Log("[BuildWatchdog] FROZEN list build: the game's SetupPrefabListElement has "
+        LogDebug("[BuildWatchdog] FROZEN list build: the game's SetupPrefabListElement has "
             "run >%ums without returning. rip=0x%llX rsp=0x%llX (no ASLR - map rip to "
             "the EN15.4 dump directly)\n",
             atMs,
@@ -148,7 +148,7 @@ namespace
 
         if (g_PrevRip)
         {
-            Log("[BuildWatchdog]   since the previous sample: rip 0x%llX -> 0x%llX, "
+            LogDebug("[BuildWatchdog]   since the previous sample: rip 0x%llX -> 0x%llX, "
                 "rsp 0x%llX -> 0x%llX (same rip AND same rsp = wedged on one "
                 "instruction; either one moving = bounded work still progressing)\n",
                 static_cast<unsigned long long>(g_PrevRip),
@@ -169,7 +169,7 @@ namespace
             std::uint64_t v = stackbuf[i];
             if (v >= 0x140000000ull && v < 0x142E00000ull)
             {
-                Log("[BuildWatchdog]   ret[rsp+0x%03X] = 0x%llX (game-code return "
+                LogDebug("[BuildWatchdog]   ret[rsp+0x%03X] = 0x%llX (game-code return "
                     "address - the frozen call chain)\n",
                     static_cast<unsigned>(i * 8),
                     static_cast<unsigned long long>(v));
@@ -177,7 +177,7 @@ namespace
             }
         }
         if (shown == 0)
-            Log("[BuildWatchdog]   (no game-code addresses found on the sampled stack)\n");
+            LogDebug("[BuildWatchdog]   (no game-code addresses found on the sampled stack)\n");
     }
 
     static DWORD WINAPI BuildWatchdogThread(LPVOID)
@@ -454,7 +454,7 @@ namespace
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            Log("[OutfitListInject:AddRecord] SEH writing the EQUIPPED mark "
+            LogDebug("[OutfitListInject:AddRecord] SEH writing the EQUIPPED mark "
                 "(flowIndex=%u row=%u cell=%u) - that row's equipped tag "
                 "keeps whatever the engine decided\n",
                 static_cast<unsigned>(flowIndex),
@@ -481,7 +481,7 @@ namespace
         {
             static std::atomic<int> s_bc{ 0 };
             if (s_bc.fetch_add(1) < 4000)
-                Log("[OutfitListInject:AddListSuit] build row flowIndex=%u (breadcrumb - the "
+                LogDebug("[OutfitListInject:AddListSuit] build row flowIndex=%u (breadcrumb - the "
                     "LAST line before a freeze is the row whose list build hangs)\n",
                     static_cast<unsigned>(flowIndex));
         }
@@ -490,7 +490,7 @@ namespace
         if (outfit::IsCustomHeadEquipId(flowIndex))
         {
 #ifdef _DEBUG
-            Log("[OutfitListInject:AddListSuit] suppressed custom-HEAD row "
+            LogDebug("[OutfitListInject:AddListSuit] suppressed custom-HEAD row "
                 "flowIndex=%u (heads belong in the 0x201 submenu, not the "
                 "uniform list)\n", static_cast<unsigned>(flowIndex));
 #endif
@@ -507,7 +507,7 @@ namespace
                     && !entry->IsPlayerTypeSupported(livePT))
                 {
 #ifdef _DEBUG
-                    Log("[OutfitListInject:AddListSuit] suppressed PT-unsupported "
+                    LogDebug("[OutfitListInject:AddListSuit] suppressed PT-unsupported "
                         "flowIndex=%u live-PT=%u (developId=%u partsType=0x%02X)\n",
                         static_cast<unsigned>(flowIndex),
                         static_cast<unsigned>(livePT),
@@ -579,7 +579,7 @@ namespace
             if (*reinterpret_cast<std::uint64_t*>(base + 0x461b8)
                     != 0xb8a0bf169f98ull)
             {
-                Log("[OutfitListInject:AddListSuit] wrong-object guard: "
+                LogDebug("[OutfitListInject:AddListSuit] wrong-object guard: "
                     "thisPtr=%p is not the suit panel (+0x461b8 mismatch) -> "
                     "skipped variant-cell writes (flowIndex=%u)\n",
                     thisPtr, static_cast<unsigned>(flowIndex));
@@ -626,7 +626,7 @@ namespace
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            Log("[OutfitListInject:AddListSuit] SEH writing variant "
+            LogDebug("[OutfitListInject:AddListSuit] SEH writing variant "
                 "cells (flowIndex=%u row=%u)\n",
                 static_cast<unsigned>(flowIndex),
                 static_cast<unsigned>(row));
@@ -883,7 +883,7 @@ namespace
                             n < 24)
                         {
                             s_scrubLog.store(n + 1, std::memory_order_relaxed);
-                            Log("[RedCrossDiag] render-time cell scrub: row=%u "
+                            LogDebug("[RedCrossDiag] render-time cell scrub: row=%u "
                                 "%u cell(s) held a vext selector (first=0x%02X) "
                                 "- reset to source camo before orig render\n",
                                 row, static_cast<unsigned>(scrubbed),
@@ -982,7 +982,7 @@ namespace
                             if (key != s_lastRowKey)
                             {
                                 s_lastRowKey = key;
-                                Log("[RedCrossDiag] vextrow row=%u flow=%u "
+                                LogDebug("[RedCrossDiag] vextrow row=%u flow=%u "
                                     "count=%u selCell=%u%s\n",
                                     row, rowFlow,
                                     static_cast<unsigned>(cnt),
@@ -1047,7 +1047,7 @@ namespace
                     (static_cast<std::uint64_t>(variantIdx) << 56)
                     ^ (variantHash & 0x00FFFFFFFFFFFFFFull);
                 if (ShouldLogRowSig(g_MatchLogged, selectedId, matchSig))
-                    Log("[OutfitListInject:UpdateRecords] matched custom "
+                    LogDebug("[OutfitListInject:UpdateRecords] matched custom "
                         "outfit row: selectedId=%u developId=%u variantIdx=%u "
                         "variantHash=0x%016llX %s\n",
                         static_cast<unsigned>(selectedId),
@@ -1119,7 +1119,7 @@ namespace
                 (static_cast<std::uint64_t>(variantIdx) << 56)
                 ^ (variantHash & 0x00FFFFFFFFFFFFFFull);
             if (ShouldLogRowSig(g_OverrideLogged, selectedId, overrideSig))
-                Log("[OutfitListInject:UpdateRecords] cycle-button label "
+                LogDebug("[OutfitListInject:UpdateRecords] cycle-button label "
                     "override: selectedId=%u variantIdx=%u hash=0x%016llX\n",
                     static_cast<unsigned>(selectedId),
                     static_cast<unsigned>(variantIdx),
@@ -1128,7 +1128,7 @@ namespace
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            Log("[OutfitListInject:UpdateRecords] SEH writing variant "
+            LogDebug("[OutfitListInject:UpdateRecords] SEH writing variant "
                 "label (selectedId=%u variantIdx=%u)\n",
                 static_cast<unsigned>(selectedId),
                 static_cast<unsigned>(variantIdx));
@@ -1194,7 +1194,7 @@ namespace
             if (*reinterpret_cast<std::uint64_t*>(base + 0x461b8)
                     != 0xb8a0bf169f98ull)
             {
-                Log("[OutfitListInject:HeadOption] wrong-object guard: "
+                LogDebug("[OutfitListInject:HeadOption] wrong-object guard: "
                     "base=%p is not the suit panel (+0x461b8 mismatch) -> "
                     "skipped head-marker writes\n", base);
                 return false;
@@ -1307,7 +1307,7 @@ namespace
 #ifdef _DEBUG
             if (!g_HeadOptionInjectFirstFire.exchange(true))
             {
-                Log("[OutfitListInject:HeadOption] FIRST INJECT: "
+                LogDebug("[OutfitListInject:HeadOption] FIRST INJECT: "
                     "partsType=0x%02X livePT=%u developId=%u "
                     "declaredCount=%u origCount=%u finalCount=%u - "
                     "committed to this[0x442c] and this[0x104]\n",
@@ -1322,7 +1322,7 @@ namespace
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            Log("[OutfitListInject:HeadOption] inject faulted; "
+            LogDebug("[OutfitListInject:HeadOption] inject faulted; "
                 "partsType=0x%02X count-at-fault=%u\n",
                 static_cast<unsigned>(pt),
                 static_cast<unsigned>(count));
@@ -1356,7 +1356,7 @@ namespace
             if (s_passive < 12)
             {
                 ++s_passive;
-                Log("[HeadSummary] GetFaceEquipId passive: arg=0x%X "
+                LogDebug("[HeadSummary] GetFaceEquipId passive: arg=0x%X "
                     "isCustomHeadEquipId=%d livePT=0x%02X\n",
                     equipId, byEquip ? 1 : 0,
                     static_cast<unsigned>(outfit::ReadLivePartsType()));
@@ -1435,7 +1435,7 @@ namespace
                 if (s_n < 12)
                 {
                     ++s_n;
-                    Log("[OutfitListInject] FOB-sortie context: disabled %d "
+                    LogDebug("[OutfitListInject] FOB-sortie context: disabled %d "
                         "custom cell(s) via the game's IsFobAvailable\n",
                         disabled);
                 }
@@ -1454,7 +1454,7 @@ namespace
             if (code != s_lastCode)
             {
                 s_lastCode = code;
-                Log("[OutfitListInject] SetupPrefab: missionCode=%u fobBypass=%d\n",
+                LogDebug("[OutfitListInject] SetupPrefab: missionCode=%u fobBypass=%d\n",
                     static_cast<unsigned>(code),
                     MissionCodeGuard::ShouldBypassHooks() ? 1 : 0);
             }
@@ -1476,7 +1476,7 @@ namespace
             if (s_fobLog < 8)
             {
                 ++s_fobLog;
-                Log("[OutfitListInject] FOB mission: list built with %d custom "
+                LogDebug("[OutfitListInject] FOB mission: list built with %d custom "
                     "develop row(s) suppressed; custom injection skipped\n",
                     suppressed);
             }
@@ -1502,7 +1502,7 @@ namespace
             {
                 ++s_beforeOrig;
                 const ListBuildProbe pr = ReadListBuildProbeSEH(thisPtr);
-                Log("[OutfitListInject] SetupPrefab: pre-resets OK, entering game list build "
+                LogDebug("[OutfitListInject] SetupPrefab: pre-resets OK, entering game list build "
                     "(missionCode=%u equipKind=0x%X panelSig=0x%llX) - if the log stops here "
                     "with NO AddListSuit breadcrumbs, the game's own build hung before the "
                     "first row; a [BuildWatchdog] block will follow after ~4s pinning the "
@@ -1533,7 +1533,7 @@ namespace
             if (s_afterOrig < 24)
             {
                 ++s_afterOrig;
-                Log("[OutfitListInject] SetupPrefab orig returned (missionCode=%u) - "
+                LogDebug("[OutfitListInject] SetupPrefab orig returned (missionCode=%u) - "
                     "entering custom injection (if the log freezes with the entry line "
                     "but not this one, the hang is inside the game's list build / "
                     "hkAddListSuit; if this prints then it freezes, the hang is in our "
@@ -1563,7 +1563,7 @@ namespace
                         if (s_fobVextLog < 8)
                         {
                             ++s_fobVextLog;
-                            Log("[OutfitListInject:vext] FOB-sortie context: "
+                            LogDebug("[OutfitListInject:vext] FOB-sortie context: "
                                 "vext variant cells not injected (extended "
                                 "outfits blocked in FOB like custom "
                                 "outfits)\n");
@@ -1682,7 +1682,7 @@ namespace
             }
             __except (EXCEPTION_EXECUTE_HANDLER)
             {
-                Log("[OutfitListInject:PostSetupPrefab] SEH during vext pass\n");
+                LogDebug("[OutfitListInject:PostSetupPrefab] SEH during vext pass\n");
             }
         }
 
@@ -1696,7 +1696,7 @@ namespace
                 if (s_fobHeadLog < 8)
                 {
                     ++s_fobHeadLog;
-                    Log("[OutfitListInject:HeadOption] FOB-sortie context: "
+                    LogDebug("[OutfitListInject:HeadOption] FOB-sortie context: "
                         "custom head options not injected (head options "
                         "disabled in FOB)\n");
                 }
@@ -1756,7 +1756,7 @@ namespace
                                 static_cast<std::uint16_t>(0x20D + vslot);
                     }
 #ifdef _DEBUG
-                    Log("[OutfitListInject:HeadCursor] worn-head sources: "
+                    LogDebug("[OutfitListInject:HeadCursor] worn-head sources: "
                         "tracker=0x%02X state[0xFE]=0x%02X state[0xFA]=0x%02X "
                         "wornEquipTracker=0x%X -> equipId=0x%X "
                         "(rowsChanged=%d)\n",
@@ -1779,7 +1779,7 @@ namespace
                             { targetRow = static_cast<int>(r); break; }
 #ifdef _DEBUG
                         if (targetRow < 0)
-                            Log("[OutfitListInject:HeadCursor] equipId=0x%X NOT "
+                            LogDebug("[OutfitListInject:HeadCursor] equipId=0x%X NOT "
                                 "found in %u rows (0x4440 stride 0x1e)\n",
                                 static_cast<unsigned>(wornEquipId), rowCount);
 #endif
@@ -1799,7 +1799,7 @@ namespace
                             reinterpret_cast<void(__fastcall*)(
                                 void*, std::uint32_t)>(scan)(thisPtr, rowCount);
 #ifdef _DEBUG
-                        Log("[OutfitListInject:HeadCursor] cursor pass re-run: "
+                        LogDebug("[OutfitListInject:HeadCursor] cursor pass re-run: "
                             "targetRow=%d rowCount=%u\n", targetRow, rowCount);
 #endif
                     }
@@ -1905,7 +1905,7 @@ namespace outfit
             gAddr.ItemSelectorCallbackImpl_SetupPrefabListElement);
         if (!target)
         {
-            Log("[OutfitListInject] target unresolved; module disabled\n");
+            LogDebug("[OutfitListInject] target unresolved; module disabled\n");
             return false;
         }
 
@@ -1933,7 +1933,7 @@ namespace outfit
             g_AddListBandana =
                 reinterpret_cast<AddListBandana_t>(addBandanaAddr);
 #ifdef _DEBUG
-            Log("[OutfitListInject:HeadOption] AddListBandana resolved: "
+            LogDebug("[OutfitListInject:HeadOption] AddListBandana resolved: "
                 "%p - post-orig HEAD OPTION (equipKind=0x201) list "
                 "injection enabled for custom outfits with HasHeadOptions()\n",
                 addBandanaAddr);
@@ -1941,7 +1941,7 @@ namespace outfit
         }
         else
         {
-            Log("[OutfitListInject:HeadOption] AddListBandana unresolved; "
+            LogDebug("[OutfitListInject:HeadOption] AddListBandana unresolved; "
                 "HEAD OPTION submenu will not be injected for custom "
                 "outfits (JP build?)\n");
         }
@@ -1962,7 +1962,7 @@ namespace outfit
                 reinterpret_cast<void**>(&g_OrigWornHeadCategory));
         }
 #ifdef _DEBUG
-        Log("[OutfitListInject:HeadBadge] category-feed=%s worn-feed=%s\n",
+        LogDebug("[OutfitListInject:HeadBadge] category-feed=%s worn-feed=%s\n",
             g_InstalledHeadBadgeCategory ? "OK" : "skip",
             g_InstalledWornHeadCategory  ? "OK" : "skip");
 #endif
@@ -1985,7 +1985,7 @@ namespace outfit
         }
         else
         {
-            Log("[OutfitListInject] AddRecord target unresolved - custom "
+            LogDebug("[OutfitListInject] AddRecord target unresolved - custom "
                 "outfit rows keep the engine's own EQUIPPED mark, which is "
                 "decided by a loadout equip-id match the custom rows share, "
                 "so the tag lands on the wrong rows or none\n");
@@ -2006,7 +2006,7 @@ namespace outfit
         }
         else
         {
-            Log("[OutfitListInject] UpdateRecords target unresolved "
+            LogDebug("[OutfitListInject] UpdateRecords target unresolved "
                 "(JP build?) - variant cycle-button labels will fall "
                 "back to vanilla hardcoded mapping\n");
         }
@@ -2073,7 +2073,7 @@ namespace outfit
         g_Installed        = false;
 
 #ifdef _DEBUG
-        Log("[OutfitListInject] removed\n");
+        LogDebug("[OutfitListInject] removed\n");
 #endif
     }
 }

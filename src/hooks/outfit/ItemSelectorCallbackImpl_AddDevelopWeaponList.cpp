@@ -11,6 +11,7 @@
 #include "MissionCodeGuard.h"
 
 #include "../equip/DevelopArrayGrow.h"
+#include "../equip/EquipDevelop_SetEquipUndeveloped.h"
 #include "EquipDevelopControllerImpl_GetSuitDevelopInfoIndex.h"
 
 namespace
@@ -72,6 +73,18 @@ namespace
             }
             if (equip::IsReservedFlowRow(row))
                 continue;
+            if (row >= kFirstCustomFlow)
+            {
+                static std::atomic<int> s_tabProbe[64]{};
+                if (s_tabProbe[tab & 63].fetch_add(1) < 48)
+                    LogDebug("[DevelopTabProbe] flow=%u rec[0x3E]=%u while building tab=%u "
+                        "-> %s. rec[0x3E] is the ONLY thing this list filters on; if it "
+                        "does not equal the equipDevelopTypeID the Lua declared for this "
+                        "row, the row is filed under that other category and renders "
+                        "there instead\n",
+                        row, static_cast<unsigned>(rec[0x3E]), tab,
+                        rec[0x3E] == static_cast<std::uint8_t>(tab) ? "KEPT" : "skipped");
+            }
             if (rec[0x3E] != static_cast<std::uint8_t>(tab))
                 continue;
             if (*reinterpret_cast<const std::uint16_t*>(rec + 0xA) != 0)
@@ -87,7 +100,7 @@ namespace
             {
                 static std::atomic<int> s_capLogged{ 0 };
                 if (s_capLogged.fetch_add(1) < 4)
-                    Log("[WeaponListRoots] tab %u has more than %u base "
+                    LogDebug("[WeaponListRoots] tab %u has more than %u base "
                         "develop rows - the extended list path holds %u, "
                         "rows past that will not list\n",
                         tab, kRootCap, kRootCap);
@@ -120,8 +133,9 @@ namespace
             || !addRec || !supplyIdx)
             return kFallback;
 
-        static std::atomic<int> s_diagBuilds{ 0 };
-        const bool diag = s_diagBuilds.fetch_add(1) < 2;
+        static std::atomic<std::uint64_t> s_diagTabs{ 0 };
+        const std::uint64_t tabBit = 1ull << (tab & 63);
+        const bool diag = (s_diagTabs.fetch_or(tabBit) & tabBit) == 0;
         const auto* recBase = reinterpret_cast<const std::uint8_t*>(edc);
         const auto recEq = [recBase](std::uint32_t f) -> unsigned {
             return *reinterpret_cast<const std::uint16_t*>(
@@ -140,19 +154,23 @@ namespace
             if (!rowGate(edc, flow))
             {
                 if (diag && flow >= kFirstCustomFlow)
-                    Log("[WeaponListPick] tab %u ROOT flow=%u eq=%u SKIPPED "
+                    LogDebug("[WeaponListPick] tab %u ROOT flow=%u eq=%u SKIPPED "
                         "rowGate=0 - this base row is dropped from the list "
                         "entirely\n",
                         tab, flow, recEq(flow));
                 continue;
             }
             addRec(panel, flow, curItems, nextRow, 0, 0, 0xFF, 1);
+            if (diag && flow >= kFirstCustomFlow)
+                LogDebug("[WeaponListPick] tab %u ROOT flow=%u eq=%u LISTED row=%u "
+                    "- this base row DOES render in this category\n",
+                    tab, flow, recEq(flow), nextRow);
             std::uint16_t vc = varCount(edc, flow, 1);
             if (vc > kVarCap)
             {
                 static std::atomic<int> s_varLogged{ 0 };
                 if (s_varLogged.fetch_add(1) < 4)
-                    Log("[WeaponListRoots] root flow %u has %u variant rows "
+                    LogDebug("[WeaponListRoots] root flow %u has %u variant rows "
                         "- the extended list path holds %u, variants past "
                         "that will not list\n",
                         flow, static_cast<unsigned>(vc), kVarCap);
@@ -167,7 +185,7 @@ namespace
                 if (!rowGate(edc, vflow))
                 {
                     if (dv)
-                        Log("[WeaponListPick] tab %u root=%u VAR flow=%u eq=%u "
+                        LogDebug("[WeaponListPick] tab %u root=%u VAR flow=%u eq=%u "
                             "parent=%u SKIPPED rowGate=0 - the variant is not "
                             "listed, so picking its R&D row resolves to no "
                             "equip\n",
@@ -178,7 +196,7 @@ namespace
                 if (row >= kRowCap)
                 {
                     if (dv)
-                        Log("[WeaponListPick] tab %u root=%u VAR flow=%u eq=%u "
+                        LogDebug("[WeaponListPick] tab %u root=%u VAR flow=%u eq=%u "
                             "SKIPPED row=%u past the %u-row list cap\n",
                             tab, flow, vflow, recEq(vflow), row, kRowCap);
                     continue;
@@ -189,7 +207,7 @@ namespace
                 if (vi >= 0xF)
                 {
                     if (dv)
-                        Log("[WeaponListPick] tab %u root=%u VAR flow=%u eq=%u "
+                        LogDebug("[WeaponListPick] tab %u root=%u VAR flow=%u eq=%u "
                             "parent=%u row=%u SKIPPED supplyIdx=%u >= 15 - the "
                             "row renders in R&D but is never added to the "
                             "selector, so picking it equips nothing\n",
@@ -198,7 +216,7 @@ namespace
                     continue;
                 }
                 if (dv)
-                    Log("[WeaponListPick] tab %u root=%u VAR flow=%u eq=%u "
+                    LogDebug("[WeaponListPick] tab %u root=%u VAR flow=%u eq=%u "
                         "parent=%u -> row=%u col=%u varCol=%u\n",
                         tab, flow, vflow, recEq(vflow), recParent(vflow), row,
                         static_cast<unsigned>(vi),
@@ -216,6 +234,8 @@ namespace
         void* panel, std::uint32_t tab, std::uint32_t startRow, void* curItems)
     {
         MISSION_GUARD_ORIGINAL_RET(g_Orig, panel, tab, startRow, curItems);
+
+        EquipDevelop_DrainIfRestorePending();
 
         std::uint32_t r = kFallback;
         std::uint16_t roots[kRootCap];
@@ -240,14 +260,14 @@ namespace
                     if (s_engageLogged.fetch_add(1) < 12)
                     {
                         if (n > kNativeRootCap)
-                            Log("[WeaponListRoots] tab %u rebuilt by the "
+                            LogDebug("[WeaponListRoots] tab %u rebuilt by the "
                                 "extended path (handled): its %u root rows "
                                 "overflow the native 20-entry base-row buffer, "
                                 "which would otherwise render the whole "
                                 "category empty in the prep/supply list\n",
                                 tab, static_cast<unsigned>(ours));
                         else
-                            Log("[WeaponListRoots] tab %u rebuilt by the "
+                            LogDebug("[WeaponListRoots] tab %u rebuilt by the "
                                 "extended path (handled): the native root scan "
                                 "sees only %u of %u base rows, because "
                                 "IsEquipVisile refuses custom rows whose "
@@ -261,7 +281,7 @@ namespace
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            Log("[WeaponListRoots] exception rebuilding tab %u - falling "
+            LogDebug("[WeaponListRoots] exception rebuilding tab %u - falling "
                 "back to the native build (the tab lists empty when its "
                 "base-row count exceeds 20)\n", tab);
             r = kFallback;
@@ -281,7 +301,7 @@ namespace outfit
         void* target = ResolveGameAddress(gAddr.ItemSelector_AddDevelopWeaponList);
         if (!target)
         {
-            Log("[WeaponListRoots] target unresolved; module disabled (a "
+            LogDebug("[WeaponListRoots] target unresolved; module disabled (a "
                 "prep/supply weapon tab with more than 20 base develop rows "
                 "lists EMPTY on this build)\n");
             return false;

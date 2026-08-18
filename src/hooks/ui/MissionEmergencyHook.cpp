@@ -85,7 +85,7 @@ bool Install_MissionEmergency_Hook()
 
     if (!gAddr.GetMissionCodeCategory)
     {
-        Log("[MissionEmergency] GetMissionCodeCategory address is 0 for this build; skipping\n");
+        LogDebug("[MissionEmergency] GetMissionCodeCategory address is 0 for this build; skipping\n");
         return false;
     }
 
@@ -107,7 +107,7 @@ bool Install_MissionEmergency_Hook()
 
     g_MissionEmergencyHookInstalled = true;
 #ifdef _DEBUG
-    Log("[MissionEmergency] hook installed at 0x%llX\n",
+    LogDebug("[MissionEmergency] hook installed at 0x%llX\n",
         static_cast<unsigned long long>(gAddr.GetMissionCodeCategory));
 #endif
     return true;
@@ -132,7 +132,7 @@ bool Uninstall_MissionEmergency_Hook()
     MissionEmergency_ClearAll();
 
 #ifdef _DEBUG
-    Log("[MissionEmergency] hook removed\n");
+    LogDebug("[MissionEmergency] hook removed\n");
 #endif
     return true;
 }

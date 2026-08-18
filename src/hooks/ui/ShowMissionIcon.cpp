@@ -129,7 +129,7 @@ bool Install_ShowMissionIcon_Hook()
 
     if (!gAddr.IconTitleGetLangTextCall)
     {
-        Log("[ShowMissionIcon] IconTitleGetLangTextCall address is 0; title detour disabled\n");
+        LogDebug("[ShowMissionIcon] IconTitleGetLangTextCall address is 0; title detour disabled\n");
         return false;
     }
 
@@ -159,7 +159,7 @@ bool Install_ShowMissionIcon_Hook()
 
     if (rel < INT32_MIN || rel > INT32_MAX)
     {
-        Log("[ShowMissionIcon] thunk too far for rel32 JMP (rel=0x%llX)\n",
+        LogDebug("[ShowMissionIcon] thunk too far for rel32 JMP (rel=0x%llX)\n",
             static_cast<long long>(rel));
         VirtualFree(g_Thunk, 0, MEM_RELEASE);
         g_Thunk = nullptr;
@@ -192,7 +192,7 @@ bool Install_ShowMissionIcon_Hook()
     g_Installed = true;
 
 #ifdef _DEBUG
-    Log("[ShowMissionIcon] title detour installed: callsite=%p thunk=%p continuation=0x%llX\n",
+    LogDebug("[ShowMissionIcon] title detour installed: callsite=%p thunk=%p continuation=0x%llX\n",
         static_cast<void*>(callSite),
         static_cast<void*>(g_Thunk),
         static_cast<unsigned long long>(continuationAddr));
@@ -228,7 +228,7 @@ bool Uninstall_ShowMissionIcon_Hook()
 
     g_Installed = false;
 #ifdef _DEBUG
-    Log("[ShowMissionIcon] title detour uninstalled\n");
+    LogDebug("[ShowMissionIcon] title detour uninstalled\n");
 #endif
     return true;
 }

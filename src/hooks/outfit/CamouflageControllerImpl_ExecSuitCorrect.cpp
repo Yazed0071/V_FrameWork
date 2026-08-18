@@ -76,7 +76,7 @@ namespace
 #ifdef _DEBUG
                 if (!g_FirstOverrideLogged.exchange(true))
                 {
-                    Log("[OutfitCamoBonus] FIRST OVERRIDE: liveParts=0x%02X "
+                    LogDebug("[OutfitCamoBonus] FIRST OVERRIDE: liveParts=0x%02X "
                         "livePlayer=%u slot=%u byteBuf=%p saved=%u pinned=%u "
                         "(developId=%u flowIndex=%u)\n",
                         static_cast<unsigned>(liveParts),
@@ -95,7 +95,7 @@ namespace
         {
             if (!g_FirstOverrideLogged.exchange(true))
             {
-                Log("[OutfitCamoBonus] SEH fault during peek - hook "
+                LogDebug("[OutfitCamoBonus] SEH fault during peek - hook "
                     "no-op'd; check Info+0x%zx / Controller+0x%zx "
                     "offsets for build drift\n",
                     kInfoCamoBufferPtrOffset,
@@ -137,7 +137,7 @@ namespace outfit
         void* target = ResolveGameAddress(gAddr.CamouflageController_ExecSuitCorrect);
         if (!target)
         {
-            Log("[OutfitCamoBonus] target unresolved; module disabled "
+            LogDebug("[OutfitCamoBonus] target unresolved; module disabled "
                 "(camoBonusType pinning will be inactive)\n");
             return false;
         }
@@ -162,7 +162,7 @@ namespace outfit
         g_OrigExecSuitCorrect = nullptr;
         g_Installed           = false;
 #ifdef _DEBUG
-        Log("[OutfitCamoBonus] removed\n");
+        LogDebug("[OutfitCamoBonus] removed\n");
 #endif
     }
 }

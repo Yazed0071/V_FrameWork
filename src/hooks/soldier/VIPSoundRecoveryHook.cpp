@@ -152,7 +152,7 @@ static void DispatchNoticeReaction(void* noticeSelf, std::uint32_t actorId, std:
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
-        Log("[SoundRecovery] DispatchNoticeReaction exception\n");
+        LogDebug("[SoundRecovery] DispatchNoticeReaction exception\n");
     }
 }
 
@@ -231,7 +231,7 @@ bool Uninstall_VIPSoundRecovery_Hook()
     g_OrigState_SoundRecovery = nullptr;
 
 #ifdef _DEBUG
-    Log("[SoundRecovery] Hook removed\n");
+    LogDebug("[SoundRecovery] Hook removed\n");
 #endif
     return true;
 }

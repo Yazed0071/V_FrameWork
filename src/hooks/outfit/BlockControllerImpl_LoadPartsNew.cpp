@@ -221,7 +221,7 @@ namespace
         if (g_CaseDArmUnpinActive) return true;
         const std::uintptr_t ups = reinterpret_cast<std::uintptr_t>(
             ResolveGameAddress(gAddr.UpdatePartsStatus));
-        if (!ups) { Log("[CaseDArmUnpin] UpdatePartsStatus unresolved; skip\n"); return false; }
+        if (!ups) { LogDebug("[CaseDArmUnpin] UpdatePartsStatus unresolved; skip\n"); return false; }
 
         const std::uintptr_t site   = ups + 0xc77;
         const std::uintptr_t caseD3 = ups + 0xcfe;
@@ -232,7 +232,7 @@ namespace
         __try { ok = (std::memcmp(reinterpret_cast<void*>(site), kExpect, 9) == 0); }
         __except (EXCEPTION_EXECUTE_HANDLER) { ok = false; }
         if (!ok)
-        { Log("[CaseDArmUnpin] site bytes mismatch @%p - build differs, skip\n",
+        { LogDebug("[CaseDArmUnpin] site bytes mismatch @%p - build differs, skip\n",
               reinterpret_cast<void*>(site)); return false; }
 
         constexpr std::size_t kTableOff  = 0x80;
@@ -283,7 +283,7 @@ namespace
         const std::int64_t jrel =
             reinterpret_cast<std::int64_t>(tr) - (static_cast<std::int64_t>(site) + 5);
         if (jrel < INT32_MIN || jrel > INT32_MAX)
-        { Log("[CaseDArmUnpin] trampoline too far for rel32\n");
+        { LogDebug("[CaseDArmUnpin] trampoline too far for rel32\n");
           VirtualFree(tr,0,MEM_RELEASE); return false; }
 
         std::uint8_t patch[9];
@@ -305,7 +305,7 @@ namespace
         g_CaseDArmTable       = tr + kTableOff;
         g_CaseDArmUnpinActive = true;
 #ifdef _DEBUG
-        Log("[CaseDArmUnpin] installed: site=%p tramp=%p armTable=%p band=0x%02X-0x%02X "
+        LogDebug("[CaseDArmUnpin] installed: site=%p tramp=%p armTable=%p band=0x%02X-0x%02X "
             "(%zu slots) (arm-enabled custom partsType decodes the REAL tier; "
             "enableArm=false routes to the engine's own armless path - tier 0, "
             "hand slot off, flesh knock)\n",
@@ -513,7 +513,7 @@ namespace
             {
                 if (ShouldFallBackOnMissingAsset(path))
                 {
-                    Log("[OutfitRuntimeParts] BRICK-GUARD: custom .parts asset "
+                    LogDebug("[OutfitRuntimeParts] BRICK-GUARD: custom .parts asset "
                         "missing (code=0x%016llX pt=%u) - loading vanilla\n",
                         static_cast<unsigned long long>(path),
                         static_cast<unsigned>(playerType));
@@ -533,7 +533,7 @@ namespace
             if (int n = s_vextPartsDbg.load(std::memory_order_relaxed); n < 16)
             {
                 s_vextPartsDbg.store(n + 1, std::memory_order_relaxed);
-                Log("[OutfitRuntimeParts:vextserve] PARTS pt=%u vpt=0x%02X "
+                LogDebug("[OutfitRuntimeParts:vextserve] PARTS pt=%u vpt=0x%02X "
                     "active=%u path=0x%016llX fallback=%d exists=%d -> %s\n",
                     static_cast<unsigned>(playerType),
                     static_cast<unsigned>(effectivePartsType & 0xFF),
@@ -566,7 +566,7 @@ namespace
             {
                 if (ShouldFallBackOnMissingAsset(path))
                 {
-                    Log("[OutfitRuntimeParts] BRICK-GUARD: custom .fpk asset "
+                    LogDebug("[OutfitRuntimeParts] BRICK-GUARD: custom .fpk asset "
                         "missing (code=0x%016llX pt=%u) - loading vanilla\n",
                         static_cast<unsigned long long>(path),
                         static_cast<unsigned>(playerType));
@@ -594,7 +594,7 @@ namespace
             if (int n = s_vextFpkDbg.load(std::memory_order_relaxed); n < 16)
             {
                 s_vextFpkDbg.store(n + 1, std::memory_order_relaxed);
-                Log("[OutfitRuntimeParts:vextserve] FPK pt=%u vpt=0x%02X "
+                LogDebug("[OutfitRuntimeParts:vextserve] FPK pt=%u vpt=0x%02X "
                     "active=%u path=0x%016llX fallback=%d exists=%d -> %s\n",
                     static_cast<unsigned>(playerType),
                     static_cast<unsigned>(effectivePartsType & 0xFF),
@@ -618,7 +618,7 @@ namespace
         if (int n = s_log.load(std::memory_order_relaxed); n < 4)
         {
             s_log.store(n + 1, std::memory_order_relaxed);
-            Log("[OutfitRuntimeParts] CAMO-CLAMP: out-of-table camo 0x%02X on a "
+            LogDebug("[OutfitRuntimeParts] CAMO-CLAMP: out-of-table camo 0x%02X on a "
                 "vanilla realize - clamping to 0 (vanilla camo path table has "
                 "0x75 entries, unbounded in the engine; prevents fatal load)\n",
                 camo);
@@ -930,7 +930,7 @@ namespace
                 if (s_snakeHeadDiag < 24)
                 {
                     ++s_snakeHeadDiag;
-                    Log("[SnakeHead] Fv2 hook: pt=%u faceEquipId=0x%02X activeSlot=0x%02X "
+                    LogDebug("[SnakeHead] Fv2 hook: pt=%u faceEquipId=0x%02X activeSlot=0x%02X "
                         "-> resolved '%s' (fv2Code=0x%016llX)\n",
                         static_cast<unsigned>(pt),
                         static_cast<unsigned>(static_cast<std::uint8_t>(playerFaceEquipId)),
@@ -961,7 +961,7 @@ namespace
                 if (s_fv2OrigDiag < 12)
                 {
                     ++s_fv2OrigDiag;
-                    Log("[SnakeHead] Fv2 ORIG: faceEquipId=0x%02X faceId=%u -> code=0x%016llX\n",
+                    LogDebug("[SnakeHead] Fv2 ORIG: faceEquipId=0x%02X faceId=%u -> code=0x%016llX\n",
                         static_cast<unsigned>(static_cast<std::uint8_t>(playerFaceEquipId)),
                         static_cast<unsigned>(playerFaceId),
                         origFv2 ? static_cast<unsigned long long>(origFv2[0]) : 0ull);
@@ -979,16 +979,77 @@ namespace
                 && !headEnable)
                 return WriteFoxPath(outPath, outfit::kSubAssetDisabled);
         }
-        if (const outfit::CustomHeadEntry* head = ResolveVanillaSuitCustomHead(
-                pt, playerPartsType, static_cast<std::uint8_t>(playerFaceEquipId)))
+        const outfit::CustomHeadEntry* vextHead = ResolveVanillaSuitCustomHead(
+            pt, playerPartsType, static_cast<std::uint8_t>(playerFaceEquipId));
+#ifdef _DEBUG
+        if (!vextHead)
+        {
+            const std::uint8_t wornSlot =
+                (static_cast<std::uint8_t>(playerFaceEquipId) != 0)
+                    ? static_cast<std::uint8_t>(playerFaceEquipId)
+                    : outfit::GetWornCustomHeadSlot();
+            if (outfit::IsCustomHeadSlot(wornSlot))
+            {
+                static int s_vextHeadMissDiag = 0;
+                if (s_vextHeadMissDiag < 12)
+                {
+                    ++s_vextHeadMissDiag;
+                    LogDebug("[SnakeHead] vanilla-suit Fv2: slot 0x%02X is a registered "
+                        "custom head but partsType=0x%02X pt=%u selector=0x%02X does "
+                        "not declare it - serving the vanilla face\n",
+                        static_cast<unsigned>(wornSlot),
+                        static_cast<unsigned>(effectivePartsType & 0xFF),
+                        static_cast<unsigned>(pt),
+                        static_cast<unsigned>(outfit::ReadLiveSelectorCode()));
+                }
+            }
+        }
+#endif
+        if (const outfit::CustomHeadEntry* head = vextHead)
         {
             std::uint64_t code = head->faceFv2Code[pt];
             if (pt == outfit::kPlayerType_Snake)
                 if (const std::uint64_t st = outfit::GetCustomHeadSnakeStageFv2(
                         head->name, playerFaceId); st != 0)
                     code = st;
+#ifdef _DEBUG
+            {
+                static int s_vextHeadFv2Diag = 0;
+                if (s_vextHeadFv2Diag < 24)
+                {
+                    ++s_vextHeadFv2Diag;
+                    LogDebug("[SnakeHead] vanilla-suit Fv2: partsType=0x%02X pt=%u "
+                        "faceEquipId=0x%02X activeSlot=0x%02X head='%s' "
+                        "code=0x%016llX exists=%d\n",
+                        static_cast<unsigned>(effectivePartsType & 0xFF),
+                        static_cast<unsigned>(pt),
+                        static_cast<unsigned>(
+                            static_cast<std::uint8_t>(playerFaceEquipId)),
+                        static_cast<unsigned>(t_ActiveCustomFaceSlot),
+                        head->name,
+                        static_cast<unsigned long long>(code),
+                        (code != 0 && fox::detail::PathExistsByCode(code)) ? 1 : 0);
+                }
+            }
+#endif
             if (code != 0)
-                return WriteFoxPath(outPath, code);
+            {
+                if (!ShouldFallBackOnMissingAsset(code)
+                    && fox::detail::PathExistsByCode(code))
+                    return WriteFoxPath(outPath, code);
+
+                static std::atomic<std::uint64_t> s_loggedMissingFv2{ 0 };
+                if (s_loggedMissingFv2.exchange(code) != code)
+                    LogDebug("[OutfitHeadOption] custom head '%s' face .fv2 is not in "
+                        "any mounted archive (code=0x%016llX pt=%u partsType=0x%02X) "
+                        "- the head model never loads, so the face renders invisible "
+                        "and the face FOVA model slot stays null, which faults the "
+                        "parts apply on the next player rebuild; falling back to the "
+                        "vanilla face for this suit\n",
+                        head->name, static_cast<unsigned long long>(code),
+                        static_cast<unsigned>(pt),
+                        static_cast<unsigned>(effectivePartsType & 0xFF));
+            }
         }
         return g_OrigLoadSnakeFaceFv2(outPath, playerType, VanillaClampPartsType(playerPartsType),
                                       playerFaceId, playerFaceEquipId);
@@ -1031,7 +1092,7 @@ namespace
                 if (s_snakeHeadFpkDiag < 24)
                 {
                     ++s_snakeHeadFpkDiag;
-                    Log("[SnakeHead] Fpk hook: pt=%u faceEquipId=0x%02X activeSlot=0x%02X "
+                    LogDebug("[SnakeHead] Fpk hook: pt=%u faceEquipId=0x%02X activeSlot=0x%02X "
                         "-> resolved '%s' (fpkCode=0x%016llX)\n",
                         static_cast<unsigned>(pt),
                         static_cast<unsigned>(static_cast<std::uint8_t>(playerFaceEquipId)),
@@ -1062,7 +1123,7 @@ namespace
                 if (s_fpkOrigDiag < 12)
                 {
                     ++s_fpkOrigDiag;
-                    Log("[SnakeHead] Fpk ORIG: faceEquipId=0x%02X faceId=%u -> code=0x%016llX\n",
+                    LogDebug("[SnakeHead] Fpk ORIG: faceEquipId=0x%02X faceId=%u -> code=0x%016llX\n",
                         static_cast<unsigned>(static_cast<std::uint8_t>(playerFaceEquipId)),
                         static_cast<unsigned>(playerFaceId),
                         origFpk ? static_cast<unsigned long long>(origFpk[0]) : 0ull);
@@ -1088,8 +1149,43 @@ namespace
                 if (const std::uint64_t st = outfit::GetCustomHeadSnakeStageFpk(
                         head->name, playerFaceId); st != 0)
                     code = st;
+#ifdef _DEBUG
+            {
+                static int s_vextHeadFpkDiag = 0;
+                if (s_vextHeadFpkDiag < 24)
+                {
+                    ++s_vextHeadFpkDiag;
+                    LogDebug("[SnakeHead] vanilla-suit Fpk: partsType=0x%02X pt=%u "
+                        "faceEquipId=0x%02X activeSlot=0x%02X head='%s' "
+                        "code=0x%016llX exists=%d\n",
+                        static_cast<unsigned>(effectivePartsType & 0xFF),
+                        static_cast<unsigned>(pt),
+                        static_cast<unsigned>(
+                            static_cast<std::uint8_t>(playerFaceEquipId)),
+                        static_cast<unsigned>(t_ActiveCustomFaceSlot),
+                        head->name,
+                        static_cast<unsigned long long>(code),
+                        (code != 0 && fox::detail::PathExistsByCode(code)) ? 1 : 0);
+                }
+            }
+#endif
             if (code != 0)
-                return WriteFoxPath(outPath, code);
+            {
+                if (!ShouldFallBackOnMissingAsset(code)
+                    && fox::detail::PathExistsByCode(code))
+                    return WriteFoxPath(outPath, code);
+
+                static std::atomic<std::uint64_t> s_loggedMissingFpk{ 0 };
+                if (s_loggedMissingFpk.exchange(code) != code)
+                    LogDebug("[OutfitHeadOption] custom head '%s' face .fpk is not in "
+                        "any mounted archive (code=0x%016llX pt=%u partsType=0x%02X) "
+                        "- the head model package never mounts, so the face renders "
+                        "invisible even when its .fv2 resolves; falling back to the "
+                        "vanilla face for this suit\n",
+                        head->name, static_cast<unsigned long long>(code),
+                        static_cast<unsigned>(pt),
+                        static_cast<unsigned>(effectivePartsType & 0xFF));
+            }
         }
         return g_OrigLoadSnakeFaceFpk(outPath, playerType, VanillaClampPartsType(playerPartsType),
                                       playerFaceId, playerFaceEquipId);
@@ -1142,7 +1238,7 @@ namespace
             if (s_diag < 8)
             {
                 ++s_diag;
-                Log("[SnakeHead] HeadOptionFv2 hook: avatar head '%s' replaces "
+                LogDebug("[SnakeHead] HeadOptionFv2 hook: avatar head '%s' replaces "
                     "the headwear fova (faceId=%u, fv2Code=0x%016llX)\n",
                     head->name, faceId,
                     static_cast<unsigned long long>(
@@ -1167,7 +1263,7 @@ namespace
             if (s_diag < 8)
             {
                 ++s_diag;
-                Log("[SnakeHead] HeadOptionFpk hook: avatar head '%s' pack "
+                LogDebug("[SnakeHead] HeadOptionFpk hook: avatar head '%s' pack "
                     "mounted in the head-option slot (fpkCode=0x%016llX)\n",
                     head->name,
                     static_cast<unsigned long long>(
@@ -1213,7 +1309,7 @@ namespace
                     if (s_lastState[i] != seqState + 1)
                     {
                         s_lastState[i] = seqState + 1;
-                        Log("[SnakeHead] hide gate: bcSlot=%u seqState=%u "
+                        LogDebug("[SnakeHead] hide gate: bcSlot=%u seqState=%u "
                             "armFlag=%u (hide fires on 1 or 3)\n",
                             i, seqState,
                             *reinterpret_cast<std::uint32_t*>(bc + 0x1080 + i * 4));
@@ -1234,7 +1330,7 @@ namespace
                 if (s_hideDiag < 4)
                 {
                     ++s_hideDiag;
-                    Log("[SnakeHead] creator face hidden (bcSlot %u, custom "
+                    LogDebug("[SnakeHead] creator face hidden (bcSlot %u, custom "
                         "head worn)\n", i);
                 }
 #endif
@@ -1506,7 +1602,7 @@ namespace
                         {
                             s_lastRestreamMask = vextRestream;
                             if (vextRestream)
-                                Log("[OutfitRuntimeParts:vextrestream] active "
+                                LogDebug("[OutfitRuntimeParts:vextrestream] active "
                                     "vext variant differs from last-served - "
                                     "forcing slot re-stream (mask=0x%X)\n",
                                     vextRestream);
@@ -1540,7 +1636,7 @@ namespace
                                 if (s_lastCollisionKey[i] != ck)
                                 {
                                     s_lastCollisionKey[i] = ck;
-                                    Log("[OutfitRuntimeParts] camo/partsType "
+                                    LogDebug("[OutfitRuntimeParts] camo/partsType "
                                         "collision guard: slot=%zu partsType=0x%02X "
                                         "camo=0x%02X ply=%u (vanilla camo in custom "
                                         "partsType range) - not a real custom slot, "
@@ -1674,7 +1770,7 @@ namespace
             if (int n = s_crateResetLog.load(std::memory_order_relaxed); n < 8)
             {
                 s_crateResetLog.store(n + 1, std::memory_order_relaxed);
-                Log("[OutfitRuntimeParts] SupplyCbox pickup of plain vanilla "
+                LogDebug("[OutfitRuntimeParts] SupplyCbox pickup of plain vanilla "
                     "camo 0x%02X -> vext variants reset (crate delivers the "
                     "base suit, matching menu-equip semantics)\n", camo);
             }
@@ -1715,7 +1811,7 @@ namespace
                 if (int n = s_log.load(std::memory_order_relaxed); n < 8)
                 {
                     s_log.store(n + 1, std::memory_order_relaxed);
-                    Log("[OutfitRuntimeParts] SupplyCbox camo->partsType: "
+                    LogDebug("[OutfitRuntimeParts] SupplyCbox camo->partsType: "
                         "custom camo 0x%02X -> partsType 0x%02X "
                         "(developId=%u variantIdx=%u %s; vanilla map "
                         "returned 0)\n",
@@ -1739,7 +1835,7 @@ namespace
                 return vpt;
             }
 
-            Log("[OutfitRuntimeParts] SupplyCbox camo->partsType: custom camo "
+            LogDebug("[OutfitRuntimeParts] SupplyCbox camo->partsType: custom camo "
                 "0x%02X UNRESOLVED - leaving vanilla 0 (dangling guard will "
                 "degrade to vanilla suit, no hang)\n", camo);
         }
@@ -1845,7 +1941,7 @@ namespace
                 }
                 else
                 {
-                    Log("[OutfitRuntimeParts] BRICK-GUARD: broken-custom signal "
+                    LogDebug("[OutfitRuntimeParts] BRICK-GUARD: broken-custom signal "
                         "(partsType=0 camo=0xFF) with no pending developId "
                         "(pt=%u) - healing to vanilla NORMAL (0x01), no hang\n",
                         static_cast<unsigned>(info->playerType));
@@ -1931,7 +2027,7 @@ namespace
                 outfit::SetActiveVariant(entry->partsType, orderedVar);
                 if (isRealPlayerSlot)
                     outfit::ResetAllVanillaExtVariants();
-                Log("[OutfitRuntimeParts] ordered variant applied at realize: "
+                LogDebug("[OutfitRuntimeParts] ordered variant applied at realize: "
                     "developId=%u partsType=0x%02X variantIdx=%u (pending "
                     "supply order consumed)\n",
                     static_cast<unsigned>(entry->developId),
@@ -1949,7 +2045,7 @@ namespace
                 if (int n = s_deliverLog.load(std::memory_order_relaxed); n < 8)
                 {
                     s_deliverLog.store(n + 1, std::memory_order_relaxed);
-                    Log("[OutfitRuntimeParts] crate-delivered variant "
+                    LogDebug("[OutfitRuntimeParts] crate-delivered variant "
                         "re-asserted at realize: developId=%u partsType=0x%02X "
                         "variantIdx=%u\n",
                         static_cast<unsigned>(entry->developId),
@@ -1982,7 +2078,7 @@ namespace
             const bool structurallyInvalid = partsInvalid || fpkInvalid;
             if ((partsMissing || fpkMissing) && (anyPresent || structurallyInvalid))
             {
-                Log("[OutfitRuntimeParts] BRICK-GUARD: resolved custom outfit "
+                LogDebug("[OutfitRuntimeParts] BRICK-GUARD: resolved custom outfit "
                     "developId=%u partsType=0x%02X has a BAD asset path "
                     "(parts=%s fpk=%s; pt=%u; evidence=%s) - degrading to "
                     "vanilla NORMAL (0x01) to prevent infinite load\n",
@@ -2068,7 +2164,7 @@ namespace
                     info->playerPartsType = vextPartsType;
                     info->playerCamoType  =
                         (srcCamo != 0xFF) ? srcCamo : std::uint8_t{0};
-                    Log("[OutfitRuntimeParts] BRICK-GUARD: vext variant "
+                    LogDebug("[OutfitRuntimeParts] BRICK-GUARD: vext variant "
                         "partsType=0x%02X variantIdx=%u missing/invalid asset - "
                         "healing to source camo 0x%02X (vanilla base) to prevent "
                         "infinite load\n",
@@ -2104,7 +2200,7 @@ namespace
                     const std::uint8_t healPartsType =
                         (!danglingPT && pt != 0)
                             ? pt : kBionicArmVanillaPartsTypeSubstitute;
-                    Log("[OutfitRuntimeParts] BRICK-GUARD: unresolved custom suit "
+                    LogDebug("[OutfitRuntimeParts] BRICK-GUARD: unresolved custom suit "
                         "partsType=0x%02X selector=0x%02X (pt=%u) - healing to "
                         "vanilla partsType=0x%02X / camo=0 / faceEquip=0x00 to "
                         "prevent infinite load\n",
@@ -2174,7 +2270,7 @@ namespace
                                    info->playerCamoType)));
                 if (!offered || MissionCodeGuard::ShouldBypassHooks())
                 {
-                    Log("[OutfitRuntimeParts] custom head slot 0x%02X dropped "
+                    LogDebug("[OutfitRuntimeParts] custom head slot 0x%02X dropped "
                         "at realize: equipId=%u partsType=0x%02X playerType=%u "
                         "(%s) - the head is not offered by the worn outfit for "
                         "this player type\n",
@@ -2224,7 +2320,7 @@ namespace
                 else
                 {
 #ifdef _DEBUG
-                Log("[SnakeHead] LoadPartsNew: normalized custom head faceEquipId "
+                LogDebug("[SnakeHead] LoadPartsNew: normalized custom head faceEquipId "
                     "0x%02X -> 0x01 (bandana variation) for pt=%u; real slot kept "
                     "for the face hooks\n",
                     static_cast<unsigned>(info->playerFaceEquipId),
@@ -2350,7 +2446,7 @@ namespace outfit
             static std::atomic<std::uint32_t> s_skips{ 0 };
             const std::uint32_t n = s_skips.fetch_add(1) + 1;
             if (n <= 8 || (n % 256) == 0)
-                Log("[OutfitFacialGuard] skipped facial apply with a wild AnimControl "
+                LogDebug("[OutfitFacialGuard] skipped facial apply with a wild AnimControl "
                     "binding (self=%p skip#%u) - prevented SetMotionDataCore AV from a "
                     "custom-outfit identity mismatch; face left unchanged (never-brick).\n",
                     self, static_cast<unsigned>(n));
@@ -2457,7 +2553,7 @@ namespace outfit
             InstallCaseDArmUnpin();
 
 #ifdef _DEBUG
-        Log("[OutfitRuntimeParts] installed: parts=%s fpk=%s camo=%s diamond=%s "
+        LogDebug("[OutfitRuntimeParts] installed: parts=%s fpk=%s camo=%s diamond=%s "
             "camoFv2=%s diamondFv2=%s "
             "bionicArmFv2=%s bionicArmFpk=%s snakeFaceFv2=%s snakeFaceFpk=%s "
             "avatarFaceFv2=%s avatarFaceFpk=%s avatarFaceEdit=%s "
@@ -2570,7 +2666,7 @@ namespace outfit
         outfit::shadow::ResetArmTierCache();
 
 #ifdef _DEBUG
-        Log("[OutfitRuntimeParts] removed\n");
+        LogDebug("[OutfitRuntimeParts] removed\n");
 #endif
     }
 }

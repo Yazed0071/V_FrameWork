@@ -20,5 +20,7 @@ struct V_ExtendedEquipRow
 
 bool TppEquip_GetExtendedEquipRow(int equipId, V_ExtendedEquipRow* out);
 
+bool TppEquip_EnsureInfoListMirror();
+
 bool Install_TppEquip_ReloadEquipIdTable_Hook();
 bool Uninstall_TppEquip_ReloadEquipIdTable_Hook();

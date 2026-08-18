@@ -87,7 +87,7 @@ namespace
                                     reinterpret_cast<void**>(&g_OrigMenuGetLangText)))
             {
                 g_MenuGetLangTextTarget = fn;
-                Log("[FobGuard] FOB-block popup lang swap hooked "
+                LogDebug("[FobGuard] FOB-block popup lang swap hooked "
                     "(menu GetLangText impl=%p)\n", fn);
             }
         }
@@ -234,7 +234,7 @@ namespace
                 if (int n = s_fault.load(std::memory_order_relaxed); n < 8)
                 {
                     s_fault.store(n + 1, std::memory_order_relaxed);
-                    Log("[OutfitHeadOption] HeadEquipType FAULT: sIdx=%u "
+                    LogDebug("[OutfitHeadOption] HeadEquipType FAULT: sIdx=%u "
                         "(read chain bad -> offsets wrong)\n", soldierIndex);
                 }
             }
@@ -411,7 +411,7 @@ namespace
                 {
                     s_lastDigest = digest;
                     for (int e = 0; e < entryCount; ++e)
-                        Log("[FobDeploy] loadout slot=0x%X i=%u equipId=%u "
+                        LogDebug("[FobDeploy] loadout slot=0x%X i=%u equipId=%u "
                             "(0x%X) devIdx=%u managed=%u fobOk=%u tainted=%u\n",
                             static_cast<unsigned>(entries[e].slotOff),
                             static_cast<unsigned>(entries[e].index),
@@ -429,13 +429,13 @@ namespace
                 if (bannedAt < entryCount)
                 {
                     if (entries[bannedAt].tainted)
-                        Log("[FobGuard] FOB deploy blocked: vanilla equipId=%u "
+                        LogDebug("[FobGuard] FOB deploy blocked: vanilla equipId=%u "
                             "uses vanilla parts or damage rows modified by a "
                             "module - unequip it (or remove the mod's vanilla "
                             "edits) to deploy\n",
                             static_cast<unsigned>(entries[bannedAt].equipId));
                     else
-                        Log("[OutfitHeadOption] FOB deploy blocked: managed "
+                        LogDebug("[OutfitHeadOption] FOB deploy blocked: managed "
                             "equipId=%u (flowIndex=%u) is equipped and not "
                             "FOB-available\n",
                             static_cast<unsigned>(entries[bannedAt].equipId),
@@ -518,7 +518,7 @@ namespace
                 if (s_calls < 24)
                 {
                     ++s_calls;
-                    Log("[FobDeploy] IsEnableCurrentSuit called: fobCtx=%d\n",
+                    LogDebug("[FobDeploy] IsEnableCurrentSuit called: fobCtx=%d\n",
                         fobCtx ? 1 : 0);
                 }
             }
@@ -538,7 +538,7 @@ namespace
                     outfit::GetCurrentWornHeadEquipId();
                 if (wornHeadEquipId != 0)
                 {
-                    Log("[OutfitHeadOption] FOB deploy blocked: custom head "
+                    LogDebug("[OutfitHeadOption] FOB deploy blocked: custom head "
                         "option worn (equipId=%u) - remove it to deploy\n",
                         static_cast<unsigned>(wornHeadEquipId));
                     g_FobBlockVfwOnly.store(
@@ -550,7 +550,7 @@ namespace
                 if (wornPt < outfit::kCustomPartsTypeStart
                     && outfit::GetActiveVariant(wornPt) != 0)
                 {
-                    Log("[OutfitHeadOption] FOB deploy blocked: extended "
+                    LogDebug("[OutfitHeadOption] FOB deploy blocked: extended "
                         "vanilla variant active on worn partsType=0x%02X - "
                         "switch to the base suit to deploy\n",
                         static_cast<unsigned>(wornPt));
@@ -607,7 +607,7 @@ namespace outfit
         }
         else
         {
-            Log("[OutfitHeadOption] enable-gate unresolved; skipped (submenu may "
+            LogDebug("[OutfitHeadOption] enable-gate unresolved; skipped (submenu may "
                 "show greyed, head render still installs below)\n");
         }
 
@@ -627,7 +627,7 @@ namespace outfit
         }
         else
         {
-            Log("[OutfitHeadOption:SuitGate] target unresolved; skipped\n");
+            LogDebug("[OutfitHeadOption:SuitGate] target unresolved; skipped\n");
         }
 
 
@@ -648,7 +648,7 @@ namespace outfit
         }
         else
         {
-            Log("[OutfitHeadOption:HOSuit] target unresolved; skipped\n");
+            LogDebug("[OutfitHeadOption:HOSuit] target unresolved; skipped\n");
         }
 
 
@@ -668,7 +668,7 @@ namespace outfit
         }
         else
         {
-            Log("[OutfitHeadOption:ConverFace] target unresolved; skipped\n");
+            LogDebug("[OutfitHeadOption:ConverFace] target unresolved; skipped\n");
         }
 
         void* heTarget =
@@ -688,7 +688,7 @@ namespace outfit
         }
         else
         {
-            Log("[OutfitHeadOption:HeadEquipType] target unresolved; skipped\n");
+            LogDebug("[OutfitHeadOption:HeadEquipType] target unresolved; skipped\n");
         }
 
         return g_ConverFaceIdInstalled || g_Installed
@@ -745,7 +745,7 @@ namespace outfit
         g_OrigIsEnableHead = nullptr;
         g_Installed        = false;
 #ifdef _DEBUG
-        Log("[OutfitHeadOption] removed\n");
+        LogDebug("[OutfitHeadOption] removed\n");
 #endif
     }
 }

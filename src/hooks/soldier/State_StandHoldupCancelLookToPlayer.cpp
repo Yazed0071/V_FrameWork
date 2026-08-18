@@ -8,6 +8,7 @@
 
 #include "MinHook.h"
 #include "HookUtils.h"
+#include "log.h"
 #include "LuaBroadcaster.h"
 #include "AddressSet.h"
 #include "GetGameObjectIdWithIndex.h"
@@ -141,7 +142,7 @@ static void TrySpeak_EnterDownHoldupStyle(void* holdupThis, uint32_t id32, uint3
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
-        Log("[Holdup] Speak vfunc EXCEPTION. this=%p id=%u line=0x%08X\n",
+        LogDebug("[Holdup] Speak vfunc EXCEPTION. this=%p id=%u line=0x%08X\n",
             holdupThis, id32, lineId);
     }
 }
@@ -236,7 +237,7 @@ bool Install_State_StandHoldupCancelLookToPlayer_Hook(HMODULE hGame)
     if (s2 != MH_OK) return false;
 
 #ifdef _DEBUG
-    Log("[Holdup] Hook installed OK.\n");
+    LogDebug("[Holdup] Hook installed OK.\n");
 #endif
     return true;
 }
@@ -258,7 +259,7 @@ bool Uninstall_State_StandHoldupCancelLookToPlayer_Hook()
     std::memset(gFireRing, 0, sizeof(gFireRing));
 
 #ifdef _DEBUG
-    Log("[Holdup] Hook removed.\n");
+    LogDebug("[Holdup] Hook removed.\n");
 #endif
     return true;
 }

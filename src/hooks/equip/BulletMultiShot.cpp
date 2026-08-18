@@ -143,7 +143,7 @@ namespace
         if (singleOnly)
         {
 #ifdef _DEBUG
-            Log("[MultiShot] engine forces 1 round/call for this weapon state "
+            LogDebug("[MultiShot] engine forces 1 round/call for this weapon state "
                 "(work+0x27c bit 0x400000) - %d of %d rounds not fired\n",
                 remaining, n);
 #endif
@@ -155,7 +155,7 @@ namespace
             if (mag == 0)
             {
 #ifdef _DEBUG
-                Log("[MultiShot] mag empty - %d of %d rounds dropped\n",
+                LogDebug("[MultiShot] mag empty - %d of %d rounds dropped\n",
                     remaining, n);
 #endif
                 break;
@@ -197,7 +197,7 @@ namespace equip
             std::lock_guard<std::recursive_mutex> lock(g_Mutex);
             g_SpecByBulletId[bulletId] = spec;
         }
-        Log("[MultiShot] bulletId=%d ammoPerShot=%d lockAmmoPerShot=%d "
+        LogDebug("[MultiShot] bulletId=%d ammoPerShot=%d lockAmmoPerShot=%d "
             "registered\n", bulletId, spec.ammoPerShot, spec.lockAmmoPerShot);
     }
 
@@ -206,7 +206,7 @@ namespace equip
         void* fn = ResolveGameAddress(gAddr.AttackAction_Fire);
         if (!fn)
         {
-            Log("[MultiShot] AttackAction_Fire unresolved on this build "
+            LogDebug("[MultiShot] AttackAction_Fire unresolved on this build "
                 "- SetBullet ammoPerShot inactive.\n");
             return true;
         }

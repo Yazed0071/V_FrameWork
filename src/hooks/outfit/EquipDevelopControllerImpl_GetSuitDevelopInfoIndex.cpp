@@ -293,7 +293,7 @@ namespace
                 if (s_probe < 12)
                 {
                     ++s_probe;
-                    Log("[HeadSummary] GetFaceEquipDevelopInfoIndex: faceVal=0x%X "
+                    LogDebug("[HeadSummary] GetFaceEquipDevelopInfoIndex: faceVal=0x%X "
                         "bySlot=%d livePT=0x%02X resolve=%d -> out=0x%X\n",
                         faceVal, bySlot ? 1 : 0,
                         static_cast<unsigned>(outfit::ReadLivePartsType()),
@@ -446,7 +446,7 @@ namespace
         {
             static std::atomic<int> s_logged{ 0 };
             if (s_logged.fetch_add(1) < 4)
-                Log("[EquipDevelop] GetBaseDevelopId guarded: caller passed "
+                LogDebug("[EquipDevelop] GetBaseDevelopId guarded: caller passed "
                     "index %u (record array holds %u) - returned 0.\n",
                     static_cast<unsigned>(idx),
                     equip::NativeFlowBound());

@@ -40,7 +40,7 @@ namespace
             ResolveGameAddress(gAddr.Sahelan_PhaseSneakAiImpl_StepFuncsTable));
         if (!tableBase)
         {
-            Log("[Sahelan] %s phase=%u: step-funcs table unresolved\n", label, phase);
+            LogDebug("[Sahelan] %s phase=%u: step-funcs table unresolved\n", label, phase);
             return false;
         }
 
@@ -51,7 +51,7 @@ namespace
 
         if (!stepFunc)
         {
-            Log("[Sahelan] %s phase=%u: null step func\n", label, phase);
+            LogDebug("[Sahelan] %s phase=%u: null step func\n", label, phase);
             return false;
         }
 
@@ -65,7 +65,7 @@ namespace
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            Log("[Sahelan] %s phase=%u: SEH in step proc=%u\n", label, phase, stepProc);
+            LogDebug("[Sahelan] %s phase=%u: SEH in step proc=%u\n", label, phase, stepProc);
             return false;
         }
     }
@@ -118,7 +118,7 @@ namespace
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            Log("[Sahelan] Phase change: SEH writing knowledge\n");
+            LogDebug("[Sahelan] Phase change: SEH writing knowledge\n");
             SahelanPhaseForce::g_ForcedPhase.store(-1, std::memory_order_relaxed);
             return;
         }
@@ -129,7 +129,7 @@ namespace
         SahelanPhaseForce::g_ForcedPhase.store(-1, std::memory_order_relaxed);
 
 #ifdef _DEBUG
-        Log("[Sahelan] Phase: %u -> %u (Exit=%s Enter=%s)\n",
+        LogDebug("[Sahelan] Phase: %u -> %u (Exit=%s Enter=%s)\n",
             currentByte, forcedByte,
             okExit  ? "ok" : "fail",
             okEnter ? "ok" : "fail");
@@ -164,12 +164,12 @@ void Set_SahelanForcePhase(std::int32_t phase)
 {
     if (phase < 0 || phase > 0xFF)
     {
-        Log("[Sahelan] ForcePhase: ignoring out-of-range phase=%d\n", phase);
+        LogDebug("[Sahelan] ForcePhase: ignoring out-of-range phase=%d\n", phase);
         return;
     }
     SahelanPhaseForce::g_ForcedPhase.store(phase, std::memory_order_relaxed);
 #ifdef _DEBUG
-    Log("[Sahelan] ForcePhase: queued phase=%d (single-shot Exit/Enter on next PreUpdate)\n", phase);
+    LogDebug("[Sahelan] ForcePhase: queued phase=%d (single-shot Exit/Enter on next PreUpdate)\n", phase);
 #endif
 }
 

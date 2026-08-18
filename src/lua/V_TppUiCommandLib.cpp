@@ -36,7 +36,7 @@ namespace
         { "SetMissionTelopSplashTexturePath",         l_SetMissionTelopSplashTexturePath },
         { "UnsetMissionTelopSplashTexturePath",       l_UnsetMissionTelopSplashTexturePath },
 
-        { "SetEquipIdIconFtexPath",                   l_SetEquipIdIconFtexPath },
+        { "SetEquipIconFtexPath",                     l_SetEquipIconFtexPath },
         { "ClearIconFtexPath",                        l_ClearIconFtexPath },
         { "ClearAllIconFtexPaths",                    l_ClearAllIconFtexPaths },
         { "SetMissionEmergency",                      l_SetMissionEmergency },
@@ -53,16 +53,10 @@ namespace
         { "ShowMbDvcAnnouncePopupRewardLangId",       l_ShowMbDvcAnnouncePopupRewardLangId },
 
         { "SetEnemyInformationLangId",                l_SetEnemyInformationLangId },
-        { "ClearEnemyInformationLangId",              l_ClearEnemyInformationLangId },
         { "SetEnemyUnitName",                         l_SetEnemyUnitName },
-        { "ClearEnemyUnitName",                       l_ClearEnemyUnitName },
 
         { "SetEnemyInformationLangIdForSoldier",      l_SetEnemyInformationLangIdForSoldier },
-        { "ClearEnemyInformationLangIdForSoldier",    l_ClearEnemyInformationLangIdForSoldier },
-        { "ClearAllEnemyInformationLangIdForSoldiers",l_ClearAllEnemyInformationLangIdForSoldiers },
         { "SetEnemyUnitNameForSoldier",               l_SetEnemyUnitNameForSoldier },
-        { "ClearEnemyUnitNameForSoldier",             l_ClearEnemyUnitNameForSoldier },
-        { "ClearAllEnemyUnitNameForSoldiers",         l_ClearAllEnemyUnitNameForSoldiers },
 
         { "SetAnnounceLogSE",                         l_SetAnnounceLogSE },
         { "RegisterAnnounceLogSfx",                   l_RegisterAnnounceLogSfx },
@@ -74,6 +68,7 @@ namespace
 
         { "SetMissionMenuHelp",                       l_SetMissionMenuHelp },
         { "ClearMissionMenuHelp",                     l_ClearMissionMenuHelp },
+        { "SetEquipLangInfo",                         l_SetEquipLangInfo },
 
 
         { nullptr,          nullptr }

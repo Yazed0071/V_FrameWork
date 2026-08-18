@@ -161,7 +161,7 @@ namespace
             if (transition || now - s_lastMs >= 2000)
             {
                 s_lastMs = now;
-                Log("[TimeCigDiag] SHOW read=%d was=%d now=%d idx=%u%s\n",
+                LogDebug("[TimeCigDiag] SHOW read=%d was=%d now=%d idx=%u%s\n",
                     static_cast<int>(read), static_cast<int>(wasShown),
                     static_cast<int>(nowShown), index,
                     transition ? " <TRANSITION>" : "");
@@ -196,7 +196,7 @@ namespace
             if (transition || now - s_lastMs >= 2000)
             {
                 s_lastMs = now;
-                Log("[TimeCigDiag] HIDE read=%d was=%d now=%d idx=%u%s\n",
+                LogDebug("[TimeCigDiag] HIDE read=%d was=%d now=%d idx=%u%s\n",
                     static_cast<int>(read), static_cast<int>(wasShown),
                     static_cast<int>(nowShown), index,
                     transition ? " <TRANSITION>" : "");
@@ -237,7 +237,7 @@ bool Install_TimeCigaretteUi_Hook()
 
     if (!gAddr.TimeCigaretteActionPluginImpl_ShowTimeCigaretteUi)
     {
-        Log("[TimeCigaretteUi] address not set for this build\n");
+        LogDebug("[TimeCigaretteUi] address not set for this build\n");
         return false;
     }
 

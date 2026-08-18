@@ -56,7 +56,7 @@ namespace
 #ifdef _DEBUG
         if (!g_FirstVirtualHitLogged.exchange(true))
         {
-            Log("[OutfitGetCamoufValue] FIRST VIRTUAL HIT: "
+            LogDebug("[OutfitGetCamoufValue] FIRST VIRTUAL HIT: "
                 "virtualId=%u materialType=%u value=%d ownerPT=%u "
                 "(developId=%u flowIndex=%u)\n",
                 static_cast<unsigned>(camoType),
@@ -81,7 +81,7 @@ namespace outfit
         void* target = ResolveGameAddress(gAddr.CamoufParamInfo_GetCamoufValue);
         if (!target)
         {
-            Log("[OutfitGetCamoufValue] target unresolved; module disabled "
+            LogDebug("[OutfitGetCamoufValue] target unresolved; module disabled "
                 "(camoBonusValues unique-row feature will be inactive)\n");
             return false;
         }
@@ -106,7 +106,7 @@ namespace outfit
         g_OrigGetCamoufValue = nullptr;
         g_Installed          = false;
 #ifdef _DEBUG
-        Log("[OutfitGetCamoufValue] removed\n");
+        LogDebug("[OutfitGetCamoufValue] removed\n");
 #endif
     }
 }

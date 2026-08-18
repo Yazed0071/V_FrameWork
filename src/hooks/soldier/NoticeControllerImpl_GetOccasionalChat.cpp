@@ -198,7 +198,7 @@ bool Install_OccasionalChatList_Hook()
 
     if (!gAddr.NoticeControllerImpl_GetOccasionalChat)
     {
-        Log("[OccasionalChatList] GetOccasionalChat address is 0 (unsupported build)\n");
+        LogDebug("[OccasionalChatList] GetOccasionalChat address is 0 (unsupported build)\n");
         return false;
     }
 
@@ -230,7 +230,7 @@ bool Install_OccasionalChatList_Hook()
 
     g_Installed = true;
 #ifdef _DEBUG
-    Log("[OccasionalChatList] installed (get=%p convert=%p)\n",
+    LogDebug("[OccasionalChatList] installed (get=%p convert=%p)\n",
         getTarget, reinterpret_cast<void*>(g_OrigConvert));
 #endif
     return true;

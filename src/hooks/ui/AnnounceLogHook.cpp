@@ -137,7 +137,7 @@ namespace
             if (now - g_LastSuppressReport >= kAnnounceWindowMs)
             {
                 g_LastSuppressReport = now;
-                Log("[AnnounceLog] announce flood declined (%ld dropped so far; >%d per %ums). "
+                LogDebug("[AnnounceLog] announce flood declined (%ld dropped so far; >%d per %ums). "
                     "The engine caps lifetime announces at 100 via a byte counter at "
                     "CommonDataManager+0x1134 that only resets once the log drains, so a burst "
                     "permanently kills the announce HUD. Declining keeps that counter intact.\n",
@@ -153,7 +153,7 @@ namespace
         if (s_viewCount < 12)
         {
             ++s_viewCount;
-            Log("[AnnounceDiag] AnnounceLogView #%d caller=%p type=%u se=%u important=%d text=\"%s\"\n",
+            LogDebug("[AnnounceDiag] AnnounceLogView #%d caller=%p type=%u se=%u important=%d text=\"%s\"\n",
                 s_viewTotal, _ReturnAddress(),
                 static_cast<unsigned>(type), static_cast<unsigned>(se),
                 important ? 1 : 0, text ? text : "(null)");
@@ -175,7 +175,7 @@ namespace
             if (s_diagCount < 40)
             {
                 ++s_diagCount;
-                Log("[AnnounceDiag] GetAnnounceLogSE fired: announceType=0x%08X\n", type);
+                LogDebug("[AnnounceDiag] GetAnnounceLogSE fired: announceType=0x%08X\n", type);
             }
         }
 #endif
@@ -400,7 +400,7 @@ bool Install_AnnounceLogHook()
 
     if (!gAddr.Hud_GetAnnounceLogSE)
     {
-        Log("[AnnounceLog] address not set for this build\n");
+        LogDebug("[AnnounceLog] address not set for this build\n");
         return false;
     }
 
@@ -433,7 +433,7 @@ bool Install_AnnounceLogHook()
     }
     else
     {
-        Log("[AnnounceDiag] AnnounceLogView address is 0 for this build\n");
+        LogDebug("[AnnounceDiag] AnnounceLogView address is 0 for this build\n");
     }
 
     if (ok && gAddr.Hud_TypingLogActUpdate)
@@ -488,7 +488,7 @@ bool Install_AnnounceLogHook()
     }
     else if (ok)
     {
-        Log("[AnnounceLog] custom-sound path disabled (TypingLogAct::Update address not set)\n");
+        LogDebug("[AnnounceLog] custom-sound path disabled (TypingLogAct::Update address not set)\n");
     }
 
     return ok;

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <Windows.h>
 #include <cstdint>
@@ -361,7 +361,6 @@ namespace AddressSetRuntime
         uintptr_t ReloadEquipParameterTables2 = 0;
 
         uintptr_t GunBasicParameters2Buffer = 0;
-        uintptr_t GunBasicParameters2SlotCount = 0;
 
 
         uintptr_t EquipParameterTablesImpl_Instance = 0;
@@ -474,6 +473,8 @@ namespace AddressSetRuntime
         uintptr_t MotionLoaderImpl_GetMagazineType = 0;
         uintptr_t MotionLoaderImpl_SightTypeTable = 0;
         uintptr_t MotionLoaderImpl_GetSightType = 0;
+        uintptr_t TppPickable_ItemWindowBoundSite = 0;
+        uintptr_t UiUtility_GetWeaponItemNameLangId = 0;
     };
 
     inline GameBuild& GetGameBuild()

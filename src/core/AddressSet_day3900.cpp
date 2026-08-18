@@ -308,7 +308,6 @@ namespace AddressSetRuntime
             0x140F6E5D0ull, // EquipDevelopCtrl_SetEnableDevelop
             0x140A41AE0ull, // ReloadEquipParameterTables2
             0x142C25C50ull, // GunBasicParameters2Buffer
-            514ull,         // GunBasicParameters2SlotCount
             0x142A711F0ull, // EquipParameterTablesImpl_Instance
             0x142349A90ull, // MotionLoaderImpl_ReceiverTypeTable
             0x140DB6CB0ull, // MotionLoaderImpl_GetReceiverType
@@ -409,6 +408,8 @@ namespace AddressSetRuntime
             0x140DB6A20ull, // MotionLoaderImpl_GetMagazineType (vtbl+0x30)
             0x142349CC0ull, // MotionLoaderImpl_SightTypeTable (25B span, stock 24)
             0x140DB6CC0ull, // MotionLoaderImpl_GetSightType (vtbl+0x38)
+            0x14120A4F5ull, // TppPickable_ItemWindowBoundSite (CMP EBX,0x209 - signed, upper-bound-only)
+            0x140915130ull, // UiUtility_GetWeaponItemNameLangId (3 call sites converge)
         };
 
         return value;
@@ -717,7 +718,6 @@ namespace AddressSetRuntime
             0x140F6E630ull, // EquipDevelopCtrl_SetEnableDevelop
             0x140A41920ull, // ReloadEquipParameterTables2
             0x142C25C50ull, // GunBasicParameters2Buffer
-            514ull,           // GunBasicParameters2SlotCount
             0x142A711F0ull, // EquipParameterTablesImpl_Instance
             0x142349B40ull, // MotionLoaderImpl_ReceiverTypeTable
             0x140DB6C70ull, // MotionLoaderImpl_GetReceiverType
@@ -804,20 +804,22 @@ namespace AddressSetRuntime
             0x14006D7F0ull, // Fox_BlockGroup_GetBlockAtIndex
             0x140DB98A0ull, // EquipPreviewSystem_RequestLoadEquip
             0x1416AC540ull, // ItemSelector_StartEquipPreviewImpl
-            0ull,           // EquipBlockController2_RequestLoad TODO JP 15.4a
-            0ull,           // EquipBlockController2_Instance TODO JP 15.4a
-            0ull,           // ItemSelector_UpdateSelect TODO JP 15.4a
+            0x140A03820ull, // EquipBlockController2_RequestLoad (JP15.4a; 5-push+SUB RSP,0x50 prologue verified)
+            0x142C1E3B0ull, // EquipBlockController2_Instance (JP15.4a; data delta 0 in 7/7 pairs, JP xrefs confirm)
+            0x1416ACA00ull, // ItemSelector_UpdateSelect (JP15.4a; prologue verified)
             0x141681C90ull, // UiEquipPreviewController_ScrollNext
             0x141681AE0ull, // UiEquipPreviewController_ScrollPrev
-            0ull,           // UiEquipPreviewController_StopEquipPreview TODO JP 15.4a
-            0ull,           // Player2Impl_AddAdditionalMtarAll TODO JP 15.4a
-            0ull,           // Player2Impl_RemoveAdditionalMtarAll TODO JP 15.4a
-            0ull,           // MotionLoaderImpl_BarrelTypeTable TODO JP 15.4a
-            0ull,           // MotionLoaderImpl_GetBarrelType TODO JP 15.4a
-            0ull,           // MotionLoaderImpl_MagazineTypeTable TODO JP 15.4a
-            0ull,           // MotionLoaderImpl_GetMagazineType TODO JP 15.4a
-            0ull,           // MotionLoaderImpl_SightTypeTable TODO JP 15.4a
-            0ull,           // MotionLoaderImpl_GetSightType TODO JP 15.4a
+            0x141682130ull, // UiEquipPreviewController_StopEquipPreview (JP15.4a; MOV [RCX+0xb1],0 verified)
+            0x1409BB870ull, // Player2Impl_AddAdditionalMtarAll (JP15.4a; SHL EBP,CL prologue, sole hit)
+            0x1409C9350ull, // Player2Impl_RemoveAdditionalMtarAll (JP15.4a; SHL EDI,CL prologue, sole hit)
+            0x142349C30ull, // MotionLoaderImpl_BarrelTypeTable (Ghidra JP154; =ReceiverTable+0xF0)
+            0x140DB6990ull, // MotionLoaderImpl_GetBarrelType (Ghidra JP154; LEA RCX,[142349c30])
+            0x142349CB0ull, // MotionLoaderImpl_MagazineTypeTable (Ghidra JP154; =ReceiverTable+0x170)
+            0x140DB69E0ull, // MotionLoaderImpl_GetMagazineType (Ghidra JP154; LEA RCX,[142349cb0])
+            0x142349D70ull, // MotionLoaderImpl_SightTypeTable (Ghidra JP154; =ReceiverTable+0x230)
+            0x140DB6C80ull, // MotionLoaderImpl_GetSightType (Ghidra JP154; =GetReceiverType+0x10)
+            0x14120A535ull, // TppPickable_ItemWindowBoundSite (JP15.4a shares the JP15.4 layout)
+            0x140915010ull, // UiUtility_GetWeaponItemNameLangId (JP15.4a shares the JP15.4 layout)
         };
         return value;
     }

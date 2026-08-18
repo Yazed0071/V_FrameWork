@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include <Windows.h>
+#include <intrin.h>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -11,6 +12,7 @@
 #include "log.h"
 #include "MissionCodeGuard.h"
 #include "LostHostageHook.h"
+#include "NoticeControllerImpl_CheckSightNoticePlayer.h"
 #include "StepRadioDiscovery.h"
 #include "AddressSet.h"
 #include "FoxHashes.h"
@@ -307,6 +309,9 @@ static bool __fastcall hkAddNoticeInfo(void* self, std::uint32_t soldierIndex, c
 
     ParseNoticeBlob(noticeBlob, noticeType, noticeObjId, slot);
 
+    if (SoldierNotice_ShouldDropNotice(soldierIndex, noticeType, _ReturnAddress()))
+        return false;
+
     const bool accepted = g_OrigAddNoticeInfo(self, soldierIndex, noticeBlob);
     if (!accepted) return false;
 
@@ -427,7 +432,7 @@ void Add_LostHostageTrap(std::uint32_t gameObjectId, int hostageType, std::uint3
 {
     if (hostageType < HOSTAGE_MALE || hostageType > HOSTAGE_CHILD)
     {
-        Log("[LostHostage] Add_LostHostage: invalid type=%d for objectId=0x%08X\n", hostageType, gameObjectId);
+        LogDebug("[LostHostage] Add_LostHostage: invalid type=%d for objectId=0x%08X\n", hostageType, gameObjectId);
         return;
     }
 
@@ -492,7 +497,7 @@ void PlayerTookHostage(std::uint32_t gameObjectId, bool playerTookIt)
     auto it = g_HostagesByObjectId.find(rawId);
     if (it == g_HostagesByObjectId.end())
     {
-        Log("[LostHostage] PlayerTookHostage: objectId=0x%08X not tracked\n", gameObjectId);
+        LogDebug("[LostHostage] PlayerTookHostage: objectId=0x%08X not tracked\n", gameObjectId);
         return;
     }
 
@@ -572,7 +577,7 @@ bool Uninstall_LostHostage_Hooks()
     g_SelectedReport = {};
 
 #ifdef _DEBUG
-    Log("[LostHostage] Uninstall_LostHostage_Hooks\n");
+    LogDebug("[LostHostage] Uninstall_LostHostage_Hooks\n");
 #endif
     return true;
 }

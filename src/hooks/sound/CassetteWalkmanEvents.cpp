@@ -71,7 +71,7 @@ namespace
         std::lock_guard<std::mutex> lk(s_m);
         if (n == 0 || s_seen.size() >= 16 || !s_seen.insert(chain[0]).second)
             return;
-        Log("[CassetteWalkman] StopMusicPlayer caller (game-code, no ASLR): "
+        LogDebug("[CassetteWalkman] StopMusicPlayer caller (game-code, no ASLR): "
             "0x%llX <- 0x%llX <- 0x%llX <- 0x%llX (tid=%lu prog=%d state=%u) - map "
             "the first addr to the EN15.4 dump to see which game path polls the "
             "walkman stop\n",

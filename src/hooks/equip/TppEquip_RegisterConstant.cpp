@@ -35,7 +35,7 @@ bool Install_TppEquip_RegisterConstant_Hook()
     void* target = ResolveGameAddress(gAddr.TppEquip_RegisterConstant);
     if (!target)
     {
-        Log("[TppEquipConst] address not set for this build - skipped\n");
+        LogDebug("[TppEquipConst] address not set for this build - skipped\n");
         return true;
     }
 
@@ -49,7 +49,7 @@ bool Install_TppEquip_RegisterConstant_Hook()
 #ifdef _DEBUG
     else
     {
-        Log("[TppEquipConst] Install -> OK (target=%p)\n", target);
+        LogDebug("[TppEquipConst] Install -> OK (target=%p)\n", target);
     }
 #endif
     return ok;

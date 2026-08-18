@@ -32,14 +32,14 @@ bool Install_IsWeaponNoUseInPlaceActionPatch()
 
     if (!gAddr.AttackActionImpl_IsWeaponNoUseInPlaceAction)
     {
-        Log("[IsWeaponNoUseInPlace] no address for current build\n");
+        LogDebug("[IsWeaponNoUseInPlace] no address for current build\n");
         return false;
     }
 
     void* target = ResolveGameAddress(gAddr.AttackActionImpl_IsWeaponNoUseInPlaceAction);
     if (!target)
     {
-        Log("[IsWeaponNoUseInPlace] ResolveGameAddress returned null\n");
+        LogDebug("[IsWeaponNoUseInPlace] ResolveGameAddress returned null\n");
         return false;
     }
 

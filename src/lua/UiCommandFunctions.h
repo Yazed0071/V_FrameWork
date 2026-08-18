@@ -19,7 +19,7 @@ int __cdecl l_SetGameOverSplashMainTexturePath(lua_State* L);
 int __cdecl l_SetGameOverSplashBlurTexturePath(lua_State* L);
 int __cdecl l_ClearGameOverSplashTextures(lua_State* L);
 
-int __cdecl l_SetEquipIdIconFtexPath(lua_State* L);
+int __cdecl l_SetEquipIconFtexPath(lua_State* L);
 int __cdecl l_ClearIconFtexPath(lua_State* L);
 int __cdecl l_ClearAllIconFtexPaths(lua_State* L);
 
@@ -59,3 +59,4 @@ int __cdecl l_ClearMissionAcceptWarning(lua_State* L);
 
 int __cdecl l_SetMissionMenuHelp(lua_State* L);
 int __cdecl l_ClearMissionMenuHelp(lua_State* L);
+int __cdecl l_SetEquipLangInfo(lua_State* L);

@@ -164,6 +164,10 @@
     <ClInclude Include="src\core\FeatureModule.h" />
     <ClInclude Include="src\core\BuiltInModules.h" />
     <ClInclude Include="src\core\MissionCodeGuard.h" />
+    <ClInclude Include="src\core\MissionStateReset.h" />
+    <ClInclude Include="src\hooks\soldier\NoticeControllerImpl_CheckSightNoticePlayer.h" />
+    <ClInclude Include="src\hooks\player\CqcActionPluginImpl_StateHoldMove.h" />
+    <ClInclude Include="src\hooks\player\PlayerSpaceQuery.h" />
     <ClInclude Include="src\core\FoxHashes.h" />
     <ClInclude Include="src\core\FoxPath.h" />
     <ClInclude Include="src\core\FoxPathInternal.h" />
@@ -243,10 +247,12 @@
     <ClInclude Include="src\hooks\outfit\OutfitRegistry.h" />
     <ClInclude Include="src\hooks\outfit\CustomHeadRegistry.h" />
     <ClInclude Include="src\hooks\outfit\ShadowState.h" />
+    <ClInclude Include="src\hooks\outfit\AdditionalMotionTable_GetMtarPathId.h" />
     <ClInclude Include="src\hooks\outfit\EquipDevelopControllerImpl_GetSuitDevelopInfoIndex.h" />
     <ClInclude Include="src\hooks\outfit\BlockControllerImpl_LoadPartsNew.h" />
     <ClInclude Include="src\hooks\outfit\Player2UtilityImpl_SetSuitAndHandConditionWithLoadoutInfo.h" />
     <ClInclude Include="src\hooks\outfit\ItemSelectorCallbackImpl_DecideActMissionPreparationSetEquipMode.h" />
+    <ClInclude Include="src\hooks\outfit\ItemSelectorCallbackImpl_AddDevelopWeaponList.h" />
     <ClInclude Include="src\hooks\outfit\ItemSelectorCallbackImpl_AddListSuit.h" />
     <ClInclude Include="src\hooks\outfit\MissionPreparationSystemImpl_IsEnableHeadOptionSuit.h" />
     <ClInclude Include="src\hooks\outfit\CamouflageControllerImpl_ExecSuitCorrect.h" />
@@ -326,6 +332,7 @@
     <ClInclude Include="src\hooks\menupopup\MbDvcMissionListCallbackImpl_ActivatePrefabPopupParameter.h" />
     <ClInclude Include="src\hooks\menupopup\MbDvcMissionListCallbackImpl_SetMenuHelp.h" />
     <!-- Hooks: Notice -->
+    <ClInclude Include="src\hooks\equip\PartIdWiden.h" />
   </ItemGroup>
   <ItemGroup>
     <!-- Core -->
@@ -346,15 +353,18 @@
     <ClCompile Include="src\hooks\outfit\OutfitRegistry.cpp" />
     <ClCompile Include="src\hooks\outfit\CustomHeadRegistry.cpp" />
     <ClCompile Include="src\hooks\outfit\ShadowState.cpp" />
+    <ClCompile Include="src\hooks\outfit\AdditionalMotionTable_GetMtarPathId.cpp" />
     <ClCompile Include="src\hooks\outfit\EquipDevelopControllerImpl_GetSuitDevelopInfoIndex.cpp" />
     <ClCompile Include="src\hooks\outfit\BlockControllerImpl_LoadPartsNew.cpp" />
     <ClCompile Include="src\hooks\outfit\Player2UtilityImpl_SetSuitAndHandConditionWithLoadoutInfo.cpp" />
     <ClCompile Include="src\hooks\outfit\ItemSelectorCallbackImpl_DecideActMissionPreparationSetEquipMode.cpp" />
+    <ClCompile Include="src\hooks\outfit\ItemSelectorCallbackImpl_AddDevelopWeaponList.cpp" />
     <ClCompile Include="src\hooks\outfit\ItemSelectorCallbackImpl_AddListSuit.cpp" />
     <ClCompile Include="src\hooks\outfit\MissionPreparationSystemImpl_IsEnableHeadOptionSuit.cpp" />
     <ClCompile Include="src\hooks\outfit\CamouflageControllerImpl_ExecSuitCorrect.cpp" />
     <ClCompile Include="src\hooks\outfit\CamoufParamInfoImpl_GetCamoufValue.cpp" />
     <ClCompile Include="src\hooks\equip\DevelopArrayGrow.cpp" />
+    <ClCompile Include="src\hooks\equip\UiEquipPreviewControllerImpl_ScrollNext.cpp" />
     <ClCompile Include="src\hooks\equip\EquipDevelop_AddToEquipDevelopTable.cpp" />
     <ClCompile Include="src\hooks\equip\MenuDevelopGridExpand.cpp" />
     <ClCompile Include="src\hooks\equip\BulletLockOn.cpp" />
@@ -365,6 +375,7 @@
     <ClCompile Include="src\hooks\equip\TppEquip_ReloadEquipIdTable.cpp" />
     <ClCompile Include="src\hooks\equip\GunBasicInject.cpp" />
     <ClCompile Include="src\hooks\equip\EquipPartParams.cpp" />
+    <ClCompile Include="src\hooks\equip\UiUtility_GetWeaponItemNameLangId.cpp" />
     <ClCompile Include="src\hooks\equip\EquipDevelop_SetEquipUndeveloped.cpp" />
     <ClCompile Include="src\hooks\equip\WeaponPartsDevelopControllerImpl_GetLangEnhanceInfoMessageIdArray.cpp" />
     <ClCompile Include="src\lua\V_TppEquipLib.cpp" />
@@ -396,6 +407,10 @@
     <ClCompile Include="src\lua\equip\DeclareWeaponPaints.cpp" />
     <ClCompile Include="src\lua\OutfitLuaBindings.cpp" />
     <ClCompile Include="src\core\MissionCodeGuard.cpp" />
+    <ClCompile Include="src\core\MissionStateReset.cpp" />
+    <ClCompile Include="src\hooks\soldier\NoticeControllerImpl_CheckSightNoticePlayer.cpp" />
+    <ClCompile Include="src\hooks\player\CqcActionPluginImpl_StateHoldMove.cpp" />
+    <ClCompile Include="src\hooks\player\PlayerSpaceQuery.cpp" />
     <ClCompile Include="src\core\FoxHashes.cpp" />
     <ClCompile Include="src\core\LuaBroadcaster.cpp" />
     <ClCompile Include="src\core\log.cpp" />
@@ -495,6 +510,7 @@
     <ClCompile Include="src\hooks\menupopup\MbDvcMissionListCallbackImpl_ActivatePrefabPopupParameter.cpp" />
     <ClCompile Include="src\hooks\menupopup\MbDvcMissionListCallbackImpl_SetMenuHelp.cpp" />
     <!-- Hooks: Notice -->
+    <ClCompile Include="src\hooks\equip\PartIdWiden.cpp" />
   </ItemGroup>
   <ItemGroup>
     <Library Include="lib\libMinHook.x64.lib" />

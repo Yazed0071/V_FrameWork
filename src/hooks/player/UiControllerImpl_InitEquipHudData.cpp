@@ -39,7 +39,7 @@ bool Install_InitEquipHudData()
 {
     if (!gAddr.UiControllerImpl_InitEquipHudData)
     {
-        Log("[InitEquipHudData] address not set for this build\n");
+        LogDebug("[InitEquipHudData] address not set for this build\n");
         return false;
     }
     void* target = ResolveGameAddress(gAddr.UiControllerImpl_InitEquipHudData);

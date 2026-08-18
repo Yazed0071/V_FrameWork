@@ -249,7 +249,7 @@ bool RegisterLuaLibrary(lua_State* L, const char* libName, luaL_Reg* funcs)
         return false;
     g_FoxLuaRegisterLibrary(L, libName, funcs);
 #ifdef _DEBUG
-    Log("[V_FrameWork] Registered library: %s (L=%p)\n", libName, L);
+    LogDebug("[V_FrameWork] Registered library: %s (L=%p)\n", libName, L);
 #endif
     return true;
 }

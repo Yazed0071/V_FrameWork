@@ -130,7 +130,7 @@ static void DispatchHoldupDownReaction(void* self, std::uint32_t actorId, std::u
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
-        Log("[HoldupDownForce] Dispatch exception\n");
+        LogDebug("[HoldupDownForce] Dispatch exception\n");
     }
 }
 
@@ -219,7 +219,7 @@ bool Uninstall_State_EnterDownHoldupForceVoice_Hook()
     g_OrigState_EnterDownHoldup = nullptr;
 
 #ifdef _DEBUG
-    Log("[HoldupDownForce] Removed\n");
+    LogDebug("[HoldupDownForce] Removed\n");
 #endif
     return true;
 }

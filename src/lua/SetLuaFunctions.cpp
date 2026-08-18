@@ -1,4 +1,6 @@
 #include "pch.h"
+#include "CqcActionPluginImpl_StateHoldMove.h"
+#include "PlayerSpaceQuery.h"
 extern "C" {
     #include "lua.h"
     #include "lauxlib.h"
@@ -18,6 +20,7 @@ extern "C" {
 #include "HookUtils.h"
 #include "log.h"
 #include "FoxHashes.h"
+#include "UiUtility_GetWeaponItemNameLangId.h"
 #include "EquipBgTexture.h"
 #include "MissionTelopBgTexture.h"
 #include "LoadingSplash.h"
@@ -531,29 +534,94 @@ int __cdecl l_ClearAllPlayerVoiceFpkOverrides(lua_State* L)
 }
 
 
+int __cdecl l_RequestToSetTargetCqcStance(lua_State* L)
+{
+    const int stance = GetLuaInt(L, 1);
+    if (stance != kCqcStanceStanding && stance != kCqcStanceCrouching)
+    {
+        Log("[TargetCqcStance] ERROR: V_Player.RequestToSetTargetCqcStance was given stance %d - "
+            "expected 0 (standing) or 1 (crouching); the CQC hold keeps its current stance.\n",
+            stance);
+        return 0;
+    }
+    ::Set_TargetCqcStance(stance);
+    if (::IsInCqcHold())
+        ::Request_PlayerTargetStance(L, stance);
+    return 0;
+}
+
+
+static bool ReadPlayerTransformFromVars(lua_State* L, float* posX, float* posY, float* posZ,
+                                        float* rotY)
+{
+    if (!ResolveLuaApi() || L == nullptr)
+        return false;
+
+    const int top = GetLuaTop(L);
+    g_lua_getfield(L, LUA_GLOBALSINDEX_51, const_cast<char*>("vars"));
+
+    if (LuaType(L, -1) != LUA_TTABLE)
+    {
+        LuaPop(L, GetLuaTop(L) - top);
+        return false;
+    }
+
+    const char* const keys[4]  = { "playerPosX", "playerPosY", "playerPosZ", "playerRotY" };
+    float* const      slots[4] = { posX, posY, posZ, rotY };
+
+    bool ok = true;
+    for (int i = 0; i < 4; ++i)
+    {
+        g_lua_getfield(L, -1, const_cast<char*>(keys[i]));
+        if (LuaIsNumber(L, -1))
+            *slots[i] = GetLuaNumber(L, -1);
+        else
+            ok = false;
+        LuaPop(L, 1);
+    }
+
+    LuaPop(L, GetLuaTop(L) - top);
+    return ok;
+}
+
+int __cdecl l_IsThereEnoughSpaceAroundPlayer(lua_State* L)
+{
+    const float minX = GetLuaNumber(L, 1);
+    const float maxX = GetLuaNumber(L, 2);
+    const float minZ = GetLuaNumber(L, 3);
+    const float maxZ = GetLuaNumber(L, 4);
+
+    float posX = 0.0f;
+    float posY = 0.0f;
+    float posZ = 0.0f;
+    float rotY = 0.0f;
+
+    if (!ReadPlayerTransformFromVars(L, &posX, &posY, &posZ, &rotY))
+    {
+        static std::uint64_t s_lastTick = 0;
+        const std::uint64_t  now        = GetTickCount64();
+        if (s_lastTick == 0 || now - s_lastTick >= 5000)
+        {
+            s_lastTick = now;
+            Log("[PlayerSpace] ERROR: vars.playerPosX/Y/Z or vars.playerRotY could not be read, so "
+                "V_Player.IsThereEnoughSpaceAroundPlayer has no player transform to test around and "
+                "answers 'not enough space'.\n");
+        }
+        PushLuaBool(L, false);
+        return 1;
+    }
+
+    PushLuaBool(L, PlayerSpace_IsClearAround(minX, maxX, minZ, maxZ, posX, posY, posZ, rotY));
+    return 1;
+}
+
+
 int __cdecl l_IsBarrierActive(lua_State* L)
 {
     PushLuaBool(L, BarrierEffect_IsShieldDeployed());
     return 1;
 }
 
-
-int __cdecl l_SetSoldierVoicePitch(lua_State* L)
-{
-    const std::uint32_t goId  = static_cast<std::uint32_t>(GetLuaInt64(L, 1));
-    const float         cents = GetLuaNumber(L, 2);
-    const bool ok = ::Set_SoldierVoicePitch(goId, cents);
-    PushLuaBool(L, ok);
-    return 1;
-}
-
-
-int __cdecl l_UnsetSoldierVoicePitch(lua_State* L)
-{
-    UNREFERENCED_PARAMETER(L);
-    ::Unset_AllSoldierVoicePitch();
-    return 0;
-}
 
 
 
@@ -692,7 +760,7 @@ int __cdecl l_RegisterRadioCassette(lua_State* L)
 {
     if (!LuaIsString(L, 1))
     {
-        Log("[RadioCassette] RegisterRadioCassette: gimmickName must be a string\n");
+        LogDebug("[RadioCassette] RegisterRadioCassette: gimmickName must be a string\n");
         PushLuaBool(L, false);
         return 1;
     }
@@ -720,7 +788,7 @@ int __cdecl l_RegisterRadioCassette(lua_State* L)
 
     if (wwiseEventId == 0)
     {
-        Log("[RadioCassette] RegisterRadioCassette: wwiseEvent missing/invalid\n");
+        LogDebug("[RadioCassette] RegisterRadioCassette: wwiseEvent missing/invalid\n");
         PushLuaBool(L, false);
         return 1;
     }
@@ -750,7 +818,7 @@ int __cdecl l_RegisterRadioCassette(lua_State* L)
 }
 
 
-int __cdecl l_SetEquipIdIconFtexPath(lua_State* L)
+int __cdecl l_SetEquipIconFtexPath(lua_State* L)
 {
     const int equipId = GetLuaInt(L, 1);
     const char* rawPath = GetLuaString(L, 2);
@@ -813,7 +881,7 @@ static int __cdecl l_VFI_IsEmergencyMissionOverride(lua_State* L)
     if (err != 0)
     {
         const char* errMsg = g_lua_tolstring ? g_lua_tolstring(L, -1, nullptr) : nullptr;
-        Log("[MissionEmergency] IsEmergencyMission OVERRIDE: original pcall err=%d: %s\n",
+        LogDebug("[MissionEmergency] IsEmergencyMission OVERRIDE: original pcall err=%d: %s\n",
             err, errMsg ? errMsg : "<no message>");
         g_lua_settop(L, nargs);
         g_lua_pushnil(L);
@@ -829,7 +897,7 @@ static bool InstallIsEmergencyMissionOverride(lua_State* L)
 
     if (!ResolveLuaApi() || !g_lua_pushcclosure || !g_lua_pcall)
     {
-        Log("[MissionEmergency] InstallIsEmergencyMissionOverride: Lua FFI unavailable; skipped\n");
+        LogDebug("[MissionEmergency] InstallIsEmergencyMissionOverride: Lua FFI unavailable; skipped\n");
         return false;
     }
 
@@ -847,7 +915,7 @@ static bool InstallIsEmergencyMissionOverride(lua_State* L)
     if (g_lua_type(L, -1) != LUA_TFUNCTION)
     {
         g_lua_settop(L, top0);
-        Log("[MissionEmergency] InstallIsEmergencyMissionOverride: original function missing\n");
+        LogDebug("[MissionEmergency] InstallIsEmergencyMissionOverride: original function missing\n");
         return false;
     }
 
@@ -861,7 +929,7 @@ static bool InstallIsEmergencyMissionOverride(lua_State* L)
 
     g_VFI_IsEmergencyMissionOverrideInstalled = true;
 #ifdef _DEBUG
-    Log("[MissionEmergency] InstallIsEmergencyMissionOverride: installed\n");
+    LogDebug("[MissionEmergency] InstallIsEmergencyMissionOverride: installed\n");
 #endif
     return true;
 }
@@ -986,7 +1054,7 @@ static int __cdecl l_VFI_AcceptEmergencyMissionOverride(lua_State* L)
     if (err != 0)
     {
         const char* errMsg = g_lua_tolstring ? g_lua_tolstring(L, -1, nullptr) : nullptr;
-        Log("[MissionEmergency] AcceptEmergencyMission original pcall ERR=%d mc=%lld: %s\n",
+        LogDebug("[MissionEmergency] AcceptEmergencyMission original pcall ERR=%d mc=%lld: %s\n",
             err, missionCode, errMsg ? errMsg : "<no message>");
     }
     return 0;
@@ -1000,7 +1068,7 @@ static int __cdecl l_VFI_GoToEmergencyMissionOverride(lua_State* L)
         !g_lua_isnumber || !g_lua_tointeger || !g_lua_pushvalue || !g_lua_pcall ||
         !g_lua_createtable || !g_lua_pushstring || !g_lua_pushnumber || !g_lua_settable)
     {
-        Log("[MissionEmergency] GoToEmergencyMission OVERRIDE: required FFI missing; bailing\n");
+        LogDebug("[MissionEmergency] GoToEmergencyMission OVERRIDE: required FFI missing; bailing\n");
         return 0;
     }
 
@@ -1038,7 +1106,7 @@ static int __cdecl l_VFI_GoToEmergencyMissionOverride(lua_State* L)
         if (err != 0)
         {
             const char* errMsg = g_lua_tolstring ? g_lua_tolstring(L, -1, nullptr) : nullptr;
-            Log("[MissionEmergency] original GoToEmergencyMission pcall ERR=%d mc=%lld: %s\n",
+            LogDebug("[MissionEmergency] original GoToEmergencyMission pcall ERR=%d mc=%lld: %s\n",
                 err, mc, errMsg ? errMsg : "<no message>");
             g_lua_settop(L, top0);
         }
@@ -1077,14 +1145,14 @@ static int __cdecl l_VFI_GoToEmergencyMissionOverride(lua_State* L)
     if (g_lua_type(L, -1) != LUA_TTABLE)
     {
         g_lua_settop(L, top0);
-        Log("[MissionEmergency] GoToEmergencyMission OVERRIDE: TppMission missing\n");
+        LogDebug("[MissionEmergency] GoToEmergencyMission OVERRIDE: TppMission missing\n");
         return 0;
     }
     g_lua_getfield(L, -1, const_cast<char*>("ReserveMissionClear"));
     if (g_lua_type(L, -1) != LUA_TFUNCTION)
     {
         g_lua_settop(L, top0);
-        Log("[MissionEmergency] GoToEmergencyMission OVERRIDE: ReserveMissionClear missing\n");
+        LogDebug("[MissionEmergency] GoToEmergencyMission OVERRIDE: ReserveMissionClear missing\n");
         return 0;
     }
 
@@ -1113,7 +1181,7 @@ static int __cdecl l_VFI_GoToEmergencyMissionOverride(lua_State* L)
     if (err != 0)
     {
         const char* errMsg = g_lua_tolstring ? g_lua_tolstring(L, -1, nullptr) : nullptr;
-        Log("[MissionEmergency] GoToEmergencyMission ReserveMissionClear pcall ERR=%d mc=%lld: %s\n",
+        LogDebug("[MissionEmergency] GoToEmergencyMission ReserveMissionClear pcall ERR=%d mc=%lld: %s\n",
             err, mc, errMsg ? errMsg : "<no message>");
     }
 
@@ -1129,7 +1197,7 @@ static bool InstallAcceptEmergencyMissionOverride(lua_State* L)
 
     if (!ResolveLuaApi() || !g_lua_pushcclosure || !g_lua_pcall)
     {
-        Log("[MissionEmergency] InstallAcceptEmergencyMissionOverride: Lua FFI unavailable; skipped\n");
+        LogDebug("[MissionEmergency] InstallAcceptEmergencyMissionOverride: Lua FFI unavailable; skipped\n");
         return false;
     }
 
@@ -1147,7 +1215,7 @@ static bool InstallAcceptEmergencyMissionOverride(lua_State* L)
     if (g_lua_type(L, -1) != LUA_TFUNCTION)
     {
         g_lua_settop(L, top0);
-        Log("[MissionEmergency] InstallAcceptEmergencyMissionOverride: original function missing\n");
+        LogDebug("[MissionEmergency] InstallAcceptEmergencyMissionOverride: original function missing\n");
         return false;
     }
 
@@ -1161,7 +1229,7 @@ static bool InstallAcceptEmergencyMissionOverride(lua_State* L)
 
     g_VFI_AcceptEmergencyMissionOverrideInstalled = true;
 #ifdef _DEBUG
-    Log("[MissionEmergency] InstallAcceptEmergencyMissionOverride: installed\n");
+    LogDebug("[MissionEmergency] InstallAcceptEmergencyMissionOverride: installed\n");
 #endif
     return true;
 }
@@ -1174,7 +1242,7 @@ static bool InstallGoToEmergencyMissionOverride(lua_State* L)
 
     if (!ResolveLuaApi() || !g_lua_pushcclosure || !g_lua_pcall)
     {
-        Log("[MissionEmergency] InstallGoToEmergencyMissionOverride: Lua FFI unavailable; skipped\n");
+        LogDebug("[MissionEmergency] InstallGoToEmergencyMissionOverride: Lua FFI unavailable; skipped\n");
         return false;
     }
 
@@ -1192,7 +1260,7 @@ static bool InstallGoToEmergencyMissionOverride(lua_State* L)
     if (g_lua_type(L, -1) != LUA_TFUNCTION)
     {
         g_lua_settop(L, top0);
-        Log("[MissionEmergency] InstallGoToEmergencyMissionOverride: original function missing\n");
+        LogDebug("[MissionEmergency] InstallGoToEmergencyMissionOverride: original function missing\n");
         return false;
     }
 
@@ -1206,7 +1274,7 @@ static bool InstallGoToEmergencyMissionOverride(lua_State* L)
 
     g_VFI_GoToEmergencyMissionOverrideInstalled = true;
 #ifdef _DEBUG
-    Log("[MissionEmergency] InstallGoToEmergencyMissionOverride: installed\n");
+    LogDebug("[MissionEmergency] InstallGoToEmergencyMissionOverride: installed\n");
 #endif
     return true;
 }
@@ -1219,7 +1287,7 @@ int __cdecl l_SetMissionEmergency(lua_State* L)
 
     if (missionCodeRaw <= 0 || missionCodeRaw > 0xFFFF)
     {
-        Log("[MissionEmergency] SetMissionEmergency: missionCode %d out of range; bailing\n",
+        LogDebug("[MissionEmergency] SetMissionEmergency: missionCode %d out of range; bailing\n",
             missionCodeRaw);
         return 0;
     }
@@ -1326,7 +1394,7 @@ int __cdecl l_ShowMissionIcon(lua_State* L)
     g_lua_getfield(L, LUA_GLOBALSINDEX_51, const_cast<char*>("TppUiCommand"));
     if (g_lua_type(L, -1) != LUA_TTABLE)
     {
-        Log("[V_FrameWork.ShowMissionIcon] TppUiCommand not loaded\n");
+        LogDebug("[V_FrameWork.ShowMissionIcon] TppUiCommand not loaded\n");
         g_lua_settop(L, top0);
         return 0;
     }
@@ -1334,7 +1402,7 @@ int __cdecl l_ShowMissionIcon(lua_State* L)
     g_lua_getfield(L, -1, const_cast<char*>("ShowMissionIcon"));
     if (g_lua_type(L, -1) != LUA_TFUNCTION)
     {
-        Log("[V_FrameWork.ShowMissionIcon] TppUiCommand.ShowMissionIcon missing\n");
+        LogDebug("[V_FrameWork.ShowMissionIcon] TppUiCommand.ShowMissionIcon missing\n");
         g_lua_settop(L, top0);
         return 0;
     }
@@ -1353,7 +1421,7 @@ int __cdecl l_ShowMissionIcon(lua_State* L)
     if (err != 0)
     {
         const char* errMsg = g_lua_tolstring(L, -1, nullptr);
-        Log("[V_FrameWork.ShowMissionIcon] pcall ERR=%d: %s\n",
+        LogDebug("[V_FrameWork.ShowMissionIcon] pcall ERR=%d: %s\n",
             err, errMsg ? errMsg : "<no message>");
     }
 
@@ -1620,13 +1688,6 @@ int __cdecl l_SetEnemyInformationLangId(lua_State* L)
 }
 
 
-int __cdecl l_ClearEnemyInformationLangId(lua_State* L)
-{
-    UNREFERENCED_PARAMETER(L);
-    EnemyLangId_ClearMapOverride();
-    return 0;
-}
-
 
 int __cdecl l_SetEnemyUnitName(lua_State* L)
 {
@@ -1638,13 +1699,6 @@ int __cdecl l_SetEnemyUnitName(lua_State* L)
     return 0;
 }
 
-
-int __cdecl l_ClearEnemyUnitName(lua_State* L)
-{
-    UNREFERENCED_PARAMETER(L);
-    EnemyLangId_ClearBinoOverride();
-    return 0;
-}
 
 
 int __cdecl l_SetEnemyInformationLangIdForSoldier(lua_State* L)
@@ -1659,20 +1713,6 @@ int __cdecl l_SetEnemyInformationLangIdForSoldier(lua_State* L)
 }
 
 
-int __cdecl l_ClearEnemyInformationLangIdForSoldier(lua_State* L)
-{
-    const std::uint32_t gameObjectId = static_cast<std::uint32_t>(GetLuaInt64(L, 1));
-    EnemyLangId_ClearMapOverrideForSoldier(gameObjectId);
-    return 0;
-}
-
-
-int __cdecl l_ClearAllEnemyInformationLangIdForSoldiers(lua_State* L)
-{
-    UNREFERENCED_PARAMETER(L);
-    EnemyLangId_ClearAllMapOverridesForSoldier();
-    return 0;
-}
 
 
 int __cdecl l_SetEnemyUnitNameForSoldier(lua_State* L)
@@ -1687,20 +1727,6 @@ int __cdecl l_SetEnemyUnitNameForSoldier(lua_State* L)
 }
 
 
-int __cdecl l_ClearEnemyUnitNameForSoldier(lua_State* L)
-{
-    const std::uint32_t gameObjectId = static_cast<std::uint32_t>(GetLuaInt64(L, 1));
-    EnemyLangId_ClearBinoOverrideForSoldier(gameObjectId);
-    return 0;
-}
-
-
-int __cdecl l_ClearAllEnemyUnitNameForSoldiers(lua_State* L)
-{
-    UNREFERENCED_PARAMETER(L);
-    EnemyLangId_ClearAllBinoOverridesForSoldier();
-    return 0;
-}
 
 
 static void PushLuaUInt32(lua_State* L, std::uint32_t v)
@@ -1875,6 +1901,7 @@ static void RegisterAllUiLuaLibraries(lua_State* L)
         Register_V_TppSoundDaemonLibrary(L);
         Register_V_TppGameObjectConstants(L);
         Register_V_TppMbDevConstants(L);
+        Register_V_PlayerCqcStanceConstants(L);
         Register_V_TppCassetteLibrary(L);
         Register_V_TppSahelanLibrary(L);
         Register_V_TppPlayerLibrary(L);
@@ -1913,6 +1940,7 @@ extern "C" __declspec(dllexport) int __cdecl luaopen_V_FrameWork(lua_State* L)
     Register_V_TppSoundDaemonLibrary(L);
     Register_V_TppGameObjectConstants(L);
     Register_V_TppMbDevConstants(L);
+    Register_V_PlayerCqcStanceConstants(L);
     Register_V_TppCassetteLibrary(L);
     Register_V_TppSahelanLibrary(L);
     Register_V_TppPlayerLibrary(L);
@@ -1949,7 +1977,7 @@ static void Install_LuaPcallPump_Hook()
     void* target = ResolveGameAddress(gAddr.lua_pcall);
     if (!target)
     {
-        Log("[Hook] lua_pcall pump: no address on this build - demand "
+        LogDebug("[Hook] lua_pcall pump: no address on this build - demand "
             "paging falls back to the visibility-check trigger.\n");
         return;
     }
@@ -2027,12 +2055,13 @@ int __cdecl l_ClearMissionMenuHelp(lua_State* L)
 }
 
 
+
 bool Install_SetLuaFunctions_Hook()
 {
     if (g_SetLuaFunctionsHookInstalled)
     {
 #ifdef _DEBUG
-        Log("[Hook] SetLuaFunctions: already installed\n");
+        LogDebug("[Hook] SetLuaFunctions: already installed\n");
 #endif
         return true;
     }

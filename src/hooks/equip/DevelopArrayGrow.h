@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace equip
@@ -12,8 +13,21 @@ namespace equip
 
     std::uint32_t NativeFlowBound();
 
-    constexpr std::uint16_t kFlowSentinel   = 0x400;
-    constexpr std::uint32_t kMaxFlowSlots   = 4096;
+    constexpr std::uint16_t kFlowSentinel      = 0x400;
+    constexpr std::uint16_t kGunsmithFlowFirst = 0x3FD;
+    constexpr std::uint16_t kGunsmithFlowLast  = 0x3FF;
+    constexpr std::uint32_t kMaxFlowSlots      = 65535;
+
+    bool GunsmithFlowRowClaimed(std::uint32_t row);
+
+    inline bool IsReservedFlowRow(std::uint32_t v)
+    {
+        if (v == kFlowSentinel)
+            return true;
+        if (v < kGunsmithFlowFirst || v > kGunsmithFlowLast)
+            return false;
+        return GunsmithFlowRowClaimed(v);
+    }
 
     std::size_t DevFlagsPtrOffsetBase20();
 
@@ -39,7 +53,7 @@ namespace equip
 
     inline bool IsValidFlowIndex(std::uint32_t v)
     {
-        return v < NativeFlowBound() && v != kFlowSentinel;
+        return v < NativeFlowBound() && !IsReservedFlowRow(v);
     }
 
     void DevFlagsWriteByte(void* controller, std::uint32_t index,
@@ -49,6 +63,9 @@ namespace equip
                              std::uint8_t& out);
 
     void EnsureDevelopBlockArmed(void* base20);
+
+    std::size_t CollectVanillaIdentityEquipIds(std::int32_t* out,
+                                               std::size_t capacity);
 
     void SyncDevelopFlagsWithSave();
 

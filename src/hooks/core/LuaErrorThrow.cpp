@@ -36,7 +36,7 @@ namespace
         if (L && ResolveLuaApi())
             msg = ReadLuaErrorMessageSEH(L);
 
-        Log("[LuaError] a Lua script raised an error; the engine converts it "
+        LogDebug("[LuaError] a Lua script raised an error; the engine converts it "
             "into a C++ exception that nothing catches, so the process dies "
             "here: %s\n",
             (msg && *msg) ? msg : "(message could not be read off the stack)");

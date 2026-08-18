@@ -66,21 +66,21 @@ bool Install_IsItemNoUsePatch()
     const ReturnFalsePatchSite* site = GetPatchSiteForCurrentBuild();
     if (!site)
     {
-        Log("[IsItemNoUse] no patch address for current build\n");
+        LogDebug("[IsItemNoUse] no patch address for current build\n");
         return false;
     }
 
     void* target = ResolveGameAddress(site->address);
     if (!target)
     {
-        Log("[IsItemNoUse] ResolveGameAddress returned null\n");
+        LogDebug("[IsItemNoUse] ResolveGameAddress returned null\n");
         return false;
     }
 
     const auto* cur = static_cast<const std::uint8_t*>(target);
     if (std::memcmp(cur, site->expect, site->expectLen) != 0)
     {
-        Log("[IsItemNoUse] unexpected bytes at %p (have %02X %02X %02X %02X %02X, "
+        LogDebug("[IsItemNoUse] unexpected bytes at %p (have %02X %02X %02X %02X %02X, "
             "expected %02X %02X %02X %02X %02X) - not patching\n",
             target, cur[0], cur[1], cur[2], cur[3], cur[4],
             site->expect[0], site->expect[1], site->expect[2], site->expect[3], site->expect[4]);
@@ -95,7 +95,7 @@ bool Install_IsItemNoUsePatch()
         return false;
 
 #ifdef _DEBUG
-    Log("[IsItemNoUse] patched %p (%zu bytes) -> EquipCrossEvCall::IsItemNoUse always returns false\n",
+    LogDebug("[IsItemNoUse] patched %p (%zu bytes) -> EquipCrossEvCall::IsItemNoUse always returns false\n",
         target, site->writeLen);
 #endif
 

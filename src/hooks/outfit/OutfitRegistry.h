@@ -44,6 +44,12 @@ namespace outfit
     constexpr std::uint16_t kHeadOption_Balaclava   = 0x210;
 
 
+    constexpr std::size_t kMotionMtarSlotCount = 32;
+
+    int           MotionMtarSlotFromName(const char* name);
+    std::uint64_t MotionMtarVanillaHash(std::size_t slot);
+    int           MotionMtarSlotFromVanillaHash(std::uint64_t pathHash);
+
     struct OutfitVariant
     {
         bool           used               = false;
@@ -78,6 +84,7 @@ namespace outfit
         std::uint64_t  voiceFpk            = kSubAssetUseVanilla;
         std::uint64_t  camoFv2             = kSubAssetDisabled;
         std::uint64_t  diamondFv2          = kSubAssetDisabled;
+        std::uint64_t  motionMtars[kMotionMtarSlotCount] = {};
         std::uint64_t  baseDisplayNameHash = 0;
         std::uint64_t  baseIconPathHash    = 0;
         std::deque<OutfitVariant> variants;
@@ -188,6 +195,7 @@ namespace outfit
         std::uint64_t GetVariantCamoFpk(std::uint8_t playerType, std::uint8_t variantIdx) const;
         std::uint64_t GetVariantCamoFv2(std::uint8_t playerType, std::uint8_t variantIdx) const;
         std::uint64_t GetVariantDiamondFpk(std::uint8_t playerType, std::uint8_t variantIdx) const;
+        std::uint64_t GetMotionMtarOverride(std::uint8_t playerType, std::size_t slot) const;
         std::uint64_t GetVariantDiamondFv2(std::uint8_t playerType, std::uint8_t variantIdx) const;
         std::uint64_t GetVariantVoiceFpk(std::uint8_t playerType, std::uint8_t variantIdx) const;
         std::uint64_t GetVariantDisplayNameHash(std::uint8_t playerType, std::uint8_t variantIdx) const;
@@ -399,6 +407,12 @@ namespace outfit
     std::uint8_t ReadLivePartsType();
     std::uint8_t ReadLiveSelectorCode();
     std::uint8_t ReadLivePlayerType();
+    void          SetMotionOutfitHint(std::uint8_t partsType, std::uint8_t playerType);
+    void          ClearMotionOutfitHint();
+    std::uint8_t  GetMotionOutfitHintPartsType();
+    std::uint8_t  GetMotionOutfitHintPlayerType();
+    void          RegisterMotionMtarOverrideHash(std::uint64_t pathHash, int slot);
+    bool          IsMotionMtarOverrideHash(std::uint64_t pathHash, int* outSlot);
 
     bool BootRestoreScrubActive();
     void EndBootRestoreScrub(const char* reason);

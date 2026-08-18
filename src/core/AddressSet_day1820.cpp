@@ -307,7 +307,6 @@ namespace AddressSetRuntime
             0x1495264F0ull, // EquipDevelopCtrl_SetEnableDevelop
             0x1464C1180ull, // ReloadEquipParameterTables2
             0x142C25C30ull, // GunBasicParameters2Buffer
-            514ull,         // GunBasicParameters2SlotCount
             0x142A711F0ull, // EquipParameterTablesImpl_Instance
             0x1423495C0ull, // MotionLoaderImpl_ReceiverTypeTable
             0x147413D10ull, // MotionLoaderImpl_GetReceiverType
@@ -402,12 +401,14 @@ namespace AddressSetRuntime
             0ull,           // UiEquipPreviewController_StopEquipPreview TODO EN 15.3
             0ull,           // Player2Impl_AddAdditionalMtarAll TODO EN 15.3
             0ull,           // Player2Impl_RemoveAdditionalMtarAll TODO EN 15.3
-            0ull,           // MotionLoaderImpl_BarrelTypeTable TODO EN 15.3
-            0ull,           // MotionLoaderImpl_GetBarrelType TODO EN 15.3
-            0ull,           // MotionLoaderImpl_MagazineTypeTable TODO EN 15.3
-            0ull,           // MotionLoaderImpl_GetMagazineType TODO EN 15.3
-            0ull,           // MotionLoaderImpl_SightTypeTable TODO EN 15.3
-            0ull,           // MotionLoaderImpl_GetSightType TODO EN 15.3
+            0x1423496B0ull, // MotionLoaderImpl_BarrelTypeTable (Ghidra EN153; =ReceiverTable+0xF0)
+            0x147410F10ull, // MotionLoaderImpl_GetBarrelType (Ghidra EN153; sole xref of 1423496b0)
+            0x142349730ull, // MotionLoaderImpl_MagazineTypeTable (Ghidra EN153; =ReceiverTable+0x170)
+            0x147412460ull, // MotionLoaderImpl_GetMagazineType (Ghidra EN153; sole xref of 142349730)
+            0x1423497F0ull, // MotionLoaderImpl_SightTypeTable (Ghidra EN153; =ReceiverTable+0x230)
+            0x147413F80ull, // MotionLoaderImpl_GetSightType (Ghidra EN153; sole xref of 1423497f0)
+            0x14120B025ull, // TppPickable_ItemWindowBoundSite (EN15.3; CMP EBX,0x209, JG -> +0xA9)
+            0x1409147F0ull, // UiUtility_GetWeaponItemNameLangId (EN15.3; 3 call sites converge)
         };
         return value;
     }
@@ -750,7 +751,6 @@ namespace AddressSetRuntime
             0x149F42BE0ull, // EquipDevelopCtrl_SetEnableDevelop
             0x140A40EC0ull, // ReloadEquipParameterTables2
             0x142C25C30ull, // GunBasicParameters2Buffer
-            514ull,         // GunBasicParameters2SlotCount
             0x142A711F0ull, // EquipParameterTablesImpl_Instance
             0x142349520ull, // MotionLoaderImpl_ReceiverTypeTable
             0x14957D790ull, // MotionLoaderImpl_GetReceiverType
@@ -845,12 +845,14 @@ namespace AddressSetRuntime
             0ull,           // UiEquipPreviewController_StopEquipPreview TODO JP 15.3
             0ull,           // Player2Impl_AddAdditionalMtarAll TODO JP 15.3
             0ull,           // Player2Impl_RemoveAdditionalMtarAll TODO JP 15.3
-            0ull,           // MotionLoaderImpl_BarrelTypeTable TODO JP 15.3
-            0ull,           // MotionLoaderImpl_GetBarrelType TODO JP 15.3
-            0ull,           // MotionLoaderImpl_MagazineTypeTable TODO JP 15.3
-            0ull,           // MotionLoaderImpl_GetMagazineType TODO JP 15.3
-            0ull,           // MotionLoaderImpl_SightTypeTable TODO JP 15.3
-            0ull,           // MotionLoaderImpl_GetSightType TODO JP 15.3
+            0x142349610ull, // MotionLoaderImpl_BarrelTypeTable (Ghidra JP153; =ReceiverTable+0xF0)
+            0x14957B690ull, // MotionLoaderImpl_GetBarrelType (Ghidra JP153; sole xref of 142349610)
+            0x142349690ull, // MotionLoaderImpl_MagazineTypeTable (Ghidra JP153; =ReceiverTable+0x170)
+            0x14957C9A0ull, // MotionLoaderImpl_GetMagazineType (Ghidra JP153; sole xref of 142349690)
+            0x142349750ull, // MotionLoaderImpl_SightTypeTable (Ghidra JP153; =ReceiverTable+0x230)
+            0x14957D970ull, // MotionLoaderImpl_GetSightType (Ghidra JP153; sole xref of 142349750)
+            0x14120B135ull, // TppPickable_ItemWindowBoundSite (JP15.3; CMP EBX,0x209, JG -> +0xA9)
+            0x140914220ull, // UiUtility_GetWeaponItemNameLangId (JP15.3; 3 call sites converge)
         };
 
         return value;

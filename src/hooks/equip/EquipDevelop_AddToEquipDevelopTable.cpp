@@ -212,7 +212,7 @@ namespace
                 if (!s_logged)
                 {
                     s_logged = true;
-                    Log("[EquipDevelop] dynamic gate eval skipped (key=%s): the running "
+                    LogDebug("[EquipDevelop] dynamic gate eval skipped (key=%s): the running "
                         "Lua frame is too tight to push safely; it re-evaluates on the next "
                         "R&D menu build. Skipping prevents a Lua stack-overflow crash.\n",
                         key);
@@ -240,7 +240,7 @@ namespace
                 outfit::SetDevelopHidden(flowIndex, !visible);
                 if (wasHidden != !visible)
                 {
-                    Log("[EquipDevelop] dynamic gate key=%s flowIndex=%u -> %s\n",
+                    LogDebug("[EquipDevelop] dynamic gate key=%s flowIndex=%u -> %s\n",
                         key, static_cast<unsigned>(flowIndex),
                         visible ? "VISIBLE" : "HIDDEN");
                     if (visible)
@@ -355,7 +355,7 @@ namespace
         out.reserve(equip::kMaxFlowSlots);
         for (std::uint32_t i = 0; i < equip::NativeFlowBound(); ++i)
         {
-            if (i == equip::kFlowSentinel)
+            if (equip::IsReservedFlowRow(i))
                 continue;
             NativeRecordSnap s;
             if (!ReadRecordSnap(controller, static_cast<std::uint16_t>(i), s)
@@ -399,7 +399,7 @@ namespace
                           114 - static_cast<int>(kv.second.size()));
             line += buf;
         }
-        Log("[EquipDevelop] native grid budget (114 rows/tab): %s\n",
+        LogDebug("[EquipDevelop] native grid budget (114 rows/tab): %s\n",
             line.c_str());
     }
 
@@ -1219,7 +1219,7 @@ namespace
 
         if (g_NextDevelopId > kMaxAllocId || g_NextFlowIndex > kMaxAllocId)
         {
-            Log("[EquipDevelop] ID allocator overflow\n");
+            LogDebug("[EquipDevelop] ID allocator overflow\n");
             return false;
         }
 
@@ -1620,7 +1620,7 @@ namespace
         if (!FindFirstEmptyRecordIndex(recController, appendIdx))
         {
             if (ShouldLogPark(req.key))
-                Log("[EquipDevelop] PARKED key=%s: the develop record array "
+                LogDebug("[EquipDevelop] PARKED key=%s: the develop record array "
                     "has no empty slot left - it will page into the R&D "
                     "window when one frees.\n", req.key.c_str());
             ParkKeyForPaging(req.key);
@@ -1631,7 +1631,7 @@ namespace
             static std::atomic<std::uint32_t> s_HoleLogged{ 0xFFFFFFFFu };
             if (s_HoleLogged.exchange(appendIdx,
                                       std::memory_order_relaxed) != appendIdx)
-                Log("[EquipDevelop] inject held: first empty develop row %u "
+                LogDebug("[EquipDevelop] inject held: first empty develop row %u "
                     "is inside the vanilla band (native table still "
                     "populating) - pending registrations retry on later "
                     "passes\n", appendIdx);
@@ -1681,7 +1681,7 @@ namespace
                 if (total > kMenuRootRenderCap)
                 {
                     if (ShouldLogPark(req.key))
-                        Log("[EquipDevelop] PARKED key=%s: its R&D tab "
+                        LogDebug("[EquipDevelop] PARKED key=%s: its R&D tab "
                             "(equipDevelopTypeID=%d) already holds %d top-level "
                             "rows of the menu's %d - it will page into the "
                             "develop window automatically on later menu opens.\n",
@@ -1701,7 +1701,7 @@ namespace
                     if (static_cast<int>(rows.size()) >= kMenuRootRenderCap)
                     {
                         if (ShouldLogPark(req.key))
-                            Log("[EquipDevelop] PARKED key=%s: its R&D tab "
+                            LogDebug("[EquipDevelop] PARKED key=%s: its R&D tab "
                                 "(equipDevelopTypeID=%d) already renders %d "
                                 "rows of the menu grid's %d - it will page "
                                 "into the develop window automatically on "
@@ -1729,7 +1729,7 @@ namespace
             if (!alreadyMember && fam.memberCount >= kMenuFamilyCap)
             {
                 if (ShouldLogPark(req.key))
-                    Log("[EquipDevelop] PARKED key=%s: the develop chain of "
+                    LogDebug("[EquipDevelop] PARKED key=%s: the develop chain of "
                         "baseEquipDevelopId=%u already has %d members (menu "
                         "ceiling %d per chain) - it will page into the develop "
                         "window automatically on later menu opens.\n",
@@ -1744,14 +1744,14 @@ namespace
                 if (fam.parentGrade >= kMaxGrade)
                 {
                     if (ShouldLogPark(req.key))
-                        Log("[EquipDevelop] PARKED key=%s: parent (developId=%u) "
+                        LogDebug("[EquipDevelop] PARKED key=%s: parent (developId=%u) "
                             "is already grade %d - a child's grade must exceed "
                             "its parent's and no higher grade exists.\n",
                             req.key.c_str(), baseDevelopId, fam.parentGrade);
                     ParkKeyForPaging(req.key);
                     return false;
                 }
-                Log("[EquipDevelop] key=%s: grade %d does not exceed parent "
+                LogDebug("[EquipDevelop] key=%s: grade %d does not exceed parent "
                     "grade %d - raised to %d (chain grades must ascend).\n",
                     req.key.c_str(), finalGrade, fam.parentGrade,
                     fam.parentGrade + 1);
@@ -1770,7 +1770,7 @@ namespace
                     edgeCount = g_NativeBaseByDevelopId.size();
                 }
                 if (ShouldLogPark(req.key))
-                    Log("[EquipDevelop] PARKED key=%s: parent developId=%u is "
+                    LogDebug("[EquipDevelop] PARKED key=%s: parent developId=%u is "
                         "not resolvable yet (parent parked, or native develop "
                         "data not captured: flowJoin=%zu constEdges=%zu) - it "
                         "will page into the develop window once the parent is "
@@ -1823,7 +1823,7 @@ namespace
                 if (requestedOrdinal > maxUsed)
                     ordinal = requestedOrdinal;
                 else if (requestedOrdinal >= 1 && ordinal <= kMaxSideGrade)
-                    Log("[EquipDevelop] key=%s: requested branch %d under "
+                    LogDebug("[EquipDevelop] key=%s: requested branch %d under "
                         "baseEquipDevelopId=%u is at or below an existing "
                         "branch - moved to branch %d.\n",
                         req.key.c_str(), requestedOrdinal, baseDevelopId,
@@ -1831,7 +1831,7 @@ namespace
                 if (ordinal > kMaxSideGrade)
                 {
                     if (ShouldLogPark(req.key))
-                        Log("[EquipDevelop] PARKED key=%s: parent developId=%u "
+                        LogDebug("[EquipDevelop] PARKED key=%s: parent developId=%u "
                             "already carries %d branch chains (the record packs "
                             "the branch ordinal in 3 bits) - it will page into "
                             "the develop window when one frees.\n",
@@ -1844,7 +1844,7 @@ namespace
                 if (cellUsed(col0, row))
                 {
                     if (ShouldLogPark(req.key))
-                        Log("[EquipDevelop] PARKED key=%s: branch %d under "
+                        LogDebug("[EquipDevelop] PARKED key=%s: branch %d under "
                             "baseEquipDevelopId=%u computes to an occupied "
                             "cell (grade %d, row %d) - family data is "
                             "irregular; it will page into the develop window "
@@ -1875,7 +1875,7 @@ namespace
                     if (static_cast<int>(rows.size()) >= kMenuRootRenderCap)
                     {
                         if (ShouldLogPark(req.key))
-                            Log("[EquipDevelop] PARKED key=%s: its R&D tab "
+                            LogDebug("[EquipDevelop] PARKED key=%s: its R&D tab "
                                 "(equipDevelopTypeID=%d) already renders %d "
                                 "rows of the menu grid's %d and this item "
                                 "would open a new branch row - it will page "
@@ -1893,7 +1893,7 @@ namespace
 
             if (moved)
             {
-                Log("[EquipDevelop] key=%s: placed under baseEquipDevelopId=%u "
+                LogDebug("[EquipDevelop] key=%s: placed under baseEquipDevelopId=%u "
                     "at grade %d (column), branch %d (row %d); parent grade %d, "
                     "requested grade %d.\n",
                     req.key.c_str(), baseDevelopId, finalGrade, finalOrdinal,
@@ -1911,7 +1911,7 @@ namespace
         if (appendIdx != flowIndex)
         {
             if (flowIndex != 0)
-                Log("[EquipDevelop] key=%s: develop record lands at row %u "
+                LogDebug("[EquipDevelop] key=%s: develop record lands at row %u "
                     "(bookkept row was %u) - flow row follows the record and "
                     "the bookkeeping is re-synced.\n",
                     req.key.c_str(), appendIdx, flowIndex);
@@ -2015,7 +2015,7 @@ namespace
             outfit::SetDevelopHidden(flowIndex, true);
             RefreshDynamicGatesImpl();
 #ifdef _DEBUG
-            Log("[EquipDevelop] bluePrintId dynamic gate key=%s flowIndex=%u "
+            LogDebug("[EquipDevelop] bluePrintId dynamic gate key=%s flowIndex=%u "
                 "(predicate re-evaluated each R&D menu build)\n",
                 req.key.c_str(), flowIndex);
 #endif
@@ -2028,7 +2028,7 @@ namespace
                 {
                     outfit::SetDevelopHidden(flowIndex, !f.boolValue);
 #ifdef _DEBUG
-                    Log("[EquipDevelop] bluePrintId gate key=%s flowIndex=%u -> %s\n",
+                    LogDebug("[EquipDevelop] bluePrintId gate key=%s flowIndex=%u -> %s\n",
                         req.key.c_str(), flowIndex,
                         f.boolValue ? "VISIBLE" : "HIDDEN");
 #endif
@@ -2095,7 +2095,7 @@ namespace
                 if (!g_PendingRequests.empty()
                     && !s_StallLogged.exchange(true,
                                                std::memory_order_relaxed))
-                    Log("[EquipDevelop] %zu pending develop registration(s) "
+                    LogDebug("[EquipDevelop] %zu pending develop registration(s) "
                         "held: rows cannot be injected yet (native table "
                         "still populating or no room below the custom "
                         "band)\n", g_PendingRequests.size());
@@ -2177,7 +2177,7 @@ namespace
             if (!controller
                 || !FindFirstEmptyRecordIndex(controller, firstEmpty))
                 firstEmpty = 0xFFFF;
-            Log("[EquipDevelop] %zu develop registration(s) still pending "
+            LogDebug("[EquipDevelop] %zu develop registration(s) still pending "
                 "after a flush pass (first empty row %u; 0xFFFF = none) - "
                 "they retry on later registrations and menu opens\n",
                 leftover, firstEmpty);
@@ -2259,7 +2259,7 @@ namespace
                     if (s_fobLog < 8)
                     {
                         ++s_fobLog;
-                        Log("[EquipDevelop] hkRegFlwDev: forced isFobAvailable=0 "
+                        LogDebug("[EquipDevelop] hkRegFlwDev: forced isFobAvailable=0 "
                             "(p74) on managed flow row flowIndex=%d\n", flowIndex);
                     }
 #endif
@@ -2317,7 +2317,7 @@ namespace
     {
         for (std::uint32_t i = 0; i < equip::NativeFlowBound(); ++i)
         {
-            if (i == equip::kFlowSentinel)
+            if (equip::IsReservedFlowRow(i))
                 continue;
             std::uint16_t dev = 0;
             if (!ReadRecordDevelopId(controller,
@@ -2340,7 +2340,7 @@ namespace
             return false;
         for (std::uint32_t i = 0; i < equip::NativeFlowBound(); ++i)
         {
-            if (i == equip::kFlowSentinel)
+            if (equip::IsReservedFlowRow(i))
                 continue;
             std::uint16_t dev = 0;
             if (!ReadRecordDevelopId(controller,
@@ -2394,7 +2394,7 @@ namespace EquipDevelopAdd
 
         if (!ReadKeyAndPayload(L, key, constFields, flowFields, hasDynamicGate))
         {
-            Log("[EquipDevelop] Invalid AddToEquipDevelopTable call\n");
+            LogDebug("[EquipDevelop] Invalid AddToEquipDevelopTable call\n");
             return 0;
         }
 
@@ -2428,7 +2428,7 @@ namespace EquipDevelopAdd
             PublishSummaryDisplay(
                 static_cast<std::uint16_t>(dev32), constFields);
             if (g_MenuCapRefusalLogged.insert(key).second)
-                Log("[EquipDevelop] PARKED key=%s (developId %d): no free "
+                LogDebug("[EquipDevelop] PARKED key=%s (developId %d): no free "
                     "develop record slot right now - it will page into the "
                     "R&D window automatically on later menu opens.\n",
                     key.c_str(), dev32);
@@ -2490,14 +2490,14 @@ namespace EquipDevelopAdd
             auto itOut = g_KeyRegistry.find(outKey);
             if (itOut == g_KeyRegistry.end() || itOut->second.flowIndex == 0)
             {
-                Log("[EquipDevelop] SwapDevelopRow refused: outKey=%s does not "
+                LogDebug("[EquipDevelop] SwapDevelopRow refused: outKey=%s does not "
                     "own a live develop row.\n", outKey.c_str());
                 return false;
             }
             if (g_GradeByDevelopId.find(itOut->second.developId)
                 == g_GradeByDevelopId.end())
             {
-                Log("[EquipDevelop] SwapDevelopRow refused: outKey=%s has a "
+                LogDebug("[EquipDevelop] SwapDevelopRow refused: outKey=%s has a "
                     "reserved slot but no materialized record - not "
                     "swappable.\n", outKey.c_str());
                 return false;
@@ -2505,14 +2505,14 @@ namespace EquipDevelopAdd
             auto itIn = g_KeyRegistry.find(inKey);
             if (itIn != g_KeyRegistry.end() && itIn->second.flowIndex != 0)
             {
-                Log("[EquipDevelop] SwapDevelopRow refused: inKey=%s already "
+                LogDebug("[EquipDevelop] SwapDevelopRow refused: inKey=%s already "
                     "owns a live develop row.\n", inKey.c_str());
                 return false;
             }
             auto itReq = g_RequestByKey.find(inKey);
             if (itReq == g_RequestByKey.end())
             {
-                Log("[EquipDevelop] SwapDevelopRow refused: inKey=%s has no "
+                LogDebug("[EquipDevelop] SwapDevelopRow refused: inKey=%s has no "
                     "retained registration (it must have called "
                     "AddToEquipDevelopTable this session).\n", inKey.c_str());
                 return false;
@@ -2534,7 +2534,7 @@ namespace EquipDevelopAdd
                 inDev32) ||
             inDev32 <= 0 || inDev32 > static_cast<std::int32_t>(kMaxAllocId))
         {
-            Log("[EquipDevelop] SwapDevelopRow refused: could not resolve a "
+            LogDebug("[EquipDevelop] SwapDevelopRow refused: could not resolve a "
                 "developId for inKey=%s.\n", inKey.c_str());
             return false;
         }
@@ -2543,7 +2543,7 @@ namespace EquipDevelopAdd
         void* controller = EquipDevelop_ResolveDevelopController();
         if (!controller)
         {
-            Log("[EquipDevelop] SwapDevelopRow refused: develop controller not "
+            LogDebug("[EquipDevelop] SwapDevelopRow refused: develop controller not "
                 "resolved (game not booted?).\n");
             return false;
         }
@@ -2552,7 +2552,7 @@ namespace EquipDevelopAdd
             std::uint16_t trueIdx = 0;
             if (!FindRecordIndexByDevelopId(controller, outDev, trueIdx))
             {
-                Log("[EquipDevelop] SwapDevelopRow: outKey=%s (developId %u) "
+                LogDebug("[EquipDevelop] SwapDevelopRow: outKey=%s (developId %u) "
                     "has no develop record in the band despite being marked "
                     "live at row %u - healing it to parked.\n",
                     outKey.c_str(), outDev, outIdx);
@@ -2577,7 +2577,7 @@ namespace EquipDevelopAdd
             }
             if (trueIdx != outIdx)
             {
-                Log("[EquipDevelop] SwapDevelopRow: outKey=%s record sits at "
+                LogDebug("[EquipDevelop] SwapDevelopRow: outKey=%s record sits at "
                     "row %u (bookkeeping said %u) - using the real row.\n",
                     outKey.c_str(), trueIdx, outIdx);
                 outIdx = trueIdx;
@@ -2586,7 +2586,7 @@ namespace EquipDevelopAdd
 
         if (EquipDevelop_IsDevelopTimerActive(outIdx))
         {
-            Log("[EquipDevelop] SwapDevelopRow refused: an R&D development is "
+            LogDebug("[EquipDevelop] SwapDevelopRow refused: an R&D development is "
                 "in flight on outKey=%s (flow row %u) - complete or cancel it "
                 "first.\n", outKey.c_str(), outIdx);
             return false;
@@ -2596,7 +2596,7 @@ namespace EquipDevelopAdd
             std::lock_guard<std::recursive_mutex> lock(g_StateMutex);
             if (HasResidentChildren_NoLock(outDev))
             {
-                Log("[EquipDevelop] SwapDevelopRow refused: outKey=%s "
+                LogDebug("[EquipDevelop] SwapDevelopRow refused: outKey=%s "
                     "(developId %u) still has live chain members under it - "
                     "page those out first.\n", outKey.c_str(), outDev);
                 return false;
@@ -2659,7 +2659,7 @@ namespace EquipDevelopAdd
                 outfit::SetOutfitFlowIndexByDevelopId(outDev, outIdx);
             }
             else
-                Log("[EquipDevelop] SwapDevelopRow CRITICAL: slot %u is now "
+                LogDebug("[EquipDevelop] SwapDevelopRow CRITICAL: slot %u is now "
                     "EMPTY mid-band - custom rows above it will not show until "
                     "the game is restarted.\n", outIdx);
             return false;
@@ -2669,7 +2669,7 @@ namespace EquipDevelopAdd
             std::uint16_t landed = 0;
             if (ReadRecordDevelopId(controller, outIdx, landed)
                 && landed != inDev)
-                Log("[EquipDevelop] SwapDevelopRow CRITICAL: slot %u holds "
+                LogDebug("[EquipDevelop] SwapDevelopRow CRITICAL: slot %u holds "
                     "developId %u after injecting %u - the const registration "
                     "landed in a different slot (an empty record exists below "
                     "%u). Restart the game before developing anything.\n",
@@ -2690,7 +2690,7 @@ namespace EquipDevelopAdd
                                   std::memory_order_relaxed);
         }
 
-        Log("[EquipDevelop] SwapDevelopRow: flow row %u now holds key=%s "
+        LogDebug("[EquipDevelop] SwapDevelopRow: flow row %u now holds key=%s "
             "(developId %u); key=%s (developId %u) parked.\n",
             outIdx, inKey.c_str(), inDev, outKey.c_str(), outDev);
 
@@ -2755,7 +2755,7 @@ namespace EquipDevelopAdd
                                   std::memory_order_relaxed);
         }
 
-        Log("[EquipDevelop] develop row materialized into free slot %u: "
+        LogDebug("[EquipDevelop] develop row materialized into free slot %u: "
             "key=%s (developId %u).\n", idx, inKey.c_str(), inDev);
 
         return true;
@@ -3148,7 +3148,7 @@ namespace EquipDevelopAdd
         if (swapped)
         {
             outfit::InvalidateEquipVisibilityCache();
-            Log("[EquipDevelop] develop-window rotation: paged %d row(s) in "
+            LogDebug("[EquipDevelop] develop-window rotation: paged %d row(s) in "
                 "(%zu key(s) still parked - they follow on later R&D "
                 "opens).\n", swapped, parkedLeft);
             void* controller = EquipDevelop_ResolveDevelopController();
@@ -3159,7 +3159,7 @@ namespace EquipDevelopAdd
                 char buf[24];
                 for (std::uint32_t i = 922; i < equip::NativeFlowBound(); ++i)
                 {
-                    if (i == equip::kFlowSentinel)
+                    if (equip::IsReservedFlowRow(i))
                         continue;
                     std::uint16_t dev = 0;
                     if (!ReadRecordDevelopId(
@@ -3169,7 +3169,7 @@ namespace EquipDevelopAdd
                     std::snprintf(buf, sizeof(buf), "%u=%u ", i, dev);
                     map += buf;
                 }
-                Log("[EquipDevelop] band after rotation: %s\n", map.c_str());
+                LogDebug("[EquipDevelop] band after rotation: %s\n", map.c_str());
             }
         }
         if (swapped && parkedLeft != 0)
@@ -3213,7 +3213,7 @@ namespace EquipDevelopAdd
         const unsigned long luaTid = V_FrameWork_LuaOwnerThreadId();
         if (luaTid != 0 && GetCurrentThreadId() != luaTid
             && !g_RotateDeferLogged.exchange(true))
-            Log("[EquipDevelop] develop-window rotation requested off the Lua "
+            LogDebug("[EquipDevelop] develop-window rotation requested off the Lua "
                 "thread (menu-build tid %lu, Lua owner %lu) - deferred to the "
                 "game-thread pump.\n",
                 GetCurrentThreadId(), luaTid);

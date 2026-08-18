@@ -268,7 +268,7 @@ namespace
         }
 
         if (EquipDevelopAdd::IsManagedFlowIndex(index))
-            Log("[EquipDevelop] flow index %u is one of ours but no managed "
+            LogDebug("[EquipDevelop] flow index %u is one of ours but no managed "
                 "developId maps back to it - the %s is NOT written to the state "
                 "file and the row will read back undeveloped after a reload\n",
                 static_cast<unsigned>(index),
@@ -381,7 +381,7 @@ namespace
             return false;
         if (EquipDevelop_IsDevelopTimerActive(index))
             return false;
-        Log("[EquipDevelop] ignored save-replay develop bit for managed row "
+        LogDebug("[EquipDevelop] ignored save-replay develop bit for managed row "
             "(index=%u developId=%d, state says undeveloped) - the state file is "
             "authoritative\n", static_cast<unsigned>(index), developId);
         return true;
@@ -444,7 +444,7 @@ namespace
         auto setUndeveloped = NativeUndevelop();
         if (!getIndex || !setUndeveloped)
         {
-            Log("[EquipUndevelop] native fn address not set for this build - skipped\n");
+            LogDebug("[EquipUndevelop] native fn address not set for this build - skipped\n");
             return false;
         }
 
@@ -644,7 +644,7 @@ bool EquipDevelop_UndevelopByDevelopId(std::uint32_t developId)
     void* controller = ResolveController();
     if (!controller)
     {
-        Log("[EquipUndevelop] controller not resolved (game not booted?); developId=%u skipped\n",
+        LogDebug("[EquipUndevelop] controller not resolved (game not booted?); developId=%u skipped\n",
             developId);
         return false;
     }
@@ -674,7 +674,7 @@ bool EquipDevelop_DevelopByDevelopId(std::uint32_t developId)
     void* controller = ResolveController();
     if (!controller)
     {
-        Log("[EquipDevelop] controller not resolved (game not booted?); developId=%u skipped\n",
+        LogDebug("[EquipDevelop] controller not resolved (game not booted?); developId=%u skipped\n",
             developId);
         return false;
     }
@@ -689,7 +689,7 @@ bool EquipDevelop_DevelopByDevelopId(std::uint32_t developId)
     auto setDeveloped = NativeDevelop();
     if (!getIndex || !setDeveloped)
     {
-        Log("[EquipDevelop] native fn address not set for this build - skipped\n");
+        LogDebug("[EquipDevelop] native fn address not set for this build - skipped\n");
         return false;
     }
 
@@ -792,7 +792,7 @@ namespace
                     if (j != i && slots[j] == want) { clash = true; break; }
                 if (clash)
                 {
-                    Log("[EquipDevelop] in-flight R&D timer: developId=%d wants flow row "
+                    LogDebug("[EquipDevelop] in-flight R&D timer: developId=%d wants flow row "
                         "%u but another timer slot already holds it - left at old index %d "
                         "to avoid a collision.\n",
                         developId, static_cast<unsigned>(currentIndex), storedIndex);
@@ -800,14 +800,14 @@ namespace
                 }
 
                 slots[i] = want;
-                Log("[EquipDevelop] in-flight R&D timer migrated: developId=%d slot %d "
+                LogDebug("[EquipDevelop] in-flight R&D timer migrated: developId=%d slot %d "
                     "re-pointed %d -> %u (flow row shifted between launches).\n",
                     developId, i, storedIndex, static_cast<unsigned>(currentIndex));
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            Log("[EquipDevelop] in-flight R&D timer reconcile: SEH fault - skipped.\n");
+            LogDebug("[EquipDevelop] in-flight R&D timer reconcile: SEH fault - skipped.\n");
         }
     }
 }
@@ -846,7 +846,7 @@ void EquipDevelop_DrainPendingUndevelops()
     void* controller = ResolveController();
     if (!controller)
     {
-        Log("[EquipDevelop] reconcile: controller not resolved - skipped\n");
+        LogDebug("[EquipDevelop] reconcile: controller not resolved - skipped\n");
         return;
     }
 
@@ -854,7 +854,7 @@ void EquipDevelop_DrainPendingUndevelops()
     auto setUndeveloped = NativeUndevelop();
     if (!getIndex)
     {
-        Log("[EquipDevelop] reconcile: GetEquipDevelopIndex addr unset - skipped\n");
+        LogDebug("[EquipDevelop] reconcile: GetEquipDevelopIndex addr unset - skipped\n");
         return;
     }
 
@@ -899,7 +899,7 @@ void EquipDevelop_DrainPendingUndevelops()
                 if (row.developed)
                 {
                     ++parkedDeveloped;
-                    Log("[FobDiag] developId=%d parked (developed - windowed "
+                    LogDebug("[FobDiag] developId=%d parked (developed - windowed "
                         "out of the R&D list; pages back in on its tab's R&D "
                         "open)\n", row.developId);
                 }
@@ -915,14 +915,14 @@ void EquipDevelop_DrainPendingUndevelops()
             if ((fobByte >> 7) & 1)
             {
                 ++fobFlagged;
-                Log("[FobDiag] developId=%d index=%u recByte58=0x%02X fobBit7=1 "
+                LogDebug("[FobDiag] developId=%d index=%u recByte58=0x%02X fobBit7=1 "
                     "- this row carries the FOB/online develop bit\n",
                     row.developId, static_cast<unsigned>(idx),
                     static_cast<unsigned>(fobByte));
             }
         }
         if (fobFlagged || parkedDeveloped)
-            Log("[FobDiag] develop sync: %u mapped, %u parked-undeveloped, "
+            LogDebug("[FobDiag] develop sync: %u mapped, %u parked-undeveloped, "
                 "%u parked-developed, %u carrying the FOB bit\n",
                 mapped, parkedUndeveloped, parkedDeveloped, fobFlagged);
     }

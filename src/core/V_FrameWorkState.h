@@ -38,6 +38,11 @@ namespace V_FrameWorkState
         std::int32_t& outEquipId,
         bool isWeapon = false);
 
+    bool IsClaimedEquipId(std::int32_t equipId);
+
+    void SetVanillaIdentityEquipIds(const std::int32_t* equipIds,
+                                    std::size_t count);
+
     void NotePinnedEquipId(std::int32_t equipId);
     void ReplacePinnedEquipIds(const std::int32_t* equipIds, std::size_t count);
 

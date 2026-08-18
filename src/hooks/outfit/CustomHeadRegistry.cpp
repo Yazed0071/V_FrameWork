@@ -173,7 +173,7 @@ namespace outfit
             const std::int32_t idx = AllocateUnlocked();
             if (idx < 0)
             {
-                Log("[CustomHead] complete: registry full (max=%zu, name=%s)\n",
+                LogDebug("[CustomHead] complete: registry full (max=%zu, name=%s)\n",
                     kMaxCustomHeads, name);
                 return 0;
             }
@@ -181,7 +181,7 @@ namespace outfit
             const std::uint8_t slotByte = AllocateSlotUnlocked();
             if (slotByte < kCustomHeadSlotBase)
             {
-                Log("[CustomHead] complete: head slot space full (name=%s)\n", name);
+                LogDebug("[CustomHead] complete: head slot space full (name=%s)\n", name);
                 return 0;
             }
 
@@ -205,7 +205,7 @@ namespace outfit
             std::memcpy(e.name, name, copyLen);
             e.name[copyLen] = '\0';
 
-            Log("[CustomHead] registered '%s' equipId=%u (rowIndex=0x%X) "
+            LogDebug("[CustomHead] registered '%s' equipId=%u (rowIndex=0x%X) "
                 "developId=%u slot=0x%02X%s\n",
                 e.name, static_cast<unsigned>(e.equipId),
                 static_cast<unsigned>(e.equipId),
@@ -269,7 +269,7 @@ namespace outfit
 
         if (!name || !name[0])
         {
-            Log("[CustomHead] RegisterHeadOption: missing name\n");
+            LogDebug("[CustomHead] RegisterHeadOption: missing name\n");
             return 0;
         }
 
@@ -365,6 +365,11 @@ namespace outfit
     }
 
     static std::atomic<DWORD> g_PendingHeadsRetryTick{ 0 };
+
+    bool HasPendingCustomHeads()
+    {
+        return g_HasPendingHeads.load(std::memory_order_acquire);
+    }
 
     int DrainPendingHeads()
     {

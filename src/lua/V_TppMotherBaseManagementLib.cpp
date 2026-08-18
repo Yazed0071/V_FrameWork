@@ -21,7 +21,7 @@ namespace
     {
         if (LuaType(L, -1) != LUA_TTABLE)
         {
-            Log("[V_TppMotherBaseManagement] AddToChangeLocationMenu expected a table\n");
+            LogDebug("[V_TppMotherBaseManagement] AddToChangeLocationMenu expected a table\n");
             return 0;
         }
 
@@ -38,7 +38,7 @@ namespace
     {
         if (LuaType(L, -1) != LUA_TTABLE)
         {
-            Log("[V_TppMotherBaseManagement] AddPhotoAdditionalText expected a table\n");
+            LogDebug("[V_TppMotherBaseManagement] AddPhotoAdditionalText expected a table\n");
             return 0;
         }
 

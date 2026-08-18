@@ -329,10 +329,122 @@ void Clear_TppPickableOverrides()
 }
 
 
+namespace
+{
+    static void* g_ItemWindowThunk = nullptr;
+
+    static void* AllocThunkNear(uintptr_t anchor, std::size_t size)
+    {
+        SYSTEM_INFO si{};
+        GetSystemInfo(&si);
+        const uintptr_t gran = si.dwAllocationGranularity
+                             ? si.dwAllocationGranularity : 0x10000;
+        const uintptr_t lo = (anchor > 0x40000000ull) ? anchor - 0x40000000ull : 0x10000ull;
+        const uintptr_t hi = anchor + 0x40000000ull;
+        for (uintptr_t p = (anchor & ~(gran - 1)) + gran; p < hi; p += gran)
+        {
+            void* m = VirtualAlloc(reinterpret_cast<void*>(p), size,
+                                   MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+            if (m)
+                return m;
+        }
+        for (uintptr_t p = (anchor & ~(gran - 1)); p > lo; p -= gran)
+        {
+            void* m = VirtualAlloc(reinterpret_cast<void*>(p), size,
+                                   MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+            if (m)
+                return m;
+        }
+        return nullptr;
+    }
+
+    static bool InstallItemWindowBoundPatch()
+    {
+        const uintptr_t site = gAddr.TppPickable_ItemWindowBoundSite;
+        if (!site)
+            return true;
+
+        auto* at = reinterpret_cast<std::uint8_t*>(site);
+        static const std::uint8_t kOrig[6] = { 0x81, 0xFB, 0x09, 0x02, 0x00, 0x00 };
+        for (int i = 0; i < 6; ++i)
+        {
+            if (at[i] != kOrig[i])
+            {
+                LogDebug("[TppPickable] item-window bound patch REFUSED at 0x%llX: expected "
+                    "CMP EBX,0x209 (81 FB 09 02 00 00) but found %02X %02X %02X %02X "
+                    "%02X %02X - another module detoured these bytes or the address is "
+                    "wrong for this build; item equipIds below 0x1C2 keep crashing on "
+                    "drop/pickup\n",
+                    static_cast<unsigned long long>(site),
+                    at[0], at[1], at[2], at[3], at[4], at[5]);
+                return false;
+            }
+        }
+
+        const uintptr_t backTo   = site + 6;
+        const uintptr_t rejectTo = site + 0xA9;
+
+        std::uint8_t* t = static_cast<std::uint8_t*>(AllocThunkNear(site, 64));
+        if (!t)
+        {
+            LogDebug("[TppPickable] item-window bound patch REFUSED: no executable page "
+                "within rel32 range of 0x%llX - item equipIds below 0x1C2 keep crashing "
+                "on drop/pickup\n", static_cast<unsigned long long>(site));
+            return false;
+        }
+
+        std::size_t n = 0;
+        t[n++] = 0x81; t[n++] = 0xFB;
+        t[n++] = 0xC2; t[n++] = 0x01; t[n++] = 0x00; t[n++] = 0x00;
+        t[n++] = 0x0F; t[n++] = 0x8C;
+        const std::int32_t relReject =
+            static_cast<std::int32_t>(rejectTo - (reinterpret_cast<uintptr_t>(t) + n + 4));
+        std::memcpy(t + n, &relReject, 4); n += 4;
+        std::memcpy(t + n, kOrig, 6); n += 6;
+        t[n++] = 0xE9;
+        const std::int32_t relBack =
+            static_cast<std::int32_t>(backTo - (reinterpret_cast<uintptr_t>(t) + n + 4));
+        std::memcpy(t + n, &relBack, 4); n += 4;
+
+        const std::int64_t relIn =
+            static_cast<std::int64_t>(reinterpret_cast<uintptr_t>(t)) -
+            static_cast<std::int64_t>(site + 5);
+        if (relIn > INT32_MAX || relIn < INT32_MIN)
+        {
+            VirtualFree(t, 0, MEM_RELEASE);
+            LogDebug("[TppPickable] item-window bound patch REFUSED: thunk is out of rel32 "
+                "range of 0x%llX - item equipIds below 0x1C2 keep crashing on "
+                "drop/pickup\n", static_cast<unsigned long long>(site));
+            return false;
+        }
+
+        DWORD old = 0;
+        if (!VirtualProtect(at, 6, PAGE_EXECUTE_READWRITE, &old))
+        {
+            VirtualFree(t, 0, MEM_RELEASE);
+            Log("[TppPickable] item-window bound patch REFUSED: VirtualProtect failed at "
+                "0x%llX - item equipIds below 0x1C2 keep crashing on drop/pickup\n",
+                static_cast<unsigned long long>(site));
+            return false;
+        }
+        const std::int32_t relIn32 = static_cast<std::int32_t>(relIn);
+        at[0] = 0xE9;
+        std::memcpy(at + 1, &relIn32, 4);
+        at[5] = 0x90;
+        VirtualProtect(at, 6, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), at, 6);
+
+        g_ItemWindowThunk = t;
+        return true;
+    }
+}
+
 bool Install_TppPickableHooks()
 {
     if (g_TppPickableHooksInstalled)
         return true;
+
+    InstallItemWindowBoundPatch();
 
     void* target = reinterpret_cast<void*>(gAddr.CopyAndAdjustInfo);
 
@@ -355,7 +467,7 @@ bool Install_TppPickableHooks()
 
     g_TppPickableHooksInstalled = true;
 #ifdef _DEBUG
-    Log("[TppPickable] Install hooks: OK\n");
+    LogDebug("[TppPickable] Install hooks: OK\n");
 #endif
     return true;
 }
@@ -378,7 +490,7 @@ bool Uninstall_TppPickableHooks()
     Clear_TppPickableOverrides();
 
 #ifdef _DEBUG
-    Log("[TppPickable] Uninstall hooks: OK\n");
+    LogDebug("[TppPickable] Uninstall hooks: OK\n");
 #endif
     return true;
 }

@@ -37,7 +37,7 @@ namespace
     {
         if (!pointer)
         {
-            Log("[HeliVoice] TogglePatch(%s): address not set for current build\n",
+            LogDebug("[HeliVoice] TogglePatch(%s): address not set for current build\n",
                 isEnable ? "true" : "false");
             return false;
         }
@@ -45,7 +45,7 @@ namespace
         void* target = ResolveGameAddress(pointer);
         if (!target)
         {
-            Log("[HeliVoice] TogglePatch(%s): ResolveGameAddress @0x%llx null\n",
+            LogDebug("[HeliVoice] TogglePatch(%s): ResolveGameAddress @0x%llx null\n",
                 isEnable ? "true" : "false", static_cast<unsigned long long>(pointer));
             return false;
         }

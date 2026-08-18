@@ -176,7 +176,7 @@ bool Install_HeliSoundController_Hook()
 
     if (!gAddr.HeliSoundControllerImpl_Update)
     {
-        Log("[HeliSoundController] Update address not set for this build\n");
+        LogDebug("[HeliSoundController] Update address not set for this build\n");
         return false;
     }
 
@@ -233,7 +233,7 @@ bool Install_HeliSoundController_Hook()
 #ifdef _DEBUG
     else
     {
-        Log("[HeliSoundController] hook: OK (Update=%p, CallVoice=%p, trampoline=%p)\n",
+        LogDebug("[HeliSoundController] hook: OK (Update=%p, CallVoice=%p, trampoline=%p)\n",
             target, reinterpret_cast<void*>(g_CallVoice), reinterpret_cast<void*>(g_OrigCallVoice));
     }
 #endif

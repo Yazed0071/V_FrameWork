@@ -44,13 +44,13 @@ static void PatchSite(std::uintptr_t addr,
     if (!addr)
     {
         if (enable && !applied)
-            Log("[FriendlyFire] %s: no address for current build (EN15.4-only for now) - no-op\n", name);
+            LogDebug("[FriendlyFire] %s: no address for current build (EN15.4-only for now) - no-op\n", name);
         return;
     }
     void* site = ResolveGameAddress(addr);
     if (!site)
     {
-        Log("[FriendlyFire] %s: ResolveGameAddress returned null\n", name);
+        LogDebug("[FriendlyFire] %s: ResolveGameAddress returned null\n", name);
         return;
     }
     auto* p = static_cast<std::uint8_t*>(site);
@@ -58,7 +58,7 @@ static void PatchSite(std::uintptr_t addr,
     {
         if (std::memcmp(p, orig, size) != 0)
         {
-            Log("[FriendlyFire] %s: unexpected bytes @ %p - not patching\n", name, site);
+            LogDebug("[FriendlyFire] %s: unexpected bytes @ %p - not patching\n", name, site);
             return;
         }
         if (WriteBytes(site, patch, size))

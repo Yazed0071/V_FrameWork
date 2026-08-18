@@ -22,6 +22,10 @@ namespace
 
         { "IsBarrierActive",                          l_IsBarrierActive },
 
+        { "RequestToSetTargetCqcStance",              l_RequestToSetTargetCqcStance },
+
+        { "IsThereEnoughSpaceAroundPlayer",           l_IsThereEnoughSpaceAroundPlayer },
+
         { "RegisterOutfit",                           l_RegisterOutfit },
         { "RegisterHeadOption",                       l_RegisterHeadOption },
         { "ExtendVanillaOutfit",                      l_ExtendVanillaOutfit },

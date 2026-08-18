@@ -169,7 +169,7 @@ static void DispatchHoldupReaction(void* holdupSelf, std::uint32_t actorId, std:
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
-        Log("[HoldUpReactionCowardly] DispatchHoldupReaction exception\n");
+        LogDebug("[HoldUpReactionCowardly] DispatchHoldupReaction exception\n");
     }
 }
 
@@ -185,7 +185,7 @@ static void CallHoldupAddNoise(void* self, std::uint32_t actorId)
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
-        Log("[HoldUpReactionCowardly] AddNoise exception\n");
+        LogDebug("[HoldUpReactionCowardly] AddNoise exception\n");
     }
 }
 
@@ -337,7 +337,7 @@ bool Uninstall_HoldUpReactionCowardlyReactions_Hook()
     }
 
 #ifdef _DEBUG
-    Log("[HoldUpReactionCowardly] removed\n");
+    LogDebug("[HoldUpReactionCowardly] removed\n");
 #endif
     return true;
 }

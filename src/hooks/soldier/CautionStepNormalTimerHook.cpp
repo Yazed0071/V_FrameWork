@@ -399,11 +399,13 @@ namespace
         using GB = AddressSetRuntime::GameBuild;
         switch (gGameBuild)
         {
-        case GB::En_1_0_15_4: return 0x140D5DF30ull;
-        case GB::En_1_0_15_3: return 0x140D5E070ull;
-        case GB::Jp_1_0_15_4: return 0x140D5DEF0ull;
-        case GB::Jp_1_0_15_3: return 0x140D5DDE0ull;
-        default:              return 0;
+        case GB::En_1_0_15_4:
+        case GB::En_1_0_15_4a: return 0x140D5DF30ull;
+        case GB::En_1_0_15_3:  return 0x140D5E070ull;
+        case GB::Jp_1_0_15_4:
+        case GB::Jp_1_0_15_4a: return 0x140D5DEF0ull;
+        case GB::Jp_1_0_15_3:  return 0x140D5DDE0ull;
+        default:               return 0;
         }
     }
 
@@ -473,9 +475,19 @@ bool Install_CautionStepNormalTimerHook()
             cp2,
             reinterpret_cast<void*>(&hkTppCp2LuaCommands),
             reinterpret_cast<void**>(&g_OrigTppCp2LuaCommands));
+        if (!ok2)
+        {
+            Log("[CautionPhaseTimer] ERROR: TppCp2LuaCommands hook failed @ %p - per-CP caution "
+                "duration and the AssignInterrogationWithVoice CP capture will not work.\n", cp2);
+        }
 #ifdef _DEBUG
         LogCautionPhaseTimer("[Hook] TppCp2LuaCommands (per-cp caution): %s @ %p\n", ok2 ? "OK" : "FAIL", cp2);
 #endif
+    }
+    else
+    {
+        Log("[CautionPhaseTimer] ERROR: TppCp2LuaCommands address is missing for this build - "
+            "per-CP caution duration and the AssignInterrogationWithVoice CP capture are disabled.\n");
     }
 
     return ok;

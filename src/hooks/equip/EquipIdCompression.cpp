@@ -2,6 +2,7 @@
 #include "EquipIdCompression.h"
 
 #include <Windows.h>
+#include <atomic>
 #include <bitset>
 #include <cstdint>
 #include <mutex>
@@ -40,12 +41,23 @@ namespace EquipIdCompression
     std::int32_t FindLowestFreeExtendedEquipId()
     {
         std::lock_guard<std::mutex> lock(g_ExtendedMutex);
-        for (std::int32_t id = kExtendedEquipIdFirst; id <= kExtendedEquipIdLast; ++id)
+        for (std::int32_t id = kExtendedAllocFirst; id <= kExtendedEquipIdLast; ++id)
             if (!g_ExtendedUsed.test(static_cast<std::size_t>(id)))
             {
                 g_ExtendedUsed.set(static_cast<std::size_t>(id));
                 return id;
             }
+        static std::atomic<int> s_exhaustedLogged{ 0 };
+        if (s_exhaustedLogged.fetch_add(1) < 2)
+            Log("[EquipIdCompression] ERROR: the extended equipId range 0x%X-0x%X is "
+                "exhausted (%d ids). Allocation starts at 0x%X so the engine's inline "
+                "fold maps it to rows 0x%X and up - past every vanilla row and past "
+                "the chimera band, which the fold aliases several vanilla equipIds "
+                "onto. Items past this point get no equipId and will not appear in "
+                "any menu.\n",
+                kExtendedAllocFirst, kExtendedEquipIdLast,
+                kExtendedEquipIdLast - kExtendedAllocFirst + 1,
+                kExtendedAllocFirst, kExtendedFoldedFirst);
         return -1;
     }
 
@@ -72,18 +84,21 @@ namespace EquipIdCompression
 
     namespace
     {
-        bool SafeReadHashes(const std::uint8_t* tableBase,
-                            std::uint64_t* outHashes,
-                            std::int32_t count)
+        static_assert(kInternalInfoEntrySize == 3 * sizeof(std::uint64_t),
+                      "equip-row occupancy must cover the whole native row");
+
+        bool SafeReadOccupancy(const std::uint8_t* tableBase,
+                               std::uint64_t* outOccupied,
+                               std::int32_t count)
         {
             __try
             {
                 for (std::int32_t i = 0; i < count; ++i)
                 {
-                    const auto* entry = tableBase +
-                        (static_cast<std::size_t>(i) * kInternalInfoEntrySize);
-                    outHashes[i] =
-                        *reinterpret_cast<const std::uint64_t*>(entry);
+                    const auto* row = reinterpret_cast<const std::uint64_t*>(
+                        tableBase +
+                        (static_cast<std::size_t>(i) * kInternalInfoEntrySize));
+                    outOccupied[i] = row[0] | row[1] | row[2];
                 }
                 return true;
             }
@@ -101,19 +116,19 @@ namespace EquipIdCompression
                 ResolveGameAddress(gAddr.EquipIdTable_InfoList));
         if (!tableBase)
         {
-            Log("[EquipIdCompression] SyncFromNativeTable: "
+            LogDebug("[EquipIdCompression] SyncFromNativeTable: "
                 "gAddr.EquipIdTable_InfoList not resolved; cannot scan vanilla "
                 "occupancy. Custom equipIds may collide with vanilla.\n");
             return 0;
         }
 
-        std::uint64_t hashes[kCompressedSlotBound] = {};
+        std::uint64_t occupied[kCompressedSlotBound] = {};
         const bool readOk =
-            SafeReadHashes(tableBase, hashes, kCompressedSlotBound);
+            SafeReadOccupancy(tableBase, occupied, kCompressedSlotBound);
 
         if (!readOk)
         {
-            Log("[EquipIdCompression] SyncFromNativeTable: SEH while reading "
+            LogDebug("[EquipIdCompression] SyncFromNativeTable: SEH while reading "
                 "native table at 0x%p - address may be wrong or page "
                 "unmapped. Skipping scan.\n", tableBase);
             return 0;
@@ -125,7 +140,7 @@ namespace EquipIdCompression
             std::lock_guard<std::mutex> lock(g_UsedSlotsMutex);
             for (std::int32_t i = 0; i < kCompressedSlotBound; ++i)
             {
-                if (hashes[i] != 0
+                if (occupied[i] != 0
                     && !g_UsedSlots.test(static_cast<std::size_t>(i)))
                 {
                     g_UsedSlots.set(static_cast<std::size_t>(i));
@@ -139,11 +154,11 @@ namespace EquipIdCompression
                 if (!g_UsedSlots.test(static_cast<std::size_t>(i)))
                     ++freeWeaponBand;
         }
-        Log("[EquipIdCompression] native occupancy: item band %d free of 559, "
+        LogDebug("[EquipIdCompression] native occupancy: item band %d free of 559, "
             "weapon band %d free of 89\n", freeItemBand, freeWeaponBand);
 
 #ifdef _DEBUG
-        Log("[EquipIdCompression] SyncFromNativeTable: scanned 0x%X slots, "
+        LogDebug("[EquipIdCompression] SyncFromNativeTable: scanned 0x%X slots, "
             "newly-marked %zu (others were already marked or empty)\n",
             kCompressedSlotBound, marked);
 #endif

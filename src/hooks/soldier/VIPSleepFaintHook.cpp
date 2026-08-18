@@ -229,7 +229,7 @@ static void DispatchNoticeReaction(void* noticeSelf, std::uint32_t actorId, std:
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
-        Log("[SleepFaint] DispatchNoticeReaction exception\n");
+        LogDebug("[SleepFaint] DispatchNoticeReaction exception\n");
     }
 }
 
@@ -564,7 +564,7 @@ void Add_VIPSleepFaintImportantGameObjectId(std::uint32_t gameObjectId, bool isO
     const std::uint16_t soldierIndex = NormalizeSoldierIndexFromGameObjectId(gameObjectId);
     if (soldierIndex == 0xFFFFu)
     {
-        Log("[SleepFaint] Add ignored: invalid soldier GameObjectId=0x%08X\n", gameObjectId);
+        LogDebug("[SleepFaint] Add ignored: invalid soldier GameObjectId=0x%08X\n", gameObjectId);
         return;
     }
 
@@ -584,7 +584,7 @@ void Remove_VIPSleepFaintImportantGameObjectId(std::uint32_t gameObjectId)
     const std::uint16_t soldierIndex = NormalizeSoldierIndexFromGameObjectId(gameObjectId);
     if (soldierIndex == 0xFFFFu)
     {
-        Log("[SleepFaint] Remove ignored: invalid soldier GameObjectId=0x%08X\n", gameObjectId);
+        LogDebug("[SleepFaint] Remove ignored: invalid soldier GameObjectId=0x%08X\n", gameObjectId);
         return;
     }
 
@@ -656,7 +656,7 @@ bool Uninstall_VIPSleepFaint_Hook()
     }
 
 #ifdef _DEBUG
-    Log("[SleepFaint] Hooks removed and state cleared\n");
+    LogDebug("[SleepFaint] Hooks removed and state cleared\n");
 #endif
     return true;
 }

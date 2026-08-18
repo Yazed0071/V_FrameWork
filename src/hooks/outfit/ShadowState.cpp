@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "ShadowState.h"
+#include "AdditionalMotionTable_GetMtarPathId.h"
 
 #include <atomic>
 #include <climits>
@@ -28,7 +29,6 @@ namespace outfit::shadow
         if (slot >= kMaxSlots) return;
         std::lock_guard<std::mutex> lock(g_Mutex);
 
-#ifdef _DEBUG
         const Slot& prev = g_Slots[slot];
         const bool changed =
                !prev.used
@@ -38,15 +38,14 @@ namespace outfit::shadow
             ||  prev.realPlayerType != s.realPlayerType
             ||  prev.developId      != s.developId
             ||  prev.variantIdx     != s.variantIdx;
-#endif
 
         g_Slots[slot] = s;
         g_Slots[slot].used = true;
 
-#ifdef _DEBUG
         if (changed)
         {
-            Log("[ShadowState] slot=%zu SET realPartsType=0x%02X realCamo=0x%02X "
+#ifdef _DEBUG
+            LogDebug("[ShadowState] slot=%zu SET realPartsType=0x%02X realCamo=0x%02X "
                 "realArmType=%u realPlayerType=%u developId=%u variantIdx=%u\n",
                 slot,
                 static_cast<unsigned>(s.realPartsType),
@@ -55,8 +54,9 @@ namespace outfit::shadow
                 static_cast<unsigned>(s.realPlayerType),
                 static_cast<unsigned>(s.developId),
                 static_cast<unsigned>(s.variantIdx));
-        }
 #endif
+            outfit::RequestAdditionalMotionReresolve();
+        }
     }
 
     void Clear(std::size_t slot)
@@ -66,7 +66,7 @@ namespace outfit::shadow
         if (g_Slots[slot].used)
         {
 #ifdef _DEBUG
-            Log("[ShadowState] slot=%zu CLEAR (was developId=%u)\n",
+            LogDebug("[ShadowState] slot=%zu CLEAR (was developId=%u)\n",
                 slot, static_cast<unsigned>(g_Slots[slot].developId));
 #endif
         }
@@ -82,7 +82,7 @@ namespace outfit::shadow
         if (anyUsed)
         {
 #ifdef _DEBUG
-            Log("[ShadowState] RESET-ALL reason=%s\n", reason ? reason : "(unspecified)");
+            LogDebug("[ShadowState] RESET-ALL reason=%s\n", reason ? reason : "(unspecified)");
 #endif
         }
     }

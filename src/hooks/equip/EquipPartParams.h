@@ -28,6 +28,16 @@ bool Install_MotionLoader_ReceiverTypeHook();
 void Uninstall_MotionLoader_ReceiverTypeHook();
 bool Install_MotionLoader_UnderBarrelTypeHook();
 void Uninstall_MotionLoader_UnderBarrelTypeHook();
+bool Install_MotionLoader_BarrelTypeHook();
+void Uninstall_MotionLoader_BarrelTypeHook();
+bool Install_MotionLoader_MagazineTypeHook();
+void Uninstall_MotionLoader_MagazineTypeHook();
+bool Install_MotionLoader_SightTypeHook();
+void Uninstall_MotionLoader_SightTypeHook();
+int  EquipParam_InheritPartMotionTypes(int barrelDst, int barrelSrc,
+                                       int magazineDst, int magazineSrc,
+                                       int sightDst, int sightSrc,
+                                       int* outEligible = nullptr);
 
 bool Install_GetAttackIdGuard();
 void Uninstall_GetAttackIdGuard();
@@ -74,6 +84,10 @@ enum EquipVanillaSpace
     kVanillaSpace_Count
 };
 
+int  EquipParam_GetWideAlias(int space, int wideId);
+int  EquipParam_GetWideReceiverDonor(int wideId);
+int  EquipParam_GetDeclaredWeaponAttackId(int equipId);
+void EquipParam_EnableWidePartIds(int newMaxId);
 int  EquipParam_ResolvePartByte(int space, int id);
 void EquipParam_VanillaPreWrite(int space, int id, const unsigned char* row, int stride);
 void EquipParam_VanillaPostWrite(int space, int id, const unsigned char* row, int stride);

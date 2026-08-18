@@ -80,7 +80,7 @@ bool Install_SearchLightActionPluginImpl_StateDoor_Hook()
     if (!gAddr.SearchLightActionPluginImpl_StateDoorStart ||
         !gAddr.SearchLightActionPluginImpl_StateDoorEnd)
     {
-        Log("[LockPick] addresses not set for this build -- skipped\n");
+        LogDebug("[LockPick] addresses not set for this build -- skipped\n");
         return false;
     }
 

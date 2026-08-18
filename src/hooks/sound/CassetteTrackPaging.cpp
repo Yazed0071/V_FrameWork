@@ -257,7 +257,7 @@ namespace
                 if (RenderPagerRowSEH(r, label) != 1 && !g_LabelPathWarned)
                 {
                     g_LabelPathWarned = true;
-                    Log("[CassetteMenu] pager row label path unavailable - "
+                    LogDebug("[CassetteMenu] pager row label path unavailable - "
                         "pager rows work but show stale text\n");
                 }
                 return;
@@ -287,9 +287,9 @@ void SetCassetteAlbumTracks(void* cassetteCallback, std::uint64_t albumId,
         w = BuildWindow_NoLock(window);
     }
     if (WriteWindowSEH(cassetteCallback, window, w) != 1)
-        Log("[CassetteMenu] track window write faulted - album list unchanged\n");
+        LogDebug("[CassetteMenu] track window write faulted - album list unchanged\n");
     else if (trackCount > kWindowCapacity)
-        Log("[CassetteMenu] album has %u tracks - paged across %u pages\n",
+        LogDebug("[CassetteMenu] album has %u tracks - paged across %u pages\n",
             trackCount, static_cast<unsigned>(g_PageStart.size()));
 }
 
@@ -338,14 +338,14 @@ void FlipCassettePage(void* cassetteCallback, int direction)
     }
     if (WriteWindowSEH(cassetteCallback, window, w) != 1)
     {
-        Log("[CassetteMenu] page flip window write faulted\n");
+        LogDebug("[CassetteMenu] page flip window write faulted\n");
         return;
     }
     WriteU32SEH(cassetteCallback, kImpl_Selected, 0);
     if (g_UpdateCallFuncs && CallImplFnSEH(g_UpdateCallFuncs, cassetteCallback) != 1)
-        Log("[CassetteMenu] UpdateTrackListCallFuncs faulted on page flip\n");
+        LogDebug("[CassetteMenu] UpdateTrackListCallFuncs faulted on page flip\n");
     if (g_RefreshPrefab && CallImplFnSEH(g_RefreshPrefab, cassetteCallback) != 1)
-        Log("[CassetteMenu] RefreshTrackListPrefabParameter faulted on page flip\n");
+        LogDebug("[CassetteMenu] RefreshTrackListPrefabParameter faulted on page flip\n");
 }
 
 bool Install_CassetteTrackPaging_Hooks()
@@ -379,7 +379,7 @@ bool Install_CassetteTrackPaging_Hooks()
     }
     g_PagingReady = true;
 #ifdef _DEBUG
-    Log("[CassetteMenu] track-list paging armed (window %u rows)\n",
+    LogDebug("[CassetteMenu] track-list paging armed (window %u rows)\n",
         kWindowCapacity);
 #endif
     return true;

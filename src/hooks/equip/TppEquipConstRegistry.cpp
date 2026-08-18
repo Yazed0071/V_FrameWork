@@ -267,7 +267,7 @@ bool TppEquipConst_Declare(
 
     outValue = static_cast<std::uint32_t>(value);
 #ifdef _DEBUG
-    Log("[TppEquipConst] TppEquip.%s = %d (space %s)\n",
+    LogDebug("[TppEquipConst] TppEquip.%s = %d (space %s)\n",
         name, value, kSpaceTags[spaceIndex]);
 #endif
     return true;
@@ -325,7 +325,7 @@ void TppEquipConst_InjectAll(lua_State* L)
         WriteConstant(L, kv.first.c_str(), kv.second);
 
 #ifdef _DEBUG
-    Log("[TppEquipConst] injected %u custom constant(s) into L=%p\n",
+    LogDebug("[TppEquipConst] injected %u custom constant(s) into L=%p\n",
         static_cast<unsigned>(snapshot.size()), L);
 #endif
 }

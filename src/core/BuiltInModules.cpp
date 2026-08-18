@@ -59,7 +59,7 @@ namespace
                 void* obj = values[idx];
                 if (obj && !TeardownEntryLooksSane(obj))
                 {
-                    Log("[ExitGuard] EntityInfo teardown: entry %d holds a "
+                    LogDebug("[ExitGuard] EntityInfo teardown: entry %d holds a "
                         "dead/corrupt object %p (vtable %p) - skipped instead "
                         "of crashing (leaked engine entity)\n",
                         idx, obj, *reinterpret_cast<void**>(obj));
@@ -95,7 +95,7 @@ namespace
         {
             text[0] = 0;
         }
-        Log("[ExitGuard]   intruder q%d = %p%s%s%s\n", qi, q,
+        LogDebug("[ExitGuard]   intruder q%d = %p%s%s%s\n", qi, q,
             text[0] ? "  \"" : "", text, text[0] ? "\"" : "");
     }
 
@@ -132,7 +132,7 @@ namespace
         void* target = ResolveGameAddress(gAddr.Fox_EntityInfoMapTeardown);
         if (!target)
         {
-            Log("[ExitGuard] no EntityInfo teardown address on %s - the "
+            LogDebug("[ExitGuard] no EntityInfo teardown address on %s - the "
                 "exit-crash guard is OFF this build\n",
                 GetGameBuildName(gGameBuild));
             return true;
@@ -437,7 +437,9 @@ void Uninstall_MotionLoader_BarrelTypeHook();
 bool Install_MotionLoader_MagazineTypeHook();
 void Uninstall_MotionLoader_MagazineTypeHook();
 bool Install_MotionLoader_SightTypeHook();
+bool Install_UiUtility_GetWeaponItemNameLangIdHook();
 void Uninstall_MotionLoader_SightTypeHook();
+void Uninstall_UiUtility_GetWeaponItemNameLangIdHook();
 bool Install_GetAttackIdGuard();
 void Uninstall_GetAttackIdGuard();
 bool Install_GunInfoGuard();
@@ -1679,6 +1681,7 @@ namespace
             ok = Install_MotionLoader_BarrelTypeHook() && ok;
             ok = Install_MotionLoader_MagazineTypeHook() && ok;
             ok = Install_MotionLoader_SightTypeHook() && ok;
+            Install_UiUtility_GetWeaponItemNameLangIdHook();
             ok = Install_GetAttackIdGuard() && ok;
             ok = Install_GunInfoGuard() && ok;
             ok = Install_BulletEffectGuard() && ok;
@@ -1702,6 +1705,7 @@ namespace
             Uninstall_MotionLoader_BarrelTypeHook();
             Uninstall_MotionLoader_MagazineTypeHook();
             Uninstall_MotionLoader_SightTypeHook();
+            Uninstall_UiUtility_GetWeaponItemNameLangIdHook();
             Uninstall_GetAttackIdGuard();
             Uninstall_GunInfoGuard();
             Uninstall_WeaponKeyLog();

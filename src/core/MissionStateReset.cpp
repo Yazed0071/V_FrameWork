@@ -72,7 +72,7 @@ namespace
         g_epochMissionCode.store(code, std::memory_order_relaxed);
         RunAllClears();
 
-        Log("[MissionStateReset] mission %u teardown: cleared all per-mission overrides "
+        LogDebug("[MissionStateReset] mission %u teardown: cleared all per-mission overrides "
             "(voice pitch, caution duration, call signs, stealth camo, enemy lang ids/unit names, "
             "lost hostages, Sahelan fova/eye lamp/heart light, interrogation voices, occasional "
             "chat list, VIP important ids, friendly fire) via the mission finalizer\n",
@@ -139,7 +139,7 @@ void MissionStateReset::PollMissionChange()
     RunAllClears();
 
     if (prev != 0xFFFFFFFFu)
-        Log("[MissionStateReset] mission %u -> %u: cleared all per-mission overrides via the "
+        LogDebug("[MissionStateReset] mission %u -> %u: cleared all per-mission overrides via the "
             "mission-code poll, because the mission finalizer has not fired yet\n",
             prev, code);
 }

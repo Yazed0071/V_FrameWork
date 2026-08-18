@@ -144,7 +144,7 @@ namespace
                 const char* ext = RequiredExtForField(fieldName);
                 if (ext && !PathHasRequiredExt(s, ext))
                 {
-                    Log("[OutfitLua] REJECTED %s '%s': must end in '%s' "
+                    LogDebug("[OutfitLua] REJECTED %s '%s': must end in '%s' "
                         "(a wrong/missing extension hangs the engine loader "
                         "forever) - field ignored, using default\n",
                         fieldName, s, ext);
@@ -182,7 +182,7 @@ namespace
                 const char* ext = RequiredExtForField(fieldName);
                 if (ext && !PathHasRequiredExt(s, ext))
                 {
-                    Log("[OutfitLua] REJECTED %s '%s': must end in '%s' "
+                    LogDebug("[OutfitLua] REJECTED %s '%s': must end in '%s' "
                         "(a wrong/missing extension hangs the engine loader "
                         "forever) - branch will be skipped\n",
                         fieldName, s, ext);
@@ -384,14 +384,14 @@ namespace
                         outPendingHashes[outPendingCount++] =
                             FoxHashes::StrCode64(name);
 #ifdef _DEBUG
-                        Log("[OutfitLua] headOptions: '%s' not registered yet -> "
+                        LogDebug("[OutfitLua] headOptions: '%s' not registered yet -> "
                             "DEFERRED (resolves when its RegisterCustomHead runs)\n",
                             name);
 #endif
                     }
                     else
                     {
-                        Log("[OutfitLua] headOptions: unknown/empty head name '%s' "
+                        LogDebug("[OutfitLua] headOptions: unknown/empty head name '%s' "
                             "skipped\n", name ? name : "(null)");
                     }
                 }
@@ -561,6 +561,53 @@ namespace
         SetLuaTop(L, -2);
     }
 
+    void ReadBranchMotionMtars(
+        lua_State* L, int tableIndex, outfit::OutfitPlayerTypeData& branch)
+    {
+        LuaGetField(L, tableIndex, "motionMtars");
+        if (LuaType(L, -1) != LUA_TTABLE)
+        {
+            SetLuaTop(L, -2);
+            return;
+        }
+
+        const int tbl = GetLuaTop(L);
+
+        LuaPushNil(L);
+        while (LuaNext(L, tbl) != 0)
+        {
+            const char* keyName =
+                (LuaType(L, -2) == LUA_TSTRING) ? GetLuaString(L, -2) : nullptr;
+            const int slot = outfit::MotionMtarSlotFromName(keyName);
+
+            if (slot < 0)
+            {
+                LogDebug("[OutfitLua] motionMtars: unknown archive '%s' - ignored; the "
+                    "key must be a player2 motion archive name such as \"cqc\" or "
+                    "\"jump\"\n", keyName ? keyName : "(non-string key)");
+            }
+            else if (LuaType(L, -1) == LUA_TBOOLEAN)
+            {
+                LogDebug("[OutfitLua] motionMtars.%s is a boolean - ignored; there is no "
+                    "disable form, omit the key to keep the vanilla archive\n",
+                    keyName);
+            }
+            else if (LuaType(L, -1) == LUA_TSTRING)
+            {
+                if (const char* s = GetLuaString(L, -1); s && *s)
+                {
+                    const std::uint64_t hash = FoxHashes::PathCode64Ext(s);
+                    branch.motionMtars[slot] = hash;
+                    outfit::RegisterMotionMtarOverrideHash(hash, slot);
+                }
+            }
+
+            SetLuaTop(L, -2);
+        }
+
+        SetLuaTop(L, -2);
+    }
+
     bool ReadPlayerTypeBranchTable(
         lua_State* L, int branchTblIdx, outfit::OutfitPlayerTypeData& branch)
     {
@@ -587,6 +634,7 @@ namespace
                                 outfit::kSubAssetDisabled);
         branch.diamondFv2 = ReadSubAssetField(L, branchTblIdx, "diamondFv2",
                                 outfit::kSubAssetDisabled);
+        ReadBranchMotionMtars(L, branchTblIdx, branch);
 
 
         branch.enableArm  = TryReadTableBoolField(L, branchTblIdx, "enableArm",  true);
@@ -641,7 +689,7 @@ namespace
                 const char* nm = GetLuaString(L, -1);
                 camoIdx = ResolveCamoTypeNameToIndex(nm);
                 if (camoIdx < 0)
-                    Log("[OutfitLua] camoBonusType: unknown camo name '%s' - ignored "
+                    LogDebug("[OutfitLua] camoBonusType: unknown camo name '%s' - ignored "
                         "(use a playerCamoTypes name like \"RAIDEN\" or a number "
                         "0..116)\n", nm ? nm : "(null)");
             }
@@ -686,13 +734,18 @@ namespace
             const std::uint16_t* ids = nullptr;
             std::uint8_t heads = 0;
             e->GetHeadOptionsFor(pt, &ids, &heads);
-            append("%s%s(variants=%u,heads=%u,arm=%d,head=%d)",
+            unsigned motion = 0;
+            for (std::size_t s = 0; s < outfit::kMotionMtarSlotCount; ++s)
+                if (e->perPlayerType[pt].motionMtars[s] != 0)
+                    ++motion;
+            append("%s%s(variants=%u,heads=%u,arm=%d,head=%d,motion=%u)",
                    first ? "" : ",",
                    kNames[pt],
                    static_cast<unsigned>(e->GetVariantCountFor(pt)),
                    static_cast<unsigned>(heads),
                    e->perPlayerType[pt].enableArm ? 1 : 0,
-                   e->perPlayerType[pt].enableHead ? 1 : 0);
+                   e->perPlayerType[pt].enableHead ? 1 : 0,
+                   motion);
             first = false;
         }
         append("] variants=%u selectors=[",
@@ -711,7 +764,7 @@ int __cdecl l_RegisterOutfit(lua_State* L)
 
     if (LuaType(L, 1) != LUA_TTABLE)
     {
-        Log("[OutfitLua] RegisterOutfit: arg 1 must be a table\n");
+        LogDebug("[OutfitLua] RegisterOutfit: arg 1 must be a table\n");
         PushLuaBool(L, false);
         return 1;
     }
@@ -726,7 +779,7 @@ int __cdecl l_RegisterOutfit(lua_State* L)
 
     if (!key || !key[0])
     {
-        Log("[OutfitLua] RegisterOutfit: 'key' (string, non-empty) is required. "
+        LogDebug("[OutfitLua] RegisterOutfit: 'key' (string, non-empty) is required. "
             "developId/flowIndex are auto-allocated and persisted under this "
             "key in V_FrameWork_State.lua.\n");
         PushLuaBool(L, false);
@@ -750,7 +803,7 @@ int __cdecl l_RegisterOutfit(lua_State* L)
             }
             else
             {
-                Log("[OutfitLua] RegisterOutfit: branch '%s' present but "
+                LogDebug("[OutfitLua] RegisterOutfit: branch '%s' present but "
                     "missing required partsPath/fpkPath - skipping (key=%s)\n",
                     bk.key, key);
             }
@@ -760,7 +813,7 @@ int __cdecl l_RegisterOutfit(lua_State* L)
 
     if (branchCount == 0)
     {
-        Log("[OutfitLua] RegisterOutfit: at least one playerType branch is "
+        LogDebug("[OutfitLua] RegisterOutfit: at least one playerType branch is "
             "required (snake / ddMale / ddFemale / avatar). Each must be a "
             "sub-table with partsPath and fpkPath. (key=%s)\n", key);
         PushLuaBool(L, false);
@@ -824,14 +877,14 @@ int __cdecl l_RegisterOutfit(lua_State* L)
     BuildOutfitSummary(e, summary, sizeof(summary));
 
     if (wasCreated)
-        Log("[Outfit] Added \"%s\" (partsType 0x%02X, develop %u, flow %u, "
+        LogDebug("[Outfit] Added \"%s\" (partsType 0x%02X, develop %u, flow %u, "
             "selector 0x%02X; %s) - first time; saved.\n",
             key, allocatedPartsType,
             static_cast<unsigned>(def.developId),
             static_cast<unsigned>(def.flowIndex),
             static_cast<unsigned>(finalSelector), summary);
     else
-        Log("[Outfit] Loaded \"%s\" (partsType 0x%02X, develop %u, flow %u, "
+        LogDebug("[Outfit] Loaded \"%s\" (partsType 0x%02X, develop %u, flow %u, "
             "selector 0x%02X; %s)\n",
             key, allocatedPartsType,
             static_cast<unsigned>(def.developId),
@@ -849,7 +902,7 @@ int __cdecl l_RegisterHeadOption(lua_State* L)
 {
     if (LuaType(L, 1) != LUA_TTABLE)
     {
-        Log("[CustomHead] RegisterHeadOption: arg 1 must be a table\n");
+        LogDebug("[CustomHead] RegisterHeadOption: arg 1 must be a table\n");
         PushLuaNumber(L, 0);
         return 1;
     }
@@ -858,7 +911,7 @@ int __cdecl l_RegisterHeadOption(lua_State* L)
     TryReadTableStringField(L, 1, "key", key);
     if (!key || !key[0])
     {
-        Log("[CustomHead] RegisterHeadOption: missing 'key'\n");
+        LogDebug("[CustomHead] RegisterHeadOption: missing 'key'\n");
         PushLuaNumber(L, 0);
         return 1;
     }
@@ -997,7 +1050,7 @@ void OutfitLua_EnsureEquipDevelopBound()
 
     g_EquipDevelopBound = true;
 #ifdef _DEBUG
-    Log("[OutfitLua] EquipDevelopAdd::Bind done\n");
+    LogDebug("[OutfitLua] EquipDevelopAdd::Bind done\n");
 #endif
 }
 
@@ -1058,7 +1111,7 @@ int __cdecl l_ExtendVanillaOutfit(lua_State* L)
 {
     if (LuaType(L, 1) != LUA_TTABLE)
     {
-        Log("[OutfitLua] ExtendVanillaOutfit: arg 1 must be a table\n");
+        LogDebug("[OutfitLua] ExtendVanillaOutfit: arg 1 must be a table\n");
         PushLuaBool(L, false);
         return 1;
     }
@@ -1073,7 +1126,7 @@ int __cdecl l_ExtendVanillaOutfit(lua_State* L)
         labelCamo = ResolveCamoTypeNameToIndex(outfitName);
         if (labelCamo < 0)
         {
-            Log("[OutfitLua] ExtendVanillaOutfit: unknown outfit name '%s' - use "
+            LogDebug("[OutfitLua] ExtendVanillaOutfit: unknown outfit name '%s' - use "
                 "a vanilla camo name (e.g. BATTLEDRESS, SNEAKING_SUIT_TPP, "
                 "NAKED) or a raw partsType\n", outfitName);
             PushLuaBool(L, false);
@@ -1104,7 +1157,7 @@ int __cdecl l_ExtendVanillaOutfit(lua_State* L)
 
     if (vanillaPartsType == 0xFF)
     {
-        Log("[OutfitLua] ExtendVanillaOutfit: could not resolve a vanilla "
+        LogDebug("[OutfitLua] ExtendVanillaOutfit: could not resolve a vanilla "
             "partsType (missing/invalid 'outfit' name/camoType or "
             "'partsType'%s)\n",
             labelCamo >= 0 ? "; engine camo->partsType map unavailable" : "");
@@ -1133,7 +1186,7 @@ int __cdecl l_ExtendVanillaOutfit(lua_State* L)
                        pend, pendCount))
             {
                 any = true;
-                Log("[Outfit] ExtendVanillaOutfit '%s' (camo %d) -> vanilla "
+                LogDebug("[Outfit] ExtendVanillaOutfit '%s' (camo %d) -> vanilla "
                     "partsType 0x%02X: %s +%u head option(s) (+%u deferred)\n",
                     outfitName ? outfitName : "(by number)",
                     labelCamo,
@@ -1153,7 +1206,7 @@ int __cdecl l_ExtendVanillaOutfit(lua_State* L)
                        suitVoice))
             {
                 any = true;
-                Log("[Outfit] ExtendVanillaOutfit '%s' (camo %d) -> vanilla "
+                LogDebug("[Outfit] ExtendVanillaOutfit '%s' (camo %d) -> vanilla "
                     "partsType 0x%02X: %s suit-wide voiceFpk set (applies to "
                     "base + native variations + variants, kept in FOB)\n",
                     outfitName ? outfitName : "(by number)",
@@ -1177,7 +1230,7 @@ int __cdecl l_ExtendVanillaOutfit(lua_State* L)
                        hasArm, armVal, hasHead, headVal))
             {
                 any = true;
-                Log("[Outfit] ExtendVanillaOutfit '%s' (camo %d) -> vanilla "
+                LogDebug("[Outfit] ExtendVanillaOutfit '%s' (camo %d) -> vanilla "
                     "partsType 0x%02X: %s arm/head override (arm=%s head=%s)\n",
                     outfitName ? outfitName : "(by number)",
                     labelCamo, static_cast<unsigned>(vanillaPartsType), bk.key,
@@ -1191,7 +1244,7 @@ int __cdecl l_ExtendVanillaOutfit(lua_State* L)
                 L, branchIdx, vars, outfit::kMaxVariantsPerOutfit - 1);
             if (vCount > 0 && labelCamo < 0)
             {
-                Log("[OutfitLua] ExtendVanillaOutfit: variants require a "
+                LogDebug("[OutfitLua] ExtendVanillaOutfit: variants require a "
                     "camo-named outfit (got raw partsType 0x%02X) - variants "
                     "skipped; use a camo name/number so each variant scopes to "
                     "that suit\n", static_cast<unsigned>(vanillaPartsType));
@@ -1202,7 +1255,7 @@ int __cdecl l_ExtendVanillaOutfit(lua_State* L)
                        vars, vCount))
             {
                 any = true;
-                Log("[Outfit] ExtendVanillaOutfit '%s' (camo %d) -> vanilla "
+                LogDebug("[Outfit] ExtendVanillaOutfit '%s' (camo %d) -> vanilla "
                     "partsType 0x%02X: %s +%u variant(s)\n",
                     outfitName ? outfitName : "(by number)",
                     labelCamo,
@@ -1216,7 +1269,7 @@ int __cdecl l_ExtendVanillaOutfit(lua_State* L)
 
     if (!any)
     {
-        Log("[OutfitLua] ExtendVanillaOutfit: no playerType branch with a "
+        LogDebug("[OutfitLua] ExtendVanillaOutfit: no playerType branch with a "
             "headOptions or variants array - nothing registered\n");
         PushLuaBool(L, false);
         return 1;
@@ -1246,7 +1299,7 @@ int __cdecl l_ForceVanillaVariant(lua_State* L)
     }
     if (vanillaPartsType == 0xFF)
     {
-        Log("[OutfitLua] _ForceVanillaVariant: could not resolve a vanilla "
+        LogDebug("[OutfitLua] _ForceVanillaVariant: could not resolve a vanilla "
             "partsType from arg 1 (use a camo name or camoType number)\n");
         PushLuaBool(L, false);
         return 1;
@@ -1255,7 +1308,7 @@ int __cdecl l_ForceVanillaVariant(lua_State* L)
     int vi = LuaIsNumber(L, 2) ? GetLuaInt(L, 2) : 0;
     if (vi < 0) vi = 0;
     outfit::SetActiveVariant(vanillaPartsType, static_cast<std::uint8_t>(vi));
-    Log("[Outfit] _ForceVanillaVariant: vanilla partsType 0x%02X active "
+    LogDebug("[Outfit] _ForceVanillaVariant: vanilla partsType 0x%02X active "
         "variant -> %d (re-equip the suit to reload its models)\n",
         static_cast<unsigned>(vanillaPartsType), vi);
     PushLuaNumber(L, static_cast<float>(vi));

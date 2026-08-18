@@ -20,7 +20,7 @@ namespace
 
         if (isEnable && (!voiceEvt || !*voiceEvt || !radioEvt || !*radioEvt))
         {
-            Log("[HeliVoice] SetEnableHeliVoice: enable=true requires non-empty voice/radio event strings\n");
+            LogDebug("[HeliVoice] SetEnableHeliVoice: enable=true requires non-empty voice/radio event strings\n");
             PushLuaBool(L, false);
             return 1;
         }

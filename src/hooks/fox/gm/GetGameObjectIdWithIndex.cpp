@@ -121,7 +121,7 @@ namespace
                 if (!s_logged)
                 {
                     s_logged = true;
-                    Log("[GetGameObjectIdWithIndex] by-name resolve skipped (type=%s name=%s): "
+                    LogDebug("[GetGameObjectIdWithIndex] by-name resolve skipped (type=%s name=%s): "
                         "the running Lua frame is too tight to push safely; the step machine "
                         "retries next frame. Skipping prevents a Lua stack-overflow crash.\n",
                         typeName, instanceName);
@@ -162,7 +162,7 @@ namespace
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            Log("[GetGameObjectIdWithIndex] SEH in by-name resolve type=%s name=%s\n",
+            LogDebug("[GetGameObjectIdWithIndex] SEH in by-name resolve type=%s name=%s\n",
                 typeName, instanceName);
             return false;
         }
@@ -181,7 +181,7 @@ namespace
             if (!logged)
             {
                 logged = true;
-                Log("[GetGameObjectIdWithIndex] re-entrant by-name resolve REFUSED "
+                LogDebug("[GetGameObjectIdWithIndex] re-entrant by-name resolve REFUSED "
                     "(type=%s name=%s) - the call arrived from inside our own "
                     "lua_pcall; that recursion is what wedged the main thread\n",
                     typeName, instanceName);
@@ -209,7 +209,7 @@ namespace
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            Log("[GetGameObjectIdWithIndex] SEH exception type=%s index=%u\n",
+            LogDebug("[GetGameObjectIdWithIndex] SEH exception type=%s index=%u\n",
                 typeName,
                 index);
             return false;
@@ -253,7 +253,7 @@ bool Uninstall_GetGameObjectIdWithIndex()
     g_GetGameObjectIdWithIndex = nullptr;
 
 #ifdef _DEBUG
-    Log("[GetGameObjectIdWithIndex] uninstalled.\n");
+    LogDebug("[GetGameObjectIdWithIndex] uninstalled.\n");
 #endif
     return true;
 }
