@@ -181,6 +181,56 @@ namespace
         return n;
     }
 
+    static std::uint32_t GatherLabelBases(lua_State* L, int tblIdx, std::uint32_t* out,
+                                          std::uint32_t cap, std::uint32_t n, int depth)
+    {
+        if (!g_lua_pushnil || !g_lua_next || depth > 1)
+            return n;
+        g_lua_pushnil(L);
+        while (g_lua_next(L, tblIdx) != 0)
+        {
+            const char* keyStr = (g_lua_type(L, -2) == LUA_TSTRING)
+                                     ? g_lua_tolstring(L, -2, nullptr)
+                                     : nullptr;
+            const int vt = g_lua_type(L, -1);
+            if (vt == LUA_TSTRING)
+            {
+                const char* s = g_lua_tolstring(L, -1, nullptr);
+                const std::uint32_t sc = (s && s[0]) ? FoxHashes::StrCode32(s) : 0;
+                const std::uint32_t fv = FnvHash32Of(s);
+                if (sc && n < cap)
+                    out[n++] = sc;
+                if (fv && fv != sc && n < cap)
+                    out[n++] = fv;
+                LogDebug("[InterrogationVoice] cmd[%d] field '%s' = \"%s\" strcode32=0x%X "
+                         "fnv=0x%X\n",
+                         depth, keyStr ? keyStr : "#", s ? s : "", sc, fv);
+            }
+            else if (vt == LUA_TNUMBER)
+            {
+                const std::uint32_t num =
+                    static_cast<std::uint32_t>(static_cast<long long>(g_lua_tonumber(L, -1)));
+                if (num >= 0x10000u && n < cap)
+                    out[n++] = num;
+                LogDebug("[InterrogationVoice] cmd[%d] field '%s' = 0x%X (%u)\n",
+                         depth, keyStr ? keyStr : "#", num, num);
+            }
+            else if (vt == LUA_TTABLE)
+            {
+                LogDebug("[InterrogationVoice] cmd[%d] field '%s' = table\n",
+                         depth, keyStr ? keyStr : "#");
+                n = GatherLabelBases(L, g_lua_gettop(L), out, cap, n, depth + 1);
+            }
+            else
+            {
+                LogDebug("[InterrogationVoice] cmd[%d] field '%s' type=%d\n",
+                         depth, keyStr ? keyStr : "#", vt);
+            }
+            g_lua_settop(L, g_lua_gettop(L) - 1);
+        }
+        return n;
+    }
+
     static float SmartScaleA(float a)
     {
         return (a > 1.0f) ? (a * (1.0f / 255.0f)) : a;
@@ -554,23 +604,36 @@ namespace
         if (idStr == "AssignInterrogationWithVoice")
         {
             bool hasEvent = false;
+            bool hasMarkerEvent = false;
             const std::uint32_t ev =
                 ReadCommandFnvHash(L, 2, "soundDialogueEvent", &hasEvent);
+            const std::uint32_t evMarker =
+                ReadCommandFnvHash(L, 2, "soundDialogueEventMarker", &hasMarkerEvent);
+            std::uint32_t labelBases[16] = {};
+            const std::uint32_t labelBaseCount =
+                GatherLabelBases(L, 2, labelBases, 16, 0, 0);
             g_lua_settop(L, top);
 
             ::Arm_CautionCpCapture();
             const int r = g_OrigSendCommand(L);
             const std::uint32_t cp = ::Take_CautionCpIndex();
 
-            if (hasEvent)
+            if (hasEvent || hasMarkerEvent)
             {
                 if (cp == 0xFFFFFFFFu)
                     Log("[InterrogationVoice] ERROR: AssignInterrogationWithVoice did not reach the "
                         "Command Post dispatcher, so its CP index could not be captured - "
-                        "soundDialogueEvent 0x%X was NOT registered and this CP keeps the vanilla "
-                        "interrogation voice.\n", ev);
+                        "soundDialogueEvent 0x%X / soundDialogueEventMarker 0x%X were NOT "
+                        "registered and this CP keeps the vanilla interrogation voice.\n",
+                        ev, evMarker);
                 else
-                    ::Register_InterrogationVoiceEvent(cp, ev);
+                {
+                    ::Register_InterrogationVoiceEvent(cp, ev, evMarker, labelBases,
+                                                       labelBaseCount);
+                    LogDebug("[InterrogationVoice] registered cp=%u main=0x%X marker=0x%X "
+                             "labelBases=%u\n",
+                             cp, ev, evMarker, labelBaseCount);
+                }
             }
             return r;
         }

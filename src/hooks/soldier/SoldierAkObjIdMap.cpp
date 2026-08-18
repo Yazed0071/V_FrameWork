@@ -11,6 +11,7 @@
 #include "AddressSet.h"
 #include "HookUtils.h"
 #include "log.h"
+#include "InterrogationVoiceEvent.h"
 #include "SoldierAkObjIdMap.h"
 #include "SoldierObjectRtpc.h"
 #include "SoldierVoiceTypeQuery.h"
@@ -175,6 +176,8 @@ namespace
         }
 
         const std::uint32_t soldierIndex = GetSoldierIndexFromSoundSlot(slot);
+
+        Debug_InterrogationVoice_NoteDequeue(param_2, slot);
 
         const std::uint32_t prev = t_CurrentSpeakingSlot;
         t_CurrentSpeakingSlot = soldierIndex;

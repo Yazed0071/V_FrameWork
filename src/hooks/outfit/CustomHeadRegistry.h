@@ -19,7 +19,9 @@ namespace outfit
 
     struct CustomHeadEntry
     {
-        bool           used         = false;
+        bool           used            = false;
+        bool           provisional     = false;
+        bool           hiddenInDevelop = false;
         std::uint16_t  equipId      = 0;
         std::uint16_t  developId    = 0;
         std::uint16_t  flowIndex    = 0;

@@ -291,6 +291,8 @@ namespace outfit
 
     int ResolvePendingHeadName(std::uint64_t nameHash, std::uint16_t equipId);
 
+    int RemapHeadOptionEquipId(std::uint16_t oldEquipId, std::uint16_t newEquipId);
+
 
     constexpr std::uint8_t kHeadOptionAnyCamo = 0xFF;
 

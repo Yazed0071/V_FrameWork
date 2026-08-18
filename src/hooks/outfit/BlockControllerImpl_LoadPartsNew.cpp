@@ -1857,6 +1857,17 @@ namespace
             return;
         }
 
+        if (info->playerFaceEquipId >= outfit::kCustomHeadSlotBase
+            && !outfit::IsCustomHeadSlot(info->playerFaceEquipId)
+            && outfit::HasPendingCustomHeads())
+        {
+            if (outfit::DrainPendingHeads() > 0)
+                LogDebug("[OutfitRuntimeParts] realize carries worn custom head "
+                    "slot 0x%02X while its registration was still deferred - "
+                    "drained the pending heads before resolving the face\n",
+                    static_cast<unsigned>(info->playerFaceEquipId));
+        }
+
         const bool isRealPlayerSlot =
             (info->playerType == outfit::ReadLivePlayerType());
 

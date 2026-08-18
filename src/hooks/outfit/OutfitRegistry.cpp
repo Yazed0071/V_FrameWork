@@ -1172,6 +1172,56 @@ namespace outfit
         return total;
     }
 
+    int RemapHeadOptionEquipId(std::uint16_t oldEquipId, std::uint16_t newEquipId)
+    {
+        if (oldEquipId == 0 || newEquipId == 0 || oldEquipId == newEquipId)
+            return 0;
+
+        auto patch = [&](std::uint16_t* ids, std::uint8_t count) -> int
+        {
+            int n = 0;
+            for (std::uint8_t i = 0; i < count; ++i)
+            {
+                if (ids[i] == oldEquipId)
+                {
+                    ids[i] = newEquipId;
+                    ++n;
+                }
+            }
+            return n;
+        };
+
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        int patched = 0;
+        for (auto& e : g_Entries)
+        {
+            if (!e.used) continue;
+            for (std::uint8_t pt = 0; pt < kPlayerTypeMax; ++pt)
+            {
+                auto& b = e.perPlayerType[pt];
+                if (!b.used) continue;
+                patched += patch(b.headOptionEquipIds, b.headOptionCount);
+                for (auto& v : b.variants)
+                {
+                    if (v.used)
+                        patched += patch(v.headOptionEquipIds,
+                                         v.headOptionCount);
+                }
+            }
+        }
+        for (auto& x : g_VanillaExts)
+        {
+            if (!x.used) continue;
+            for (std::uint8_t pt = 0; pt < kPlayerTypeMax; ++pt)
+            {
+                auto& b = x.perPlayerType[pt];
+                if (!b.declared) continue;
+                patched += patch(b.headOptionEquipIds, b.headOptionCount);
+            }
+        }
+        return patched;
+    }
+
 
     std::uint8_t OutfitEntry::GetVariantCountFor(std::uint8_t playerType) const
     {
