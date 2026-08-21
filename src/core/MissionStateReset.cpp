@@ -7,10 +7,12 @@
 #include "MissionCodeGuard.h"
 #include "MissionStateReset.h"
 #include "log.h"
+#include "DeployGuard.h"
 
 #include "../lua/LuaApi.h"
 
 #include "../hooks/bullet/Bullet3Impl_ActivateBulletAtEmptyWorkPatch.h"
+#include "../hooks/outfit/AdditionalMotionTable_GetMtarPathId.h"
 #include "../hooks/player/CqcActionPluginImpl_StateHoldMove.h"
 #include "../hooks/sahelan/RealizedSahelanFovaHook.h"
 #include "../hooks/sahelan/SetEyeLampColorHook.h"
@@ -39,7 +41,7 @@ namespace
     {
         Unset_AllSoldierVoicePitch();
         Clear_AllCautionStepNormalDurationOverrides();
-        Clear_CallSignExtraSoldiers();
+        Clear_SoldierCallSigns();
         Clear_UpdateOptCamoMappedIndexOverrides();
         EnemyLangId_ClearMapOverride();
         EnemyLangId_ClearBinoOverride();
@@ -58,6 +60,7 @@ namespace
         Clear_AllSoldierIgnorePlayer();
         Clear_TargetCqcStance();
         Set_FriendlyFire(false);
+        outfit::RevertAdditionalMotionSwaps();
 
         g_broadcastPending.store(true, std::memory_order_relaxed);
     }
@@ -120,6 +123,7 @@ void MissionStateReset::EnsureFinalizerRegistered(lua_State* L)
 void MissionStateReset::PollMissionChange()
 {
     const std::uint32_t code = MissionCodeGuard::GetCurrentMissionCode();
+    DeployGuard::OnMissionCode(code);
 
     if (g_broadcastPending.exchange(false, std::memory_order_relaxed))
         V_FrameWork::EmitMessage("Mission", "MissionStateReset", code);

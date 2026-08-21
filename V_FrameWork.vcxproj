@@ -36,21 +36,21 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
-    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>false</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
-    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>false</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
@@ -150,7 +150,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <GenerateMapFile>true</GenerateMapFile>
       <EnableUAC>false</EnableUAC>
-      <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
+      <LinkTimeCodeGeneration>Default</LinkTimeCodeGeneration>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -168,6 +168,7 @@
     <ClInclude Include="src\hooks\soldier\NoticeControllerImpl_CheckSightNoticePlayer.h" />
     <ClInclude Include="src\hooks\player\CqcActionPluginImpl_StateHoldMove.h" />
     <ClInclude Include="src\hooks\player\PlayerSpaceQuery.h" />
+    <ClInclude Include="src\hooks\player\FobPlayerCharacters.h" />
     <ClInclude Include="src\core\FoxHashes.h" />
     <ClInclude Include="src\core\FoxPath.h" />
     <ClInclude Include="src\core\FoxPathInternal.h" />
@@ -409,10 +410,12 @@
     <ClCompile Include="src\lua\equip\DeclareWeaponPaints.cpp" />
     <ClCompile Include="src\lua\OutfitLuaBindings.cpp" />
     <ClCompile Include="src\core\MissionCodeGuard.cpp" />
+    <ClCompile Include="src\core\DeployGuard.cpp" />
     <ClCompile Include="src\core\MissionStateReset.cpp" />
     <ClCompile Include="src\hooks\soldier\NoticeControllerImpl_CheckSightNoticePlayer.cpp" />
     <ClCompile Include="src\hooks\player\CqcActionPluginImpl_StateHoldMove.cpp" />
     <ClCompile Include="src\hooks\player\PlayerSpaceQuery.cpp" />
+    <ClCompile Include="src\hooks\player\FobPlayerCharacters.cpp" />
     <ClCompile Include="src\core\FoxHashes.cpp" />
     <ClCompile Include="src\core\LuaBroadcaster.cpp" />
     <ClCompile Include="src\core\log.cpp" />

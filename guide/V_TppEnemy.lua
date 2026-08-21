@@ -17,10 +17,12 @@ function this.LoadLibraries()
         local hasRadio = (powerLoadout and powerLoadout.RADIO)
                       or (mvars.ene_soldierLrrp and mvars.ene_soldierLrrp[soldierId])
         if hasRadio then
-           if IsString(soldierId) then
+            if IsString(soldierId) then
                 soldierId = GetGameObjectId(soldierId)
             end
-            SendCommand(soldierId, { id = "AddCallSignPatrolSoldier" })
+            if soldierId ~= NULL_ID then
+                SendCommand(soldierId, { id = "SetRadioCallSign", callSign = V_TppCallSign.PATROL })
+            end
         end
     end
 end

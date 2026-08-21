@@ -230,8 +230,8 @@ bool Uninstall_VIPRadio_Hook();
 bool Install_HoldUpReactionCowardlyReactions_Hook();
 bool Uninstall_HoldUpReactionCowardlyReactions_Hook();
 
-bool Install_CallSignExtra_Hook();
-bool Uninstall_CallSignExtra_Hook();
+bool Install_SoldierCallSign_Hook();
+bool Uninstall_SoldierCallSign_Hook();
 
 bool Install_LostHostage_Hooks();
 bool Uninstall_LostHostage_Hooks();
@@ -295,6 +295,9 @@ bool Uninstall_EnemyLangIdOverride_Hooks();
 
 bool Install_BasicActionImpl_StateCrawlSideRoll_Hook();
 bool Uninstall_BasicActionImpl_StateCrawlSideRoll_Hook();
+
+bool Install_FobPlayerCharacters_Patches();
+void Uninstall_FobPlayerCharacters_Patches();
 
 bool Install_SearchLightActionPluginImpl_StateDoor_Hook();
 bool Uninstall_SearchLightActionPluginImpl_StateDoor_Hook();
@@ -854,12 +857,12 @@ namespace
         bool Install(HMODULE hGame) override
         {
             UNREFERENCED_PARAMETER(hGame);
-            return Install_CallSignExtra_Hook();
+            return Install_SoldierCallSign_Hook();
         }
 
         void Uninstall() override
         {
-            Uninstall_CallSignExtra_Hook();
+            Uninstall_SoldierCallSign_Hook();
         }
     };
 
@@ -1285,6 +1288,26 @@ namespace
         void Uninstall() override
         {
             Uninstall_EnemyLangIdOverride_Hooks();
+        }
+    };
+
+    class FobPlayerCharactersModule final : public IFeatureModule
+    {
+    public:
+        const char* GetName() const override
+        {
+            return "FobPlayerCharacters";
+        }
+
+        bool Install(HMODULE hGame) override
+        {
+            UNREFERENCED_PARAMETER(hGame);
+            return Install_FobPlayerCharacters_Patches();
+        }
+
+        void Uninstall() override
+        {
+            Uninstall_FobPlayerCharacters_Patches();
         }
     };
 
@@ -1770,6 +1793,7 @@ void RegisterBuiltInFeatureModules()
     static GetGameObjectIdWithIndex s_GetGameObjectIdWithIndex;
     static EnemyLangIdOverrideModule s_EnemyLangIdOverrideModule;
     static CrawlSideRollModule s_CrawlSideRollModule;
+    static FobPlayerCharactersModule s_FobPlayerCharactersModule;
     static WormholeNearDeathWarpModule s_WormholeNearDeathWarpModule;
     static PlayerLockPickModule s_PlayerLockPickModule;
     static SubtitlesEventMessageModule s_SubtitlesEventMessageModule;
@@ -1855,6 +1879,7 @@ void RegisterBuiltInFeatureModules()
             FeatureModuleRegistry::Instance().Register(&s_GetGameObjectIdWithIndex);
             FeatureModuleRegistry::Instance().Register(&s_EnemyLangIdOverrideModule);
             FeatureModuleRegistry::Instance().Register(&s_CrawlSideRollModule);
+            FeatureModuleRegistry::Instance().Register(&s_FobPlayerCharactersModule);
             FeatureModuleRegistry::Instance().Register(&s_WormholeNearDeathWarpModule);
             FeatureModuleRegistry::Instance().Register(&s_PlayerLockPickModule);
             FeatureModuleRegistry::Instance().Register(&s_PhaseSneakAiImpl_PreUpdateModule);

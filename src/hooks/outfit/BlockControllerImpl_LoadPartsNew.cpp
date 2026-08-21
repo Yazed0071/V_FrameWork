@@ -8,6 +8,7 @@
 #include "FoxPathInternal.h"
 #include "MissionCodeGuard.h"
 #include "../equip/EquipDevelop_AddToEquipDevelopTable.h"
+#include "../player/FobPlayerCharacters.h"
 
 #include <atomic>
 #include <cstdint>
@@ -378,6 +379,21 @@ namespace
         const outfit::OutfitEntry* entry = nullptr;
         if (!outfit::TryGetOutfitByPartsType(pt, &entry) || !entry) return false;
         if (!entry->IsPlayerTypeSupported(ply)) return false;
+
+        if (!entry->DeclaresPlayerType(ply))
+        {
+            static std::atomic<int> logged{ 0 };
+            if (logged.fetch_add(1, std::memory_order_relaxed) < 8)
+                LogDebug("[OutfitRuntimeParts] outfit developId=%u partsType=0x%02X "
+                    "declares no branch for the live player type %u - serving its "
+                    "first declared branch instead of reverting to vanilla. Only the "
+                    "Snake/Avatar pair used to substitute for each other, so a "
+                    "DDMale-only suit worn by an Avatar resolved to nothing and the "
+                    "brick guard healed it away.\n",
+                    static_cast<unsigned>(entry->developId),
+                    static_cast<unsigned>(entry->partsType),
+                    static_cast<unsigned>(ply));
+        }
 
         if (outEntry) *outEntry = entry;
         return true;
@@ -1538,6 +1554,8 @@ namespace
 
     static void __fastcall hkUpdatePartsStatus(void* self)
     {
+        fobchars::ReassertSelectedCharacter();
+
         EquipDevelopAdd::MaybeRefreshDynamicGates();
 
         struct SlotOverride { bool active; std::uint8_t restoreValue; };

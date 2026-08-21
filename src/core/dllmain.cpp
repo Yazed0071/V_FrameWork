@@ -5,6 +5,7 @@
 
 #include "MinHook.h"
 #include "log.h"
+#include "DeployGuard.h"
 #include "BuiltInModules.h"
 #include "FeatureModule.h"
 #include "AddressSet.h"
@@ -73,6 +74,7 @@ static DWORD WINAPI InitThread(LPVOID)
     InitLog();
 
     LogDebug("[DLL] InitThread started.\n");
+    DeployGuard::Init();
     LogOwnBuildStamp();
 
     HMODULE hGame = GetModuleHandleW(nullptr);
@@ -116,6 +118,7 @@ static void UninstallAll(bool processTerminating)
 {
     if (processTerminating)
     {
+        DeployGuard::OnCleanExit();
         V_FrameWorkState::SaveOnProcessExit();
         V_FrameWorkState::AbandonFlusherThread();
 

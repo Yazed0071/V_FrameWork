@@ -18,6 +18,9 @@ public:
     virtual void Uninstall() = 0;
 };
 
+bool FeatureIsDisabled(const char* name);
+bool FeatureAnyDisabled();
+
 class FeatureModuleRegistry
 {
 public:
@@ -32,5 +35,6 @@ public:
 
 private:
     std::vector<IFeatureModule*> m_Modules;
+    std::vector<IFeatureModule*> m_Installed;
     std::mutex m_Mutex;
 };

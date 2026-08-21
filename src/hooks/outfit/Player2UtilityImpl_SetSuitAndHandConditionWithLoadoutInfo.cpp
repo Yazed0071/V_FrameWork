@@ -12,6 +12,7 @@
 #include "HookUtils.h"
 #include "log.h"
 #include "MissionCodeGuard.h"
+#include "../player/FobPlayerCharacters.h"
 
 namespace
 {
@@ -83,6 +84,8 @@ namespace
             LogDebug("[OutfitSuitConditionApply:%s] SEH reading info\n", tag);
             return false;
         }
+
+        fobchars::NoteLoadoutPlayerType(playerType, flags);
 
 #ifdef _DEBUG
         LogDebug("[OutfitSuitConditionApply:%s] fire: partsType=0x%02X "

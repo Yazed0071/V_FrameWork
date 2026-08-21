@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <intrin.h>
 
 #include "AddressSet.h"
 #include "HookUtils.h"
@@ -17,7 +18,10 @@
 
 namespace
 {
-    constexpr std::uintptr_t kSentinel_GetQuarkSystemTable = 0x140bff050ull;
+    constexpr std::uintptr_t kSentinel_GetQuarkSystemTable   = 0x140bff050ull;
+    constexpr std::uintptr_t kSentinel_GetQuarkSystemTableJp = 0x140bfefd0ull;
+
+    static std::atomic<bool> g_AddressSetIsEn{ true };
     constexpr std::uintptr_t kAddr_SuitParamTable          = 0x1423997e0ull;
     constexpr std::uintptr_t kAddr_ScriptConditionBits     = 0x142c1c2aaull;
 
@@ -35,6 +39,8 @@ namespace
     constexpr std::size_t kSeParam_PartsTypeOff   = 0x13;
     constexpr std::uint16_t kWornSuitNone         = 0xFFFF;
     constexpr std::size_t kMaxSlots = outfit::shadow::kMaxSlots;
+
+    static std::atomic<bool> g_DonorSwapFaulted{ false };
 
     constexpr std::uint8_t kPrologue_CalcDamage[] =
         { 0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x20, 0x89, 0x50, 0x10, 0x55 };
@@ -380,6 +386,19 @@ namespace
 
     static bool RmwAmmoBit_SEH(bool set)
     {
+        if (!g_AddressSetIsEn.load(std::memory_order_relaxed))
+        {
+            static std::atomic<bool> s_warned{ false };
+            if (!s_warned.exchange(true, std::memory_order_relaxed))
+                Log("[OutfitAbilities] abilities.infiniteAmmo is DISABLED on "
+                    "this build: the script-condition byte is a raw address "
+                    "mapped for EN only, and writing bit 0x4 at the EN offset "
+                    "on another language build would silently corrupt an "
+                    "unrelated variable rather than fault. Every other "
+                    "ability verifies its target bytes and is unaffected\n");
+            return false;
+        }
+
         __try
         {
             auto* p = reinterpret_cast<std::uint8_t*>(kAddr_ScriptConditionBits);
@@ -569,6 +588,11 @@ namespace
         s_prevSel   = sel;
         s_prevPt    = pt;
 
+        if (g_DonorSwapFaulted.exchange(false))
+            Log("[OutfitAbilities] suit-ability donors re-armed - the outfit "
+                "context changed, so the equip data the engine resolves the "
+                "donor against has been rebuilt\n");
+
         V_FrameWork::EmitMessage("Player", "partsTypeChange",
             pt, parts, sel);
 #ifdef _DEBUG
@@ -578,6 +602,28 @@ namespace
             static_cast<unsigned>(sel));
 #endif
     }
+
+    static int DonorSehAvOnly(unsigned int code)
+    {
+        return code == EXCEPTION_ACCESS_VIOLATION
+            ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    static bool CallOrigUpdateLife_SEH(void* self)
+    {
+        __try
+        {
+            g_OrigUpdateLife(self);
+            return true;
+        }
+        __except (DonorSehAvOnly(GetExceptionCode()))
+        {
+            return false;
+        }
+    }
+
+    static void EnsureNoiseProbeArmed();
+    static void SyncQuietStepPatch();
 
     static void __fastcall hkUpdateLifeRecoverySpeed(void* self)
     {
@@ -590,6 +636,9 @@ namespace
 
         SyncInfiniteAmmoBit(false);
         EmitPartsTypeChange();
+        DumpEquipDataOnce(self);
+        EnsureNoiseProbeArmed();
+        SyncQuietStepPatch();
 
         std::uint32_t count = 0;
         std::uint16_t* arr = GetWornArr_SEH(self, kHolderOff_LifeRecovery, &count);
@@ -600,12 +649,15 @@ namespace
         }
         if (count > kMaxSlots) count = kMaxSlots;
 
+        const bool allowDonor =
+            !g_DonorSwapFaulted.load(std::memory_order_relaxed);
+
         std::uint16_t saved[kMaxSlots] = {};
         bool swapped[kMaxSlots] = {};
         for (std::uint32_t i = 0; i < count; ++i)
         {
             const SlotAbilities ab = GetSlotAbilities(i);
-            if (!ab.ok || ab.regen == 0)
+            if (!allowDonor || !ab.ok || ab.regen == 0)
                 continue;
             const std::uint16_t donor = GetDonorEquipId(false, ab.regen);
             if (donor == 0)
@@ -631,11 +683,21 @@ namespace
             }
         }
 
-        g_OrigUpdateLife(self);
+        const bool origOk = CallOrigUpdateLife_SEH(self);
 
         for (std::uint32_t i = 0; i < count; ++i)
             if (swapped[i])
                 WriteWorn_SEH(arr, i, saved[i]);
+
+        if (!origOk && !g_DonorSwapFaulted.exchange(true))
+            Log("[OutfitAbilities] the engine faulted inside "
+                "UpdateLifeRecoverySpeed with donor suit equipId swapped into "
+                "the worn array - that donor is not resolvable in the equip "
+                "data the engine holds at this instant (the window right "
+                "after a mission/suit change). This recovery tick was "
+                "skipped, the worn array was restored, and BOTH suit-ability "
+                "donors are parked until the next outfit change instead of "
+                "faulting every tick.\n");
     }
 
     static std::uint64_t __fastcall hkCalcDamageValueAtIndex(
@@ -646,7 +708,8 @@ namespace
         std::uint16_t saved = 0;
         bool swapped = false;
 
-        if (!MissionCodeGuard::ShouldBypassHooks() && slotIndex < kMaxSlots)
+        if (!MissionCodeGuard::ShouldBypassHooks() && slotIndex < kMaxSlots
+            && !g_DonorSwapFaulted.load(std::memory_order_relaxed))
         {
             const SlotAbilities ab = GetSlotAbilities(slotIndex);
             if (ab.ok && ab.defense != 0)
@@ -779,6 +842,494 @@ namespace
         return true;
     }
 
+    constexpr std::uintptr_t kAddr_NoiseAddThunks[] =
+        { 0x140515270ull, 0x140514fb0ull };
+    constexpr std::uintptr_t kAddr_NoiseVtableAddSlots[] =
+        { 0x1421876a8ull, 0x1421876f8ull };
+    constexpr std::uintptr_t kAddr_NoiseAddThunk      = kAddr_NoiseAddThunks[0];
+    constexpr std::uintptr_t kAddr_NoiseVtableAddSlot =
+        kAddr_NoiseVtableAddSlots[0];
+    constexpr std::uintptr_t kNoiseScanBase          = 0x140400000ull;
+    constexpr std::size_t    kNoiseScanSize          = 0x400000;
+    constexpr std::size_t    kNoiseScanChunk         = 0x10000;
+
+    constexpr std::uint8_t kPrologue_AddNoiseBody[] =
+        { 0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10,
+          0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xEC, 0x20 };
+
+    static std::atomic<std::uint32_t> g_NoisePrologueHits{ 0 };
+    static std::atomic<std::uint32_t> g_NoiseLiveDisp{ 0 };
+
+    constexpr std::uintptr_t kPlayerStepNoiseFnBegin = 0x140984010ull;
+    constexpr std::uintptr_t kPlayerStepNoiseFnEnd   = 0x140984ae0ull;
+
+    static bool ReadBytes_SEH(std::uintptr_t addr, void* out,
+                              std::size_t n);
+
+    constexpr std::uint16_t kStepNoiseQuietJzOrig = 0x0274;
+    constexpr std::uint16_t kStepNoiseQuietJzNop  = 0x9090;
+
+    constexpr std::uint8_t kStepNoiseQuietPrefix[] =
+        { 0x44, 0x38, 0x7C, 0x24, 0x28 };
+    constexpr std::uint8_t kStepNoiseQuietSuffix[] = { 0xFF, 0xCE };
+    constexpr std::size_t  kStepNoiseQuietWindow   = 9;
+
+    constexpr std::uintptr_t kQuietScanBase  = 0x140900000ull;
+    constexpr std::size_t    kQuietScanSize  = 0x100000;
+    constexpr std::size_t    kQuietScanChunk = 0x10000;
+
+    static std::atomic<std::uintptr_t> g_QuietCmpAddr{ 0 };
+
+    static bool QuietWindowMatches(std::uintptr_t cmpAddr,
+                                   std::uint16_t expectMid)
+    {
+        std::uint8_t w[kStepNoiseQuietWindow] = {};
+        if (!ReadBytes_SEH(cmpAddr, w, sizeof(w)))
+            return false;
+        if (std::memcmp(w, kStepNoiseQuietPrefix,
+                        sizeof(kStepNoiseQuietPrefix)) != 0)
+            return false;
+        if (std::memcmp(w + 7, kStepNoiseQuietSuffix,
+                        sizeof(kStepNoiseQuietSuffix)) != 0)
+            return false;
+        std::uint16_t mid = 0;
+        std::memcpy(&mid, w + 5, sizeof(mid));
+        return mid == expectMid;
+    }
+
+    static std::uint8_t g_QuietScanBuf[kQuietScanChunk];
+
+    static std::uintptr_t ScanForQuietStepSite()
+    {
+        std::uintptr_t hit   = 0;
+        std::uint32_t  hits  = 0;
+
+        for (std::size_t off = 0; off < kQuietScanSize;
+             off += kQuietScanChunk - kStepNoiseQuietWindow)
+        {
+            const std::size_t want =
+                (kQuietScanSize - off < kQuietScanChunk)
+                    ? (kQuietScanSize - off) : kQuietScanChunk;
+            const std::uintptr_t base = kQuietScanBase + off;
+            if (!ReadBytes_SEH(base, g_QuietScanBuf, want))
+                continue;
+            if (want < kStepNoiseQuietWindow)
+                continue;
+
+            for (std::size_t i = 0; i + kStepNoiseQuietWindow <= want; ++i)
+            {
+                if (g_QuietScanBuf[i]     != 0x44 ||
+                    g_QuietScanBuf[i + 5] != 0x74 ||
+                    g_QuietScanBuf[i + 6] != 0x02)
+                    continue;
+                if (std::memcmp(g_QuietScanBuf + i, kStepNoiseQuietPrefix,
+                                sizeof(kStepNoiseQuietPrefix)) != 0)
+                    continue;
+                if (std::memcmp(g_QuietScanBuf + i + 7, kStepNoiseQuietSuffix,
+                                sizeof(kStepNoiseQuietSuffix)) != 0)
+                    continue;
+
+                const std::uintptr_t found = base + i;
+                if (hits == 0)
+                {
+                    hit  = found;
+                    hits = 1;
+                }
+                else if (found != hit)
+                {
+                    return 0;
+                }
+            }
+        }
+        return hit;
+    }
+
+    static std::uintptr_t ResolveQuietStepSite()
+    {
+        const std::uintptr_t cached =
+            g_QuietCmpAddr.load(std::memory_order_relaxed);
+        if (cached)
+            return cached;
+
+        const std::uintptr_t mapped =
+            gAddr.SoundPlayerAnimEvent_StepNoiseQuietCmp;
+        if (mapped && QuietWindowMatches(mapped, kStepNoiseQuietJzOrig))
+        {
+            g_QuietCmpAddr.store(mapped, std::memory_order_relaxed);
+            return mapped;
+        }
+
+        const std::uintptr_t found = ScanForQuietStepSite();
+        if (found)
+        {
+            g_QuietCmpAddr.store(found, std::memory_order_relaxed);
+            Log("[OutfitAbilities] silentFootsteps: the address set carries "
+                "%s for SoundPlayerAnimEvent_StepNoiseQuietCmp, so the "
+                "CMP/JZ/DEC ESI signature was located by scanning "
+                "0x%llX+0x%X and found uniquely at 0x%llX - put that value in "
+                "the address set for this build to skip the scan\n",
+                mapped ? "an address that no longer matches" : "no address",
+                static_cast<unsigned long long>(kQuietScanBase),
+                static_cast<unsigned>(kQuietScanSize),
+                static_cast<unsigned long long>(found));
+        }
+        return found;
+    }
+
+    static std::atomic<bool> g_QuietStepPatched{ false };
+    static std::atomic<bool> g_QuietStepRefused{ false };
+
+    static bool WriteQuietStepWord(std::uintptr_t jzAddr, std::uint16_t want)
+    {
+        auto* p = reinterpret_cast<std::uint16_t*>(jzAddr);
+        DWORD prot = 0;
+        if (!VirtualProtect(p, sizeof(*p), PAGE_EXECUTE_READWRITE, &prot))
+            return false;
+        bool ok = false;
+        __try
+        {
+            *p = want;
+            ok = true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            ok = false;
+        }
+        DWORD back = 0;
+        VirtualProtect(p, sizeof(*p), prot, &back);
+        FlushInstructionCache(GetCurrentProcess(), p, sizeof(*p));
+        return ok;
+    }
+
+    static void SetQuietStepPatch(bool on)
+    {
+        if (g_QuietStepRefused.load(std::memory_order_relaxed))
+            return;
+        if (g_QuietStepPatched.load(std::memory_order_relaxed) == on)
+            return;
+
+        const std::uintptr_t cmpAddr = ResolveQuietStepSite();
+        if (!cmpAddr)
+        {
+            if (!g_QuietStepRefused.exchange(true, std::memory_order_relaxed))
+                Log("[OutfitAbilities] silentFootsteps REFUSED: the "
+                    "CMP/JZ/DEC ESI quiet-step signature is not at the EN "
+                    "day3900 address and was not found uniquely in "
+                    "0x%llX+0x%X - nothing is patched, and the other outfit "
+                    "abilities are unaffected\n",
+                    static_cast<unsigned long long>(kQuietScanBase),
+                    static_cast<unsigned>(kQuietScanSize));
+            return;
+        }
+
+        const std::uintptr_t jzAddr = cmpAddr + 5;
+        const std::uint16_t  expect = on ? kStepNoiseQuietJzOrig
+                                         : kStepNoiseQuietJzNop;
+        if (!QuietWindowMatches(cmpAddr, expect))
+        {
+            if (!g_QuietStepRefused.exchange(true, std::memory_order_relaxed))
+                Log("[OutfitAbilities] silentFootsteps REFUSED: the window at "
+                    "0x%llX no longer reads as the CMP/JZ/DEC ESI sequence "
+                    "with 0x%04X in the branch slot - something else moved or "
+                    "hooked those bytes, so they are left untouched\n",
+                    static_cast<unsigned long long>(cmpAddr), expect);
+            return;
+        }
+
+        if (!WriteQuietStepWord(jzAddr, on ? kStepNoiseQuietJzNop
+                                           : kStepNoiseQuietJzOrig))
+            return;
+
+        g_QuietStepPatched.store(on, std::memory_order_relaxed);
+        Log("[OutfitAbilities] silentFootsteps %s: the engine's own "
+            "one-level-quieter branch at 0x%llX is now %s, so player movement "
+            "noise drops a level exactly like the Sneaking Suit - crouch falls "
+            "to level 1 and is skipped entirely, standing and running stay "
+            "audible\n",
+            on ? "ON" : "OFF",
+            static_cast<unsigned long long>(jzAddr),
+            on ? "always taken" : "restored to vanilla");
+    }
+
+    static void SyncQuietStepPatch()
+    {
+        bool want = false;
+        if (!MissionCodeGuard::ShouldBypassHooks())
+        {
+            const SlotAbilities ab = GetSlotAbilities(0);
+            want = ab.ok && ab.silent;
+        }
+        SetQuietStepPatch(want);
+    }
+
+    using AddNoise_t = std::uint64_t (__fastcall*)(
+        void*, void*, void*, void*, void*, void*, void*, void*);
+
+    static AddNoise_t     g_OrigAddNoise      = nullptr;
+    static std::uintptr_t g_ChosenAddNoise    = 0;
+    static bool           g_InstalledAddNoise = false;
+
+    static bool ReadBytes_SEH(std::uintptr_t addr, void* out, std::size_t n)
+    {
+        __try
+        {
+            std::memcpy(out, reinterpret_cast<const void*>(addr), n);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
+    static bool BodyIsAddNoise(std::uintptr_t fn)
+    {
+        std::uint8_t b[26] = {};
+        if (!ReadBytes_SEH(fn, b, sizeof(b)))
+            return false;
+        if (std::memcmp(b, kPrologue_AddNoiseBody,
+                        sizeof(kPrologue_AddNoiseBody)) != 0)
+            return false;
+
+        g_NoisePrologueHits.fetch_add(1, std::memory_order_relaxed);
+
+        if (b[20] != 0x8B || b[21] != 0xB9)
+            return false;
+        std::uint32_t disp = 0;
+        std::memcpy(&disp, b + 22, sizeof(disp));
+        if (disp < 0x1000u || disp > 0x20000u)
+            return false;
+
+        g_NoiseLiveDisp.store(disp, std::memory_order_relaxed);
+        return true;
+    }
+
+    static bool ThunkTargetIsAddNoise(std::uintptr_t thunk,
+                                      std::uintptr_t* outTarget)
+    {
+        std::uint8_t j[5] = {};
+        if (!ReadBytes_SEH(thunk, j, sizeof(j)) || j[0] != 0xE9)
+            return false;
+        std::int32_t rel = 0;
+        std::memcpy(&rel, j + 1, sizeof(rel));
+        const std::uintptr_t target =
+            static_cast<std::uintptr_t>(thunk + 5 + static_cast<std::intptr_t>(rel));
+        if (!BodyIsAddNoise(target))
+            return false;
+        if (outTarget)
+            *outTarget = target;
+        return true;
+    }
+
+    static std::uint8_t g_NoiseScanBuf[kNoiseScanChunk];
+
+    static bool VtableSlotIsAddNoise(std::uintptr_t slot, std::uintptr_t* outFn)
+    {
+        std::uintptr_t fn = 0;
+        if (!ReadBytes_SEH(slot, &fn, sizeof(fn)))
+            return false;
+        if (fn < 0x140000000ull || fn > 0x150000000ull)
+            return false;
+        if (BodyIsAddNoise(fn) || ThunkTargetIsAddNoise(fn, nullptr))
+        {
+            *outFn = fn;
+            return true;
+        }
+        return false;
+    }
+
+    static void DumpStepNoiseGateOnce()
+    {
+        static std::atomic<bool> s_done{ false };
+        if (s_done.exchange(true, std::memory_order_relaxed))
+            return;
+
+        constexpr std::uintptr_t kGateDumpBase = 0x140984960ull;
+        constexpr std::size_t    kGateDumpSize = 0xD0;
+
+        std::uint8_t b[kGateDumpSize] = {};
+        if (!ReadBytes_SEH(kGateDumpBase, b, sizeof(b)))
+        {
+            Log("[OutfitAbilities] step-noise gate dump: 0x%llX unreadable\n",
+                static_cast<unsigned long long>(kGateDumpBase));
+            return;
+        }
+
+        for (std::size_t row = 0; row < kGateDumpSize; row += 16)
+        {
+            char line[128];
+            int  n = 0;
+            for (std::size_t i = 0; i < 16 && (row + i) < kGateDumpSize; ++i)
+                n += std::snprintf(line + n, sizeof(line) - n, "%02X ",
+                                   b[row + i]);
+            Log("[OutfitAbilities] gate %llX: %s\n",
+                static_cast<unsigned long long>(kGateDumpBase + row), line);
+        }
+        Log("[OutfitAbilities] step-noise gate dump above covers the two "
+            "conditional jumps at 0x1409849C3/0x1409849C8 that skip the "
+            "AddNoise call - decoding them names the stance/action the engine "
+            "itself treats as silent\n");
+    }
+
+    static std::uintptr_t FindNoiseAddThunk()
+    {
+        std::uintptr_t target = 0;
+        for (std::uintptr_t thunk : kAddr_NoiseAddThunks)
+        {
+            if (!ThunkTargetIsAddNoise(thunk, &target))
+                continue;
+            Log("[OutfitAbilities] noise AddNoise thunk @ 0x%llX -> body "
+                "0x%llX (ring-count offset 0x%X)\n",
+                static_cast<unsigned long long>(thunk),
+                static_cast<unsigned long long>(target),
+                g_NoiseLiveDisp.load(std::memory_order_relaxed));
+            return thunk;
+        }
+
+        for (std::uintptr_t slot : kAddr_NoiseVtableAddSlots)
+        {
+            std::uintptr_t viaVtable = 0;
+            if (!VtableSlotIsAddNoise(slot, &viaVtable))
+                continue;
+            Log("[OutfitAbilities] noise AddNoise resolved through the vtable "
+                "slot @ 0x%llX -> 0x%llX (ring-count offset 0x%X)\n",
+                static_cast<unsigned long long>(slot),
+                static_cast<unsigned long long>(viaVtable),
+                g_NoiseLiveDisp.load(std::memory_order_relaxed));
+            return viaVtable;
+        }
+
+        for (std::size_t off = 0; off < kNoiseScanSize; off += kNoiseScanChunk)
+        {
+            const std::size_t n =
+                (kNoiseScanSize - off < kNoiseScanChunk)
+                    ? (kNoiseScanSize - off) : kNoiseScanChunk;
+            const std::uintptr_t chunkBase = kNoiseScanBase + off;
+            if (!ReadBytes_SEH(chunkBase, g_NoiseScanBuf, n))
+                continue;
+            for (std::size_t i = 0; i + 5 <= n; ++i)
+            {
+                if (g_NoiseScanBuf[i] != 0xE9)
+                    continue;
+                std::int32_t rel = 0;
+                std::memcpy(&rel, g_NoiseScanBuf + i + 1, sizeof(rel));
+                const std::uintptr_t cand = chunkBase + i;
+                const std::uintptr_t tgt =
+                    cand + 5 + static_cast<std::intptr_t>(rel);
+                if (tgt < 0x140000000ull || tgt > 0x150000000ull)
+                    continue;
+                if (!BodyIsAddNoise(tgt))
+                    continue;
+                target = tgt;
+                Log("[OutfitAbilities] noise AddNoise thunk RELOCATED: found @ "
+                    "0x%llX -> body 0x%llX (documented 0x%llX did not match; "
+                    "build drift absorbed by the fingerprint scan)\n",
+                    static_cast<unsigned long long>(cand),
+                    static_cast<unsigned long long>(target),
+                    static_cast<unsigned long long>(kAddr_NoiseAddThunk));
+                return cand;
+            }
+        }
+
+        Log("[OutfitAbilities] noise AddNoise not found this pass (thunk "
+            "0x%llX, vtable slot 0x%llX, 0x%llX+0x%X scan): %u thunk target(s) "
+            "DID match the 20-byte prologue but none had the expected "
+            "[RCX+disp] ring-count load, live disp seen=0x%X. If the prologue "
+            "count is 0 the band is not decrypted yet and the retry will "
+            "catch it in gameplay\n",
+            static_cast<unsigned long long>(kAddr_NoiseAddThunk),
+            static_cast<unsigned long long>(kAddr_NoiseVtableAddSlot),
+            static_cast<unsigned long long>(kNoiseScanBase),
+            static_cast<unsigned>(kNoiseScanSize),
+            g_NoisePrologueHits.load(std::memory_order_relaxed),
+            g_NoiseLiveDisp.load(std::memory_order_relaxed));
+        return 0;
+    }
+
+    static std::uint64_t __fastcall hkAddNoise(
+        void* self, void* desc, void* a3, void* a4, void* a5, void* a6,
+        void* a7, void* a8);
+
+    static void EnsureNoiseProbeArmed()
+    {
+        static std::atomic<int>   s_attempts{ 0 };
+        static std::atomic<DWORD> s_lastTry{ 0 };
+
+        if (g_InstalledAddNoise)
+            return;
+        const int n = s_attempts.load(std::memory_order_relaxed);
+        if (n >= 10)
+            return;
+
+        const DWORD now  = GetTickCount();
+        const DWORD last = s_lastTry.load(std::memory_order_relaxed);
+        if (last != 0 && (now - last) < 2000)
+            return;
+        s_lastTry.store(now, std::memory_order_relaxed);
+        s_attempts.fetch_add(1, std::memory_order_relaxed);
+
+        g_NoisePrologueHits.store(0, std::memory_order_relaxed);
+
+        const std::uintptr_t at = FindNoiseAddThunk();
+        if (!at)
+            return;
+
+        g_ChosenAddNoise = at;
+        g_InstalledAddNoise = CreateAndEnableHook(
+            reinterpret_cast<void*>(at),
+            reinterpret_cast<void*>(&hkAddNoise),
+            reinterpret_cast<void**>(&g_OrigAddNoise));
+        Log("[OutfitAbilities] noise probe armed IN GAMEPLAY at 0x%llX "
+            "(attempt %d): hook=%s - the next 48 AI-noise emissions are "
+            "logged\n",
+            static_cast<unsigned long long>(at), n + 1,
+            g_InstalledAddNoise ? "OK" : "MinHook refused");
+
+        DumpStepNoiseGateOnce();
+    }
+
+    static void LogNoiseSample(void* desc, void* ra)
+    {
+        static std::atomic<int> s_count{ 0 };
+        const int n = s_count.fetch_add(1, std::memory_order_relaxed);
+        if (n >= 48)
+            return;
+
+        std::uint8_t d[64] = {};
+        if (!ReadBytes_SEH(reinterpret_cast<std::uintptr_t>(desc), d, sizeof(d)))
+            return;
+
+        float f[8] = {};
+        std::memcpy(f, d, sizeof(f));
+
+        std::uint32_t g1 = 0xFFFFFFFFu;
+        std::uint32_t g2 = 0xFFFFFFFFu;
+        ReadBytes_SEH(0x142178248ull, &g1, sizeof(g1));
+        ReadBytes_SEH(0x142c00a20ull, &g2, sizeof(g2));
+
+        Log("[NoiseProbe] #%d ra=0x%llX parts=0x%02X pos=(%.2f %.2f %.2f) "
+            "f3=%.3f f4=%.3f | gateSrc 142178248=0x%08X 142C00A20=0x%08X "
+            "(these two globals are read right before the engine's own "
+            "skip-noise gates - a value that changes between standing, "
+            "crouching and running is the stance the gate tests)\n",
+            n, static_cast<unsigned long long>(
+                   reinterpret_cast<std::uintptr_t>(ra)),
+            static_cast<unsigned>(outfit::ReadLivePartsType()),
+            f[0], f[1], f[2], f[3], f[4], g1, g2);
+    }
+
+    static std::uint64_t __fastcall hkAddNoise(
+        void* self, void* desc, void* a3, void* a4, void* a5, void* a6,
+        void* a7, void* a8)
+    {
+        const std::uintptr_t ra =
+            reinterpret_cast<std::uintptr_t>(_ReturnAddress());
+
+        LogNoiseSample(desc, reinterpret_cast<void*>(ra));
+
+        return g_OrigAddNoise(self, desc, a3, a4, a5, a6, a7, a8);
+    }
+
     static std::uintptr_t g_ChosenCalcDamage = 0;
     static std::uintptr_t g_ChosenUpdateLife = 0;
     static std::uintptr_t g_ChosenRattle     = 0;
@@ -807,13 +1358,28 @@ namespace outfit
 {
     bool Install_OutfitAbilities_Hooks()
     {
-        if (gAddr.GetQuarkSystemTable != kSentinel_GetQuarkSystemTable)
+        const bool isEn = gAddr.GetQuarkSystemTable
+                            == kSentinel_GetQuarkSystemTable;
+        const bool isJp = gAddr.GetQuarkSystemTable
+                            == kSentinel_GetQuarkSystemTableJp;
+        if (!isEn && !isJp)
         {
-            Log("[OutfitAbilities] address set is not the EN 1.0.15.4 family "
+            Log("[OutfitAbilities] address set is not the 1.0.15.4 family "
                 "(GetQuarkSystemTable=0x%llX) - outfit abilities disabled\n",
                 static_cast<unsigned long long>(gAddr.GetQuarkSystemTable));
             return false;
         }
+        g_AddressSetIsEn.store(isEn, std::memory_order_relaxed);
+        if (!isEn)
+            Log("[OutfitAbilities] JAPANESE address set detected "
+                "(GetQuarkSystemTable=0x%llX). Only the abilities that locate "
+                "their own target bytes run here: silentFootsteps finds its "
+                "CMP/JZ/DEC ESI site by signature scan, and the three hooks "
+                "verify prologues before installing. The suit-donor table and "
+                "the infinite-ammo condition byte are raw EN addresses with "
+                "no JP mapping, so defense/lifeRecovery/infiniteAmmo stay "
+                "off on this build\n",
+                static_cast<unsigned long long>(gAddr.GetQuarkSystemTable));
 
         g_ChosenCalcDamage = InstallFromCandidates(
             "CalculateDamageValueAtIndex", kCandidates_CalcDamage,
@@ -835,9 +1401,11 @@ namespace outfit
 
         Log("[OutfitAbilities] installed: damage=%s@0x%llX "
             "lifeRecovery=%s@0x%llX rattle=%s@0x%llX "
-            "(defense/regen serve donor suit equipIds strictly swap-in/"
-            "restore around the hooked calls; silentFootsteps is INERT "
-            "pending noise-emitter RE; infinite-ammo heads sync condition "
+            "(defense/regen serve donor suit equipIds strictly swap-in/restore "
+            "around the hooked calls; silentFootsteps forces the engine's own "
+            "one-level-quieter movement-noise branch while the outfit is worn, "
+            "so crouching goes silent and running stays audible - the same "
+            "profile as the Sneaking Suit; infinite-ammo heads sync condition "
             "bit 0x4)\n",
             g_InstalledCalcDamage ? "OK" : "skip",
             static_cast<unsigned long long>(g_ChosenCalcDamage),
@@ -855,6 +1423,15 @@ namespace outfit
         if (g_AmmoBitOwned.exchange(false, std::memory_order_relaxed))
             RmwAmmoBit_SEH(false);
 
+        SetQuietStepPatch(false);
+
+        if (g_InstalledAddNoise)
+        {
+            DisableAndRemoveHook(reinterpret_cast<void*>(g_ChosenAddNoise));
+            g_OrigAddNoise      = nullptr;
+            g_InstalledAddNoise = false;
+            g_ChosenAddNoise    = 0;
+        }
         if (g_InstalledRattle)
         {
             DisableAndRemoveHook(reinterpret_cast<void*>(g_ChosenRattle));

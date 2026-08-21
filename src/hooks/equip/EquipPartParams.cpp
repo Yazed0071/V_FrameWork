@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "DeployGuard.h"
 #include "EquipPartParams.h"
 
 #include <Windows.h>
@@ -136,9 +137,21 @@ namespace
         return ReadPtrSEH(PartPtrLoc(pb));
     }
 
-    static int ProbeSupplyCountLocSEH(void* getQuarkFn, void*** outLoc,
-                                      std::uint8_t** outCur)
+    static constexpr std::size_t kSupplyScanWindow = 0x400;
+
+    struct SupplyMagHit
     {
+        int objTag;
+        int off;
+    };
+
+    static int ResolveSupplyObjectsSEH(void* getQuarkFn, std::uint8_t** outApp,
+                                       std::uint8_t** outEquipSys,
+                                       std::uint8_t** outParamObj)
+    {
+        *outApp = nullptr;
+        *outEquipSys = nullptr;
+        *outParamObj = nullptr;
         __try
         {
             using GetQuark_t = std::uint8_t* (__fastcall*)();
@@ -148,15 +161,11 @@ namespace
             std::uint8_t* app = *reinterpret_cast<std::uint8_t**>(quark + 0x98);
             if (!app)
                 return 0;
-            std::uint8_t* holder = *reinterpret_cast<std::uint8_t**>(app + 0x1e8);
-            if (!holder)
-                return 0;
-            std::uint8_t* paramObj = *reinterpret_cast<std::uint8_t**>(holder + 0x10);
-            if (!paramObj)
-                return 0;
-            void** loc = reinterpret_cast<void**>(paramObj + 0xa0);
-            *outCur = static_cast<std::uint8_t*>(*loc);
-            *outLoc = loc;
+            *outApp = app;
+            std::uint8_t* es = *reinterpret_cast<std::uint8_t**>(app + 0x1e8);
+            *outEquipSys = es;
+            if (es)
+                *outParamObj = *reinterpret_cast<std::uint8_t**>(es + 0x10);
             return 1;
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
@@ -165,53 +174,26 @@ namespace
         }
     }
 
-    static int WritePtrSEH(void** loc, void* value)
+    static int ScanRepointPtrSEH(std::uint8_t* base, std::size_t window,
+                                 std::uint8_t* from, std::uint8_t* to, int objTag,
+                                 SupplyMagHit* hits, int maxHits, int* nHits)
     {
         __try
         {
-            *loc = value;
-            return 1;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            return 0;
-        }
-    }
-
-    static int CompareMagazineRowsSEH(const std::uint8_t* a, const std::uint8_t* b,
-                                      int rows, int* fullEqual)
-    {
-        __try
-        {
-            *fullEqual =
-                (std::memcmp(a, b, static_cast<size_t>(rows) * 8) == 0) ? 1 : 0;
-            if (*fullEqual)
-                return rows;
-            int match = 0;
-            for (int i = 0; i < rows; ++i)
+            for (std::size_t off = 0; off + sizeof(void*) <= window;
+                 off += sizeof(void*))
             {
-                const std::uint8_t* ra = a + static_cast<size_t>(i) * 8;
-                const std::uint8_t* rb = b + static_cast<size_t>(i) * 8;
-                if (*reinterpret_cast<const std::uint16_t*>(ra + 0)
-                        == *reinterpret_cast<const std::uint16_t*>(rb + 0)
-                    && *reinterpret_cast<const std::uint16_t*>(ra + 4)
-                        == *reinterpret_cast<const std::uint16_t*>(rb + 4))
-                    ++match;
+                void** slot = reinterpret_cast<void**>(base + off);
+                if (*slot != from)
+                    continue;
+                *slot = to;
+                if (*nHits < maxHits)
+                {
+                    hits[*nHits].objTag = objTag;
+                    hits[*nHits].off    = static_cast<int>(off);
+                }
+                ++(*nHits);
             }
-            return match;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            return -1;
-        }
-    }
-
-    static int DumpRowBytesSEH(const std::uint8_t* p, char* out, size_t outLen)
-    {
-        __try
-        {
-            for (int i = 0; i < 16 && (static_cast<size_t>(i) * 3 + 3) < outLen; ++i)
-                std::snprintf(out + i * 3, 4, "%02X ", p[i]);
             return 1;
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
@@ -219,64 +201,96 @@ namespace
             return 0;
         }
     }
+
+    static void* ReadPtrAtOffsetSEH(std::uint8_t* base, std::size_t off)
+    {
+        if (!base)
+            return nullptr;
+        __try
+        {
+            return *reinterpret_cast<void**>(base + off);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return nullptr;
+        }
+    }
+
+    static std::atomic<bool> g_SupplyMagHealed{ false };
+    static std::atomic<int>  g_SupplyMagAttempts{ 0 };
 
     static void HealSupplyAmmoCountTable()
     {
+        if (g_SupplyMagHealed.load(std::memory_order_relaxed))
+            return;
         void* getQuark = ResolveGameAddress(gAddr.GetQuarkSystemTable);
         if (!getQuark)
             return;
+
         std::lock_guard<std::recursive_mutex> lock(g_Mutex);
-        if (!g_Magazine.active || g_Magazine.shadow.empty() || !g_Magazine.origBuf)
+        std::uint8_t* to = g_Magazine.shadow.empty()
+            ? nullptr : g_Magazine.shadow.data();
+        std::uint8_t* from = g_Magazine.origBuf;
+        if (!g_Magazine.active || !to || !from || from == to)
             return;
-        void** loc = nullptr;
-        std::uint8_t* cur = nullptr;
-        if (ProbeSupplyCountLocSEH(getQuark, &loc, &cur) != 1 || !loc || !cur)
+
+        std::uint8_t* app = nullptr;
+        std::uint8_t* es  = nullptr;
+        std::uint8_t* po  = nullptr;
+        if (ResolveSupplyObjectsSEH(getQuark, &app, &es, &po) != 1)
             return;
-        if (cur == g_Magazine.shadow.data())
-            return;
-        const int rows = g_Magazine.stockCount;
-        bool confirmed = (cur == g_Magazine.origBuf);
-        int fullEq = confirmed ? 1 : 0;
-        int match = confirmed ? rows : 0;
-        if (!confirmed)
+
+        SupplyMagHit hits[8] = {};
+        int nHits = 0;
+        if (app)
+            ScanRepointPtrSEH(app, kSupplyScanWindow, from, to, 0, hits, 8, &nHits);
+        if (es)
+            ScanRepointPtrSEH(es,  kSupplyScanWindow, from, to, 1, hits, 8, &nHits);
+        if (po)
+            ScanRepointPtrSEH(po,  kSupplyScanWindow, from, to, 2, hits, 8, &nHits);
+
+        static const char* const kObjName[4] =
+            { "app", "equipSystem", "equipSystem+0x10", "?" };
+
+        if (nHits > 0)
         {
-            match = CompareMagazineRowsSEH(cur, g_Magazine.origBuf, rows, &fullEq);
-            confirmed = (match >= rows - 8);
-        }
-        if (confirmed)
-        {
-            if (WritePtrSEH(loc, g_Magazine.shadow.data()) == 1)
+            g_SupplyMagHealed.store(true, std::memory_order_relaxed);
+            char where[224] = {};
+            int used = 0;
+            for (int i = 0; i < nHits && i < 8; ++i)
             {
-                static std::atomic<bool> s_healLogged{ false };
-                if (!s_healLogged.exchange(true))
-                    LogDebug("[EquipParam] supply ammo-count table healed: the supply "
-                        "refill reads its amounts through a magazine-data pointer at "
-                        "supplyParams+0xa0 that held %p (content-verified against the "
-                        "stock table: %d/%d rows match, fullEqual=%d) - a vanilla-only "
-                        "copy the shadow redirect never touched, so custom ammoIds "
-                        "%d..%d read past its %d rows and every ammo supply granted 0. "
-                        "Repointed to the live shadow %p.\n",
-                        static_cast<void*>(cur), match, rows, fullEq,
-                        g_Magazine.stockCount + 1, g_Magazine.maxId, rows,
-                        static_cast<void*>(g_Magazine.shadow.data()));
+                const int n = std::snprintf(
+                    where + used, sizeof(where) - static_cast<size_t>(used),
+                    "%s%s+0x%X", (i ? ", " : ""),
+                    kObjName[hits[i].objTag & 3], hits[i].off);
+                if (n <= 0 || used + n >= static_cast<int>(sizeof(where)))
+                    break;
+                used += n;
             }
+            LogDebug("[EquipParam] supply ammo-count table healed: %d cached copy(ies) "
+                "of the STOCK magazine buffer %p still lived in the equip-system "
+                "objects (%s) - the supply refill reads its per-item amount as "
+                "magazineTable[GetRootParameterId2(itemEquipId)].totalCarry through "
+                "one of those, so custom ammoIds %d..%d indexed past its %d rows and "
+                "an ammo supply granted garbage/0. Repointed to the live shadow %p "
+                "(identical vanilla rows + the custom ones).\n",
+                nHits, static_cast<void*>(from), where,
+                g_Magazine.stockCount + 1, g_Magazine.maxId, g_Magazine.stockCount,
+                static_cast<void*>(to));
             return;
         }
-        static std::atomic<bool> s_probeLogged{ false };
-        if (!s_probeLogged.exchange(true))
-        {
-            char curHex[64] = {};
-            char stockHex[64] = {};
-            DumpRowBytesSEH(cur, curHex, sizeof(curHex));
-            DumpRowBytesSEH(g_Magazine.origBuf, stockHex, sizeof(stockHex));
-            LogDebug("[EquipParam] supply ammo-count probe: ptr at supplyParams+0xa0 is "
-                "%p (stock=%p shadow=%p) and its content does NOT match the magazine "
-                "table (%d/%d rows) - left untouched. first 16 bytes there: %s| stock: "
-                "%s\n",
-                static_cast<void*>(cur), static_cast<void*>(g_Magazine.origBuf),
-                static_cast<void*>(g_Magazine.shadow.data()), match, rows,
-                curHex, stockHex);
-        }
+
+        const int attempt = g_SupplyMagAttempts.fetch_add(1) + 1;
+        if (attempt == 1 || attempt == 8 || attempt == 64)
+            LogDebug("[EquipParam] supply ammo-count scan (attempt %d): no cached copy "
+                "of the stock magazine buffer %p found in app=%p equipSystem=%p "
+                "equipSystem+0x10=%p (windows 0x%zX). Live values: [es+0xa0]=%p "
+                "[es+0x10+0xa0]=%p. If the objects are still null the scan simply ran "
+                "before they were built and retries; if they are live and nothing "
+                "matched, the supply path caches the table somewhere else.\n",
+                attempt, static_cast<void*>(from), static_cast<void*>(app),
+                static_cast<void*>(es), static_cast<void*>(po), kSupplyScanWindow,
+                ReadPtrAtOffsetSEH(es, 0xa0), ReadPtrAtOffsetSEH(po, 0xa0));
     }
 
     struct WidePartState
@@ -312,10 +326,30 @@ namespace
         return id;
     }
 
+    static void EnsurePartIdWidenArmed()
+    {
+        static std::once_flag once;
+        std::call_once(once, []
+        {
+            if (!PartIdWiden_Install())
+                return;
+            EquipParam_EnableWidePartIds(65535);
+            Log("[PartIdWiden] armed before the first custom part id was handed out. "
+                "It used to install with GunBasicInject, which runs after Lua has "
+                "already registered every part, so each custom receiver was given a "
+                "WIDE id past the engine's byte lane, truncated there, and had to be "
+                "papered over with its motion donor - the weapon then resolved the "
+                "DONOR receiver for its parameters while everything else stayed "
+                "correct.\n");
+        });
+    }
+
     static int AllocatePartSlot(PartBuffer& pb, const char* name)
     {
         if (!name || !name[0])
             return 0;
+
+        EnsurePartIdWidenArmed();
 
         auto it = pb.nameToId.find(name);
         if (it != pb.nameToId.end())
@@ -1157,11 +1191,11 @@ namespace
     using GetUnderBarrelType_t = unsigned int(__fastcall*)(void* self, unsigned int underBarrelId);
     static GetUnderBarrelType_t g_OrigGetUnderBarrelType = nullptr;
 
-    unsigned int PartCode_TapPartId(int slot, unsigned int partId);
+    unsigned int PartCode_DonorPartType(int gbByte, unsigned int partId,
+                                        const std::uint8_t* ext);
 
     static unsigned int __fastcall hkGetUnderBarrelType(void* self, unsigned int underBarrelId)
     {
-        underBarrelId = PartCode_TapPartId(4, underBarrelId);
         if (!g_UbTypeExtReady)
             EnsureUbTypeExt();
         if (g_UbTypeExtReady && underBarrelId < kPartTypeExtCount)
@@ -1214,34 +1248,43 @@ namespace
 
     static unsigned int __fastcall hkGetBarrelType(void* self, unsigned int barrelId)
     {
-        barrelId = PartCode_TapPartId(1, barrelId);
         EnsurePartTypeExt(g_BarrelTypeExt, g_BarrelTypeExtReady,
                           gAddr.MotionLoaderImpl_BarrelTypeTable,
                           kBarrelTypeVanillaRows);
         if (g_BarrelTypeExtReady && barrelId < kPartTypeExtCount)
-            return g_BarrelTypeExt[barrelId];
+        {
+            const unsigned int t = g_BarrelTypeExt[barrelId];
+            return t != 0 ? t
+                : PartCode_DonorPartType(1, barrelId, g_BarrelTypeExt);
+        }
         return g_OrigGetBarrelType ? g_OrigGetBarrelType(self, barrelId) : 0;
     }
 
     static unsigned int __fastcall hkGetMagazineType(void* self, unsigned int magazineId)
     {
-        magazineId = PartCode_TapPartId(2, magazineId);
         EnsurePartTypeExt(g_MagazineTypeExt, g_MagazineTypeExtReady,
                           gAddr.MotionLoaderImpl_MagazineTypeTable,
                           kMagazineTypeVanillaRows);
         if (g_MagazineTypeExtReady && magazineId < kPartTypeExtCount)
-            return g_MagazineTypeExt[magazineId];
+        {
+            const unsigned int t = g_MagazineTypeExt[magazineId];
+            return t != 0 ? t
+                : PartCode_DonorPartType(2, magazineId, g_MagazineTypeExt);
+        }
         return g_OrigGetMagazineType ? g_OrigGetMagazineType(self, magazineId) : 0;
     }
 
     static unsigned int __fastcall hkGetSightType(void* self, unsigned int sightId)
     {
-        sightId = PartCode_TapPartId(3, sightId);
         EnsurePartTypeExt(g_SightTypeExt, g_SightTypeExtReady,
                           gAddr.MotionLoaderImpl_SightTypeTable,
                           kSightTypeVanillaRows);
         if (g_SightTypeExtReady && sightId < kPartTypeExtCount)
-            return g_SightTypeExt[sightId];
+        {
+            const unsigned int t = g_SightTypeExt[sightId];
+            return t != 0 ? t
+                : PartCode_DonorPartType(6, sightId, g_SightTypeExt);
+        }
         return g_OrigGetSightType ? g_OrigGetSightType(self, sightId) : 0;
     }
 
@@ -3793,6 +3836,23 @@ namespace
 
     static void FillCustomMotionEntriesEarly();
 
+    static int ReceiverRowByteFor(int rc)
+    {
+        if (rc <= 0)
+            return 0;
+        const auto it = g_ReceiverMotionDonor.find(rc);
+        if (it != g_ReceiverMotionDonor.end() && it->second > 0 && it->second < 234)
+            return it->second;
+        if (WidePartState* w = WideStateFor(kVanillaSpace_Receiver, rc))
+        {
+            if (w->motionFrom > 0 && w->motionFrom < 234)
+                return w->motionFrom;
+            if (w->alias > 0 && w->alias < 234)
+                return w->alias;
+        }
+        return (rc < kWideIdBase) ? rc : 0;
+    }
+
     static void __fastcall hkSetUpGunInfo(void* self, void* desc,
                                           unsigned int equipId, void* gunInfo,
                                           void* a5, void* a6, void* a7,
@@ -3877,18 +3937,18 @@ namespace
                 return logged.size() < 64 && logged.insert(key).second;
             };
 
-            if (rc > 0 && !g_ReceiverMotionDonor.empty())
+            if (rc > 0)
             {
-                const auto it = g_ReceiverMotionDonor.find(rc);
-                if (it != g_ReceiverMotionDonor.end() && it->second > 0 && it->second < 256
+                const int rowVal = ReceiverRowByteFor(rc);
+                if (rowVal > 0 && rowVal != rc
                     && ReadByteAtSEH(gunInfo, 0x7a) == (rc & 0xFF)
-                    && WriteByteAtSEH(gunInfo, 0x7a, static_cast<std::uint8_t>(it->second)) == 1
+                    && WriteByteAtSEH(gunInfo, 0x7a, static_cast<std::uint8_t>(rowVal)) == 1
                     && shouldLog(rc))
                     LogDebug("[ChimeraMotion] receiverId=%d part-motion row redirected to donor "
                         "receiverId=%d - the custom receiver has no row in the 233-entry "
                         "part-motion table, so its bolt/slide reads the donor's populated "
                         "row instead of a blank one.\n",
-                        rc, it->second);
+                        rc, rowVal);
             }
 
             if (ubRc > 0 && !g_ReceiverMotionDonor.empty())
@@ -3901,6 +3961,24 @@ namespace
                     LogDebug("[ChimeraMotion] under-barrel receiverId=%d part-motion row redirected "
                         "to donor receiverId=%d (second weapon block, gunInfo+0x7b).\n",
                         ubRc, it->second);
+            }
+
+            if (ReadByteAtSEH(gunInfo, 0x7a) == 0)
+            {
+                const bool stamped = rc >= kWideIdBase
+                    && WriteByteAtSEH(gunInfo, 0x7a, 1) == 1;
+                static std::atomic<int> guarded{ 0 };
+                if (guarded.fetch_add(1, std::memory_order_relaxed) < 8)
+                    Log("[EquipParam] equipId=%u receiverId=%d left gunInfo+0x7a at 0 (%s). "
+                        "That byte is the receiver row the engine's weapon-camera setup "
+                        "feeds to receiverParamSetsBase, and it dereferences the row with "
+                        "no zero check, so 0 there is an access violation on weapon draw. "
+                        "Give the receiver a motionFrom so it inherits a real row.\n",
+                        equipId, rc,
+                        stamped ? "a wide receiver id cannot fit that one-byte field and no "
+                            "donor was declared - stamped vanilla receiver 1"
+                                : "left as the engine set it - this is not the wide-id "
+                            "truncation case");
             }
 
 #ifdef _DEBUG
@@ -4090,6 +4168,12 @@ namespace
 
     static std::uint32_t GetEquipTypeForEquipId(std::uint32_t equipId)
     {
+        if (equipId >= static_cast<std::uint32_t>(EquipIdCompression::kExtendedAllocFirst))
+        {
+            V_ExtendedEquipRow ext{};
+            if (TppEquip_GetExtendedEquipRow(static_cast<int>(equipId), &ext))
+                return static_cast<std::uint32_t>(ext.equipType) & 0x3F;
+        }
         const std::int32_t idx =
             EquipIdCompression::ComputeCompressed(static_cast<std::int32_t>(equipId));
         if (!EquipIdCompression::IsCompressedInBounds(idx))
@@ -4114,9 +4198,20 @@ namespace
             }
         }
         FamilyGb f;
+        if (equipId >= static_cast<std::uint32_t>(EquipIdCompression::kExtendedAllocFirst))
+        {
+            V_ExtendedEquipRow ext{};
+            if (TppEquip_GetExtendedEquipRow(static_cast<int>(equipId), &ext)
+                && ext.subId > 0 && ext.subId <= 0x3FF)
+            {
+                f.subId = static_cast<std::uint16_t>(ext.subId);
+                if (GunBasic_ReadRowBytes(f.subId, f.gb))
+                    f.ok = true;
+            }
+        }
         const std::int32_t idx =
             EquipIdCompression::ComputeCompressed(static_cast<std::int32_t>(equipId));
-        if (EquipIdCompression::IsCompressedInBounds(idx))
+        if (!f.ok && EquipIdCompression::IsCompressedInBounds(idx))
         {
             auto* words = static_cast<std::uint16_t*>(
                 ResolveGameAddress(gAddr.EquipIdTable_TypeWords));
@@ -5136,8 +5231,365 @@ namespace
         return (w >> 6) & 0x3FF;
     }
 
+    constexpr std::uint32_t kMotionShadowRows = 0x10000;
+
+    static void*             g_MotionShadow = nullptr;
+    static std::atomic<bool> g_MotionShadowActive{ false };
+    static std::uint8_t      g_MotionShadowOwned[kMotionShadowRows / 8] = {};
+
+    static bool MotionBytesMatchSEH(std::uintptr_t va, const std::uint8_t* want,
+                                    std::size_t n)
+    {
+        __try
+        {
+            const auto* p = reinterpret_cast<const std::uint8_t*>(va);
+            for (std::size_t i = 0; i < n; ++i)
+                if (p[i] != want[i])
+                    return false;
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
+    static int MotionReadBytesSEH(std::uintptr_t va, std::uint8_t* out, std::size_t n)
+    {
+        __try
+        {
+            const auto* p = reinterpret_cast<const std::uint8_t*>(va);
+            for (std::size_t i = 0; i < n; ++i)
+                out[i] = p[i];
+            return 1;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return 0;
+        }
+    }
+
+    static void MotionLogLiveBytes(std::uintptr_t va, const char* when)
+    {
+        std::uint8_t live[36] = {};
+        if (!MotionReadBytesSEH(va, live, sizeof(live)))
+        {
+            Log("[WeaponKey] motion-entry site 0x%llX unreadable (%s)\n",
+                static_cast<unsigned long long>(va), when);
+            return;
+        }
+        char hex[36 * 3 + 1];
+        int n = 0;
+        for (std::size_t i = 0; i < sizeof(live); ++i)
+            n += std::snprintf(hex + n, sizeof(hex) - static_cast<size_t>(n),
+                               "%02X ", live[i]);
+        Log("[WeaponKey] motion-entry site 0x%llX live bytes (%s): %s\n",
+            static_cast<unsigned long long>(va), when, hex);
+    }
+
+    static bool MotionWriteCodeSEH(std::uintptr_t va, const std::uint8_t* src,
+                                   std::size_t n)
+    {
+        DWORD prot = 0;
+        if (!VirtualProtect(reinterpret_cast<void*>(va), n,
+                            PAGE_EXECUTE_READWRITE, &prot))
+            return false;
+        bool ok = true;
+        __try
+        {
+            std::memcpy(reinterpret_cast<void*>(va), src, n);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            ok = false;
+        }
+        DWORD back = 0;
+        VirtualProtect(reinterpret_cast<void*>(va), n, prot, &back);
+        return ok;
+    }
+
+    static void* AllocateMotionShadowNear(std::uintptr_t nearAddr, std::size_t size)
+    {
+        SYSTEM_INFO si{};
+        GetSystemInfo(&si);
+        const std::uintptr_t gran = si.dwAllocationGranularity;
+        const std::uintptr_t base = nearAddr & ~(gran - 1);
+        for (std::uintptr_t off = gran; off < 0x60000000ull; off += gran)
+        {
+            if (base >= off)
+                if (void* p = VirtualAlloc(reinterpret_cast<LPVOID>(base - off), size,
+                                           MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE))
+                    return p;
+            if (void* p = VirtualAlloc(reinterpret_cast<LPVOID>(base + off), size,
+                                       MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE))
+                return p;
+        }
+        return nullptr;
+    }
+
+    static int MotionShadowMigrateSEH(std::uint8_t* orig, std::uint8_t* shadow)
+    {
+        int live = 0;
+        __try
+        {
+            auto* oe = reinterpret_cast<void**>(orig + 8);
+            auto* se = reinterpret_cast<void**>(shadow + 8);
+            for (std::uint32_t i = 1; i < 0x7D; ++i)
+                if (!(g_MotionShadowOwned[i >> 3] & (1u << (i & 7))))
+                {
+                    se[i] = oe[i];
+                    if (se[i])
+                        ++live;
+                }
+            for (std::uint32_t i = 0x7D; i < 0xCD; ++i)
+            {
+                const std::uint32_t eq = i + 899;
+                if (!(g_MotionShadowOwned[eq >> 3] & (1u << (eq & 7))))
+                {
+                    se[eq] = oe[i];
+                    if (se[eq])
+                        ++live;
+                }
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return -1;
+        }
+        return live;
+    }
+
+    static bool MotionRegionSpan(const void* p, std::size_t* span, bool* readable)
+    {
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (VirtualQuery(p, &mbi, sizeof(mbi)) != sizeof(mbi))
+            return false;
+        const auto regionEnd = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress)
+            + static_cast<std::uintptr_t>(mbi.RegionSize);
+        const auto here = reinterpret_cast<std::uintptr_t>(p);
+        if (regionEnd <= here)
+            return false;
+        *span = static_cast<std::size_t>(regionEnd - here);
+        const DWORD blocked = PAGE_NOACCESS | PAGE_GUARD;
+        *readable = (mbi.State == MEM_COMMIT) && ((mbi.Protect & blocked) == 0);
+        return true;
+    }
+
+    static int MotionScanAnchors(const std::uint8_t* anchor, std::size_t anchorLen,
+                                 std::uintptr_t* out, int cap)
+    {
+        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
+        if (!base || !out || cap <= 0)
+            return 0;
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+            return 0;
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(
+            base + dos->e_lfanew);
+        if (nt->Signature != IMAGE_NT_SIGNATURE)
+            return 0;
+
+        int found = 0;
+        const auto* sec = IMAGE_FIRST_SECTION(nt);
+        for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++sec)
+        {
+            if ((sec->Characteristics & IMAGE_SCN_MEM_EXECUTE) == 0)
+                continue;
+            const DWORD size = sec->Misc.VirtualSize
+                ? sec->Misc.VirtualSize : sec->SizeOfRawData;
+            if (size < anchorLen)
+                continue;
+
+            std::uint8_t* p   = base + sec->VirtualAddress;
+            std::uint8_t* end = p + size;
+            while (p < end && found < cap)
+            {
+                std::size_t span     = 0;
+                bool        readable = false;
+                if (!MotionRegionSpan(p, &span, &readable))
+                    break;
+                if (span > static_cast<std::size_t>(end - p))
+                    span = static_cast<std::size_t>(end - p);
+
+                if (readable && span >= anchorLen)
+                {
+                    const std::uint8_t* q    = p;
+                    const std::uint8_t* last = p + span - anchorLen;
+                    while (q <= last && found < cap)
+                    {
+                        const void* f = std::memchr(
+                            q, anchor[0], static_cast<std::size_t>(last - q) + 1);
+                        if (!f)
+                            break;
+                        q = static_cast<const std::uint8_t*>(f);
+                        if (std::memcmp(q, anchor, anchorLen) == 0)
+                            out[found++] = reinterpret_cast<std::uintptr_t>(q);
+                        ++q;
+                    }
+                }
+
+                p += (span > anchorLen) ? (span - (anchorLen - 1)) : span;
+            }
+        }
+        return found;
+    }
+
+    static std::mutex g_MotionShadowArmMutex;
+
+    static void ArmMotionEntryShadow()
+    {
+        if (g_MotionShadowActive.load(std::memory_order_acquire))
+            return;
+        if (!::AddressSetRuntime::IsEn154Family(gGameBuild))
+            return;
+
+        std::lock_guard<std::mutex> armLock(g_MotionShadowArmMutex);
+        if (g_MotionShadowActive.load(std::memory_order_acquire))
+            return;
+
+        static int attempts = 0;
+        constexpr int kMaxAttempts = 4096;
+        if (attempts > kMaxAttempts)
+            return;
+        const int attempt = attempts++;
+
+        auto* orig = static_cast<std::uint8_t*>(
+            reinterpret_cast<void*>(ResolveGameAddress(gAddr.Equip_MotionEntryTable)));
+        if (!orig)
+            return;
+
+        static const std::uint8_t kExpect[36] = {
+            0x83, 0xFE, 0x7C, 0x7E, 0x0B, 0x8D, 0x8E, 0x00, 0xFC, 0xFF, 0xFF,
+            0x83, 0xF9, 0x4F, 0x77, 0x2F, 0x48, 0x8B, 0x47, 0x70, 0x8B, 0xCE,
+            0x81, 0xFE, 0x00, 0x04, 0x00, 0x00, 0x7C, 0x06,
+            0x8D, 0x8E, 0x7D, 0xFC, 0xFF, 0xFF };
+        constexpr std::size_t kAnchorLen = 16;
+
+        static std::uintptr_t s_sites[4] = {};
+        static int            s_siteCount = 0;
+        static bool           s_tailLogged = false;
+
+        if (s_siteCount == 0 && (attempt < 4 || (attempt & (attempt - 1)) == 0))
+        {
+            std::uintptr_t anchors[4] = {};
+            const int n = MotionScanAnchors(kExpect, kAnchorLen, anchors, 4);
+            for (int i = 0; i < n; ++i)
+            {
+                if (MotionBytesMatchSEH(anchors[i], kExpect, sizeof(kExpect)))
+                {
+                    if (s_siteCount < 4)
+                        s_sites[s_siteCount++] = anchors[i];
+                }
+                else if (!s_tailLogged)
+                {
+                    s_tailLogged = true;
+                    MotionLogLiveBytes(anchors[i],
+                        "index-math anchor matched here but the trailing bytes differ");
+                }
+            }
+            if (s_siteCount > 0)
+                Log("[WeaponKey] motion-entry index site located by pattern scan: %d "
+                    "match(es), first at 0x%llX. The address this used to be hardcoded "
+                    "to holds an unrelated function in this build, which is why the "
+                    "shadow never armed and every custom weapon came back with an "
+                    "empty motion archive.\n",
+                    s_siteCount, static_cast<unsigned long long>(s_sites[0]));
+        }
+
+        if (s_siteCount == 0)
+        {
+            if (attempt == kMaxAttempts)
+                Log("[WeaponKey] motion-entry shadow NOT armed after %d attempts: no "
+                    "executable section held the equipId-to-slot pattern (cmp esi,0x7C "
+                    "/ lea ecx,[rsi-0x400] / cmp ecx,0x4F). That band decrypts lazily "
+                    "so early misses are normal, but never matching means this build "
+                    "computes the index differently: the engine keeps its 205-slot "
+                    "table and every custom weapon outside equipIds 1-124 / 1024-1103 "
+                    "resolves no motion entry, which is why such a weapon has no anim "
+                    "control in hand.\n", kMaxAttempts);
+            return;
+        }
+
+        const std::uintptr_t site = s_sites[0];
+
+        const std::size_t bytes = 8 + static_cast<std::size_t>(kMotionShadowRows) * 8;
+        void* shadow = AllocateMotionShadowNear(site, bytes);
+        if (!shadow)
+        {
+            attempts = kMaxAttempts + 1;
+            Log("[WeaponKey] motion-entry shadow NOT armed: could not reserve %zu "
+                "bytes within reach of 0x%llX\n",
+                bytes, static_cast<unsigned long long>(site));
+            return;
+        }
+        std::memset(shadow, 0, bytes);
+
+        const int migrated = MotionShadowMigrateSEH(orig,
+                                                    static_cast<std::uint8_t*>(shadow));
+        if (migrated < 8)
+        {
+            VirtualFree(shadow, 0, MEM_RELEASE);
+            if (attempt == kMaxAttempts)
+                Log("[WeaponKey] motion-entry shadow NOT armed: the engine's own table at "
+                    "%p still held only %d live entries after %d attempts. That code "
+                    "loads its base from [rdi+0x70], so this address is only believed to "
+                    "be the same table - seeding the shadow from the wrong base would "
+                    "have left VANILLA weapons with no motion entry either. The engine "
+                    "table is left exactly as it was.\n",
+                    static_cast<void*>(orig), migrated, kMaxAttempts);
+            return;
+        }
+
+        std::uint8_t patch[36] = {
+            0x81, 0xFE, 0xFF, 0xFF, 0x00, 0x00,
+            0x77, 0x37,
+            0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0,
+            0x8B, 0xCE };
+        for (std::size_t i = 20; i < sizeof(patch); ++i)
+            patch[i] = 0x90;
+        const std::uint64_t shadowBase = reinterpret_cast<std::uint64_t>(shadow);
+        std::memcpy(patch + 10, &shadowBase, sizeof(shadowBase));
+
+        int patched = 0;
+        for (int i = 0; i < s_siteCount; ++i)
+            if (MotionWriteCodeSEH(s_sites[i], patch, sizeof(patch)))
+                ++patched;
+
+        if (patched == 0)
+        {
+            attempts = kMaxAttempts + 1;
+            VirtualFree(shadow, 0, MEM_RELEASE);
+            Log("[WeaponKey] motion-entry shadow NOT armed: the code write failed at "
+                "every one of the %d located site(s), first 0x%llX\n",
+                s_siteCount, static_cast<unsigned long long>(site));
+            return;
+        }
+
+        g_MotionShadow = shadow;
+        g_MotionShadowActive.store(true, std::memory_order_release);
+        Log("[WeaponKey] motion-entry shadow armed at %p across %d site(s): the engine "
+            "weapon-motion entry table had 205 slots reachable only by equipIds 1-124 "
+            "and 1024-1103, so a custom weapon at any other equipId resolved no entry "
+            "and Realize built no anim control for it. It is now a %u-entry table "
+            "indexed by equipId directly, and the lookup reads it absolutely so it "
+            "cannot depend on when the engine registered the original. %d vanilla "
+            "entries were carried over first, so stock weapons keep their motion.\n",
+            shadow, patched, kMotionShadowRows, migrated);
+    }
+
+    static void* MotionEntryTableBase()
+    {
+        if (g_MotionShadowActive.load(std::memory_order_acquire) && g_MotionShadow)
+            return g_MotionShadow;
+        return reinterpret_cast<void*>(
+            ResolveGameAddress(gAddr.Equip_MotionEntryTable));
+    }
+
     static int MotionEntryIndex(std::uint32_t equipId)
     {
+        if (g_MotionShadowActive.load(std::memory_order_acquire))
+            return (equipId >= 1 && equipId < kMotionShadowRows)
+                       ? static_cast<int>(equipId) : -1;
         if (equipId >= 1 && equipId < 0x7D)
             return static_cast<int>(equipId);
         if (equipId >= 0x400 && equipId < 0x450)
@@ -5151,6 +5603,20 @@ namespace
         if (idx < 0)
             return nullptr;
         return ReadPtrAtSEH(table, 8 + static_cast<size_t>(idx) * 8);
+    }
+
+    static bool WriteMotionEntry(void* table, std::uint32_t equipId, void* entry)
+    {
+        const int idx = MotionEntryIndex(equipId);
+        if (idx < 0)
+            return false;
+        if (!WritePtrAtSEH(table, 8 + static_cast<size_t>(idx) * 8, entry))
+            return false;
+        if (g_MotionShadowActive.load(std::memory_order_acquire)
+            && equipId < kMotionShadowRows)
+            g_MotionShadowOwned[equipId >> 3] |=
+                static_cast<std::uint8_t>(1u << (equipId & 7));
+        return true;
     }
 
     static std::uint32_t NextDonorCandidate(std::uint32_t v)
@@ -5630,11 +6096,32 @@ namespace
     static PartsVoidSetterFn_t g_OrigPartsB0 = nullptr;       // vtbl+0xb0                    0x140ADE4D0
     static PartsVoidSetterFn_t g_OrigPartsVisMesh = nullptr;  // vtbl+0x100 SetVisibilityMesh 0x140ADE5C0
 
+    static std::atomic<int> g_PartsSlotNullLogged{ 0 };
+
+    static void NotePartsSlotModelNull(void* self, unsigned int index,
+                                       const char* label)
+    {
+        if (g_PartsSlotNullLogged.load(std::memory_order_relaxed) >= 24)
+            return;
+        if (g_PartsSlotNullLogged.fetch_add(1, std::memory_order_relaxed) >= 24)
+            return;
+        void* mdlArr = ReadPtrAtSEH(self, 0x58);
+        LogDebug("[EquipParam] parts-slot model MISSING: %s ctl=%p slot=%u models=%p - "
+            "the engine asked to configure this part slot but nothing is loaded "
+            "there, so the setter is skipped and the part renders nothing. A weapon "
+            "reporting this on slot 0 has no visible model on the body or in hand; "
+            "its .parts/fpk never resolved.\n",
+            label, self, index, mdlArr);
+    }
+
     static void __fastcall hkPartsThermoSafe(void* self, unsigned int index,
                                              unsigned long long a2, unsigned long long a3)
     {
         if (PartsSlotModelNullSEH(self, index))
+        {
+            NotePartsSlotModelNull(self, index, "SetThermoGraphy(vtbl+0x1a0)");
             return;
+        }
         __try { g_OrigPartsThermo(self, index, a2, a3); }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
@@ -5643,7 +6130,10 @@ namespace
                                          unsigned long long a2, unsigned long long a3)
     {
         if (PartsSlotModelNullSEH(self, index))
+        {
+            NotePartsSlotModelNull(self, index, "partsSetter(vtbl+0xb0)");
             return;
+        }
         __try { g_OrigPartsB0(self, index, a2, a3); }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
@@ -5652,7 +6142,10 @@ namespace
                                               unsigned long long a2, unsigned long long a3)
     {
         if (PartsSlotModelNullSEH(self, index))
+        {
+            NotePartsSlotModelNull(self, index, "SetVisibilityMesh(vtbl+0x100)");
             return;
+        }
         __try { g_OrigPartsVisMesh(self, index, a2, a3); }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
@@ -6134,7 +6627,24 @@ namespace
     {
         if (!table)
             return;
-        for (std::uint32_t eq = 1; eq < 0x7D; ++eq)
+
+        std::vector<std::uint32_t> ids;
+        if (g_MotionShadowActive.load(std::memory_order_acquire))
+        {
+            std::vector<int> custom;
+            TppEquip_GetCustomWeaponEquipIds(custom);
+            ids.reserve(custom.size());
+            for (int c : custom)
+                if (c > 0 && static_cast<std::uint32_t>(c) < kMotionShadowRows)
+                    ids.push_back(static_cast<std::uint32_t>(c));
+        }
+        else
+        {
+            for (std::uint32_t e = 1; e != 0; e = NextDonorCandidate(e))
+                ids.push_back(e);
+        }
+
+        for (std::uint32_t eq : ids)
         {
             const int subId = TppEquip_GetSubIdForEquipId(static_cast<int>(eq));
             if (subId == 0)
@@ -6300,8 +6810,8 @@ namespace
                             const std::uint64_t h = FoxHashes::PathCode64Ext(p);
                             if (!h)
                                 continue;
-                            if (WritePtrAtSEH(table, 8 + static_cast<size_t>(eq) * 8,
-                                              reinterpret_cast<void*>(h)))
+                            if (WriteMotionEntry(table, eq,
+                                                 reinterpret_cast<void*>(h)))
                             {
                                 {
                                     std::lock_guard<std::mutex> lock(g_WeaponKeyMutex);
@@ -6373,7 +6883,7 @@ namespace
                 }
                 continue;
             }
-            if (WritePtrAtSEH(table, 8 + static_cast<size_t>(eq) * 8, donorEntry))
+            if (WriteMotionEntry(table, eq, donorEntry))
             {
                 {
                     std::lock_guard<std::mutex> lock(g_WeaponKeyMutex);
@@ -6397,12 +6907,21 @@ namespace
         if (!::AddressSetRuntime::IsEn154Family(gGameBuild))
             return;
         RegisterCustomFamilyFallbacks();
-        FillCustomMotionEntriesTable(
-            reinterpret_cast<void*>(ResolveGameAddress(gAddr.Equip_MotionEntryTable)));
+        FillCustomMotionEntriesTable(MotionEntryTableBase());
     }
 
     static void FillCustomMotionEntries(void* self)
     {
+        if (g_MotionShadowActive.load(std::memory_order_acquire) && g_MotionShadow)
+        {
+            auto* orig = static_cast<std::uint8_t*>(reinterpret_cast<void*>(
+                ResolveGameAddress(gAddr.Equip_MotionEntryTable)));
+            if (orig)
+                MotionShadowMigrateSEH(
+                    orig, static_cast<std::uint8_t*>(g_MotionShadow));
+            FillCustomMotionEntriesTable(g_MotionShadow);
+            return;
+        }
         FillCustomMotionEntriesTable(ReadPtrAtSEH(self, 0x70));
     }
 
@@ -6634,8 +7153,7 @@ namespace
         if (engineEntry && !plan.donorEq)
         {
             const int idx = MotionEntryIndex(equipId);
-            void* table =
-                reinterpret_cast<void*>(ResolveGameAddress(gAddr.Equip_MotionEntryTable));
+            void* table = MotionEntryTableBase();
             if (idx >= 0 && table)
                 WritePtrAtSEH(table, 8 + static_cast<size_t>(idx) * 8,
                               reinterpret_cast<void*>(engineEntry));
@@ -7928,6 +8446,7 @@ namespace
     static unsigned long long __fastcall hkRealizedEquipRealize(
         void* self, unsigned int a, unsigned int b)
     {
+        ArmMotionEntryShadow();
         FillCustomMotionEntries(self);
         unsigned long long r = 0;
         {
@@ -7942,7 +8461,29 @@ namespace
             for (int i = 0; i < 6; ++i)
                 d[i] = ReadByteAtSEH(desc, 0x78 + static_cast<size_t>(i));
         if (r == 0)
+        {
+            unsigned failBase = 0;
+            for (int i = 0; i < 4; ++i)
+                failBase |= static_cast<unsigned>(
+                    ReadByteAtSEH(self, 0x34 + static_cast<size_t>(i)) & 0xFF) << (8 * i);
+            const unsigned failSlot = a - failBase;
+            void* failRec = ReadPtrAtSEH(self, 0xc8);
+            unsigned failEq = 0;
+            if (failRec && failSlot < 2)
+                failEq = ((ReadByteAtSEH(failRec, failSlot * 0x14 + 4) & 0xFF)
+                          | ((ReadByteAtSEH(failRec, failSlot * 0x14 + 5) & 0xFF) << 8))
+                         & 0x7FF;
+            static std::atomic<int> failBudget{ 64 };
+            if (failEq != 0 && failBudget.fetch_sub(1) > 0)
+                Log("[WeaponKey] Realize RETURNED 0 for eq=%u slot=%u - no realized equip "
+                    "object was built, so there is no weapon model to put in the hand. "
+                    "self=%p args=%u,%u desc=%p bytes(+78..7d)=%02X %02X %02X %02X %02X "
+                    "%02X\n",
+                    failEq, failSlot, self, a, b, desc,
+                    d[0] & 0xFF, d[1] & 0xFF, d[2] & 0xFF, d[3] & 0xFF,
+                    d[4] & 0xFF, d[5] & 0xFF);
             return r;
+        }
         void* recBase = ReadPtrAtSEH(self, 0xc8);
         char recs[192];
         int pos = 0;
@@ -8640,45 +9181,31 @@ namespace
         }
     }
 
-    unsigned int PartCode_TapPartId(int slot, unsigned int partId)
+    unsigned int PartCode_DonorPartType(int gbByte, unsigned int partId,
+                                        const std::uint8_t* ext)
     {
-        g_PartCallCount.fetch_add(1, std::memory_order_relaxed);
-        if (!g_InSetupWeaponInfo || g_TlsVanillaEquip == 0)
-            return partId;
+        if (partId == 0 || !ext || !g_InSetupWeaponInfo || g_TlsVanillaEquip == 0)
+            return 0;
         FamilyGb van;
         if (!GetGbForEquipId(g_TlsVanillaEquip, van))
-        {
-            static unsigned long long lastMs = 0;
-            const unsigned long long now = GetTickCount64();
-            if (now - lastMs > 2000)
-            {
-                lastMs = now;
-                Log("[WeaponKey] WARNING: donor equipId=%u gunBasic unresolved at "
-                    "draw time - part substitution skipped (slot %d); the weapon "
-                    "may not animate correctly\n", g_TlsVanillaEquip, slot);
-            }
-            return partId;
-        }
-        unsigned int use = van.gb[kPartGbByte[slot]];
-        if ((slot == 3 || slot == 4) && use != 0)
-        {
-            FamilyGb cus;
-            if (GetGbForEquipId(g_TlsCustomEquip, cus)
-                && cus.gb[kPartGbByte[slot]] == 0)
-                use = partId;
-        }
+            return 0;
+        const unsigned int donor = van.gb[gbByte];
+        if (donor == 0 || donor >= kPartTypeExtCount)
+            return 0;
+        const unsigned int t = ext[donor];
 #ifdef _DEBUG
-        if (use != partId)
+        if (t != 0)
         {
             static std::atomic<int> logged{ 0 };
-            const int bit = 1 << slot;
+            const int bit = 1 << gbByte;
             if (!(logged.fetch_or(bit, std::memory_order_relaxed) & bit))
-                LogDebug("[WeaponKey] part-code tap slot%d: %u -> donor %u "
-                    "(served through the EquipParam type hook)\n",
-                    slot, partId, use);
+                LogDebug("[WeaponKey] part-type gap fill (gb byte %d): part %u had no "
+                    "motion type of its own, served donor part %u type %u from "
+                    "familyFrom equipId=%u\n",
+                    gbByte, partId, donor, t, g_TlsVanillaEquip);
         }
 #endif
-        return use;
+        return t;
     }
 
     unsigned int PartCode_TapReceiverType(unsigned int receiverId, unsigned int result)
@@ -8732,6 +9259,7 @@ namespace
     static void __fastcall hkSetupWeaponInfo(void* self, void* work, int slot)
     {
         outfit::EndBootRestoreScrub("first SetupWeaponInfo - player is live");
+        DeployGuard::OnPlayerLive();
 
         if (self)
             EnsureResolverMethodHook(self);
@@ -9722,6 +10250,7 @@ namespace
             std::memset(buf, 0, 0x90);
             *reinterpret_cast<std::uint16_t*>(buf + 0x5e) =
                 static_cast<std::uint16_t>(equipId);
+            buf[0x7a] = 1;
             return buf;
         }
     }
@@ -9802,7 +10331,8 @@ namespace
     static std::atomic<int> g_LoadoutPickLogged{ 0 };
 
     static int ReadLoadoutSlotIdsSEH(void* self, std::uint32_t slot,
-                                     std::int32_t* src, std::int32_t* work)
+                                     std::int32_t* src, std::int32_t* work,
+                                     std::int32_t* outBias, void** outWorkRow)
     {
         __try
         {
@@ -9824,6 +10354,8 @@ namespace
             const std::int32_t bias = *reinterpret_cast<std::int32_t*>(loadoutSubsys + 0xc);
             std::uint8_t* workingReq = workingBase
                 + static_cast<std::size_t>(static_cast<std::int32_t>(slot) - bias) * 0xb0;
+            if (outBias)    *outBias    = bias;
+            if (outWorkRow) *outWorkRow = workingReq;
             for (int i = 0; i < 3; ++i)
                 work[i] = *reinterpret_cast<std::int32_t*>(
                     workingReq + 0x10 + static_cast<std::size_t>(i) * 0x18);
@@ -9850,6 +10382,84 @@ namespace
         return true;
     }
 
+    static std::atomic<int> g_DropLogged{ 0 };
+
+    static std::int32_t* LoadoutSourceCellSEH(void* self, std::uint32_t slot, int sub)
+    {
+        __try
+        {
+            std::uint8_t* self8 = static_cast<std::uint8_t*>(self);
+            std::uint8_t* loadoutSubsys = *reinterpret_cast<std::uint8_t**>(self8 + 0x1a0);
+            if (!loadoutSubsys) return nullptr;
+            std::uint8_t* l138 = *reinterpret_cast<std::uint8_t**>(loadoutSubsys + 0x138);
+            if (!l138) return nullptr;
+            std::uint8_t* sourceBase = *reinterpret_cast<std::uint8_t**>(l138 + 0x98);
+            if (!sourceBase) return nullptr;
+            std::uint8_t* sourceReq = sourceBase + static_cast<std::size_t>(slot) * 0xa0;
+            return reinterpret_cast<std::int32_t*>(
+                sourceReq + static_cast<std::size_t>(sub) * 0x18);
+        }
+        __except (SehAvOnly(GetExceptionCode()))
+        {
+            return nullptr;
+        }
+    }
+
+    static int SuppressExtendedLoadoutIdsSEH(void* self, std::uint32_t slot,
+                                             std::int32_t* saved)
+    {
+        int hidden = 0;
+        for (int i = 0; i < 3; ++i)
+        {
+            std::int32_t* cell = LoadoutSourceCellSEH(self, slot, i);
+            if (!cell)
+                continue;
+            __try
+            {
+                const std::int32_t id = *cell;
+                if (id < EquipIdCompression::kExtendedAllocFirst)
+                    continue;
+                saved[i] = id;
+                *cell = 0;
+                ++hidden;
+            }
+            __except (SehAvOnly(GetExceptionCode()))
+            {
+                saved[i] = -1;
+                continue;
+            }
+            if (g_DropLogged.fetch_add(1) < 24)
+                Log("[DeployGuard] loadout slot=%u sub=%d holds extended equipId %d - "
+                    "hidden from the loadout the engine is building right now, because "
+                    "the previous run entered a mission load and died before the "
+                    "player's weapon was set up. The saved loadout is NOT modified: the "
+                    "id is put back the moment this build finishes.\n",
+                    slot, i, saved[i]);
+        }
+        return hidden;
+    }
+
+    static void RestoreExtendedLoadoutIdsSEH(void* self, std::uint32_t slot,
+                                             const std::int32_t* saved)
+    {
+        for (int i = 0; i < 3; ++i)
+        {
+            if (saved[i] < 0)
+                continue;
+            std::int32_t* cell = LoadoutSourceCellSEH(self, slot, i);
+            if (!cell)
+                continue;
+            __try
+            {
+                if (*cell == 0)
+                    *cell = saved[i];
+            }
+            __except (SehAvOnly(GetExceptionCode()))
+            {
+            }
+        }
+    }
+
     static void __fastcall hkUpdateLoadoutRequest(void* self, std::uint32_t slot)
     {
         HealSupplyAmmoCountTable();
@@ -9861,7 +10471,16 @@ namespace
             V_FrameWorkState::NotePinnedEquipId(pinned[i]);
 
         std::int32_t sBefore[3] = {}, wBefore[3] = {};
-        const int okBefore = ReadLoadoutSlotIdsSEH(self, slot, sBefore, wBefore);
+        const int okBefore = ReadLoadoutSlotIdsSEH(self, slot, sBefore, wBefore,
+                                                  nullptr, nullptr);
+        std::int32_t suppressed[3] = { -1, -1, -1 };
+        int suppressedCount = 0;
+        if (okBefore >= 1)
+        {
+            DeployGuard::NoteLoadoutSlot(slot, sBefore);
+            if (DeployGuard::ShouldDropExtendedIds())
+                suppressedCount = SuppressExtendedLoadoutIdsSEH(self, slot, suppressed);
+        }
 
         t_LoadoutBuildActive = true;
         __try
@@ -9881,17 +10500,27 @@ namespace
         }
         t_LoadoutBuildActive = false;
 
+        if (suppressedCount > 0)
+            RestoreExtendedLoadoutIdsSEH(self, slot, suppressed);
+
         std::int32_t sAfter[3] = {}, wAfter[3] = {};
-        const int okAfter = ReadLoadoutSlotIdsSEH(self, slot, sAfter, wAfter);
-        const bool interesting = (okBefore != 2 || okAfter != 2)
-            || LoadoutStateChangedSinceLastLog(slot, sAfter, wAfter);
+        std::int32_t biasAfter = -12345;
+        void* workRowAfter = nullptr;
+        const int okAfter = ReadLoadoutSlotIdsSEH(self, slot, sAfter, wAfter,
+                                                 &biasAfter, &workRowAfter);
+        const bool rowTrusted =
+            biasAfter == static_cast<std::int32_t>(slot);
+        const bool interesting = rowTrusted
+            && ((okBefore != 2 || okAfter != 2)
+                || LoadoutStateChangedSinceLastLog(slot, sAfter, wAfter));
         if (interesting && g_LoadoutPickLogged.fetch_add(1) < 400)
             LogDebug("[LoadoutPick] slot=%u src[%d %d %d]->[%d %d %d] "
-                "work[%d %d %d]->[%d %d %d] read=%d/%d\n",
+                "work[%d %d %d]->[%d %d %d] read=%d/%d bias=%d workRow=%p\n",
                 slot, sBefore[0], sBefore[1], sBefore[2],
                 sAfter[0], sAfter[1], sAfter[2],
                 wBefore[0], wBefore[1], wBefore[2],
-                wAfter[0], wAfter[1], wAfter[2], okBefore, okAfter);
+                wAfter[0], wAfter[1], wAfter[2], okBefore, okAfter,
+                biasAfter, workRowAfter);
     }
 }
 

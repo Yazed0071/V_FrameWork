@@ -3,16 +3,16 @@
 #include <cstdint>
 
 
-void Add_CallSignExtraSoldier(std::uint32_t gameObjectId);
+void Set_SoldierCallSign(std::uint32_t gameObjectId, std::uint8_t callSign);
 
 
-void Remove_CallSignExtraSoldier(std::uint32_t gameObjectId);
+void Remove_SoldierCallSign(std::uint32_t gameObjectId);
 
 
-void Clear_CallSignExtraSoldiers();
+void Clear_SoldierCallSigns();
 
 
-bool Install_CallSignExtra_Hook();
+bool Install_SoldierCallSign_Hook();
 
 
-bool Uninstall_CallSignExtra_Hook();
+bool Uninstall_SoldierCallSign_Hook();

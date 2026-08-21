@@ -161,6 +161,7 @@ namespace outfit
         std::uint64_t  displaySummaryIconHash                       = 0;
         const OutfitPlayerTypeData* GetPTData(std::uint8_t playerType) const;
         bool IsPlayerTypeSupported(std::uint8_t playerType) const;
+        bool DeclaresPlayerType(std::uint8_t playerType) const;
         std::uint8_t FirstSupportedPlayerType() const;
 
 

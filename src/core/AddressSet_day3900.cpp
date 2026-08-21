@@ -410,6 +410,7 @@ namespace AddressSetRuntime
             0x140DB6CC0ull, // MotionLoaderImpl_GetSightType (vtbl+0x38)
             0x14120A4F5ull, // TppPickable_ItemWindowBoundSite (CMP EBX,0x209 - signed, upper-bound-only)
             0x140915130ull, // UiUtility_GetWeaponItemNameLangId (3 call sites converge)
+            0x1409849B5ull, // SoundPlayerAnimEvent_StepNoiseQuietCmp
         };
 
         return value;
@@ -820,6 +821,7 @@ namespace AddressSetRuntime
             0x140DB6C80ull, // MotionLoaderImpl_GetSightType (Ghidra JP154; =GetReceiverType+0x10)
             0x14120A535ull, // TppPickable_ItemWindowBoundSite (JP15.4a shares the JP15.4 layout)
             0x140915010ull, // UiUtility_GetWeaponItemNameLangId (JP15.4a shares the JP15.4 layout)
+            0ull,           // SoundPlayerAnimEvent_StepNoiseQuietCmp
         };
         return value;
     }

@@ -3,6 +3,7 @@
 
 #include <Windows.h>
 #include <atomic>
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <map>
@@ -17,6 +18,8 @@
 #include "LuaApi.h"
 #include "EquipIdCompression.h"
 #include "GunBasicInject.h"
+#include "FeatureModule.h"
+#include "DeployGuard.h"
 
 namespace
 {
@@ -753,8 +756,30 @@ int TppEquip_GetSubIdForEquipId(int equipId)
     std::lock_guard<std::mutex> lock(g_Mutex);
     for (const auto& r : g_Rows)
         if (r.equipId == equipId)
-            return r.subId;
+            return (r.equipType >= 1 && r.equipType <= 8) ? r.subId : 0;
+    auto it = g_Extended.find(equipId);
+    if (it != g_Extended.end() && !it->second.released)
+        return (it->second.equipType >= 1 && it->second.equipType <= 8)
+                   ? it->second.subId : 0;
     return 0;
+}
+
+void TppEquip_GetCustomWeaponEquipIds(std::vector<int>& out)
+{
+    out.clear();
+    {
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        out.reserve(g_Rows.size() + g_Extended.size());
+        for (const auto& r : g_Rows)
+            if (r.equipType >= 1 && r.equipType <= 8 && r.subId != 0)
+                out.push_back(r.equipId);
+        for (const auto& kv : g_Extended)
+            if (!kv.second.released && kv.second.equipType >= 1
+                && kv.second.equipType <= 8 && kv.second.subId != 0)
+                out.push_back(kv.first);
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
 }
 
 bool TppEquip_GetExtendedEquipRow(int equipId, V_ExtendedEquipRow* out)
@@ -777,6 +802,20 @@ bool TppEquip_EnsureInfoListMirror()
 {
     if (g_MirrorSitesPatched)
         return true;
+    if (FeatureIsDisabled("ExtendedInfoListMirror"))
+    {
+        g_MirrorSitesPatched = true;
+        DeployGuard::ForceDropExtendedIds();
+        Log("[EquipIdTable] extended InfoList mirror DISABLED by "
+            "disabled_modules.txt. The 14 equip-data reader sites keep the game's "
+            "own 653-row table, so equipIds 1792+ resolve nothing at all - they are "
+            "dropped from the loadout for this session to keep the deploy safe. "
+            "Every vanilla and vanilla-band custom weapon now runs the engine's "
+            "unmodified equip-data path. If weapon models appear on the body in "
+            "this session, the mirror is the cause; if they still do not, the "
+            "mirror is cleared for real this time.\n");
+        return false;
+    }
     if (!::AddressSetRuntime::IsEn154Family(gGameBuild))
     {
         LogDebug("[EquipIdTable] InfoList mirror sites not ported for this build - "

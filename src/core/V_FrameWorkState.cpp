@@ -4,6 +4,7 @@
 #include "AddressSet.h"
 #include "../hooks/equip/EquipIdCompression.h"
 #include "../hooks/equip/DevelopArrayGrow.h"
+#include "FeatureModule.h"
 
 #include <algorithm>
 #include <atomic>
@@ -113,6 +114,40 @@ namespace V_FrameWorkState
 
 
         static std::unordered_set<std::string> g_ConstantsTouched;
+
+        static bool CanCountConstantMisses()
+        {
+            if (g_ConstantsTouched.empty())
+            {
+                static bool s_said = false;
+                if (!s_said)
+                {
+                    s_said = true;
+                    Log("[V_FrameWorkState] no custom constant was registered before this "
+                        "save, so this launch is not evidence that any mod was removed - "
+                        "the unreferenced-constant counters are held where they are. "
+                        "Without this a boot that saves before registration ages every "
+                        "persisted equipId toward eviction.\n");
+                }
+                return false;
+            }
+            if (FeatureAnyDisabled())
+            {
+                static bool s_said = false;
+                if (!s_said)
+                {
+                    s_said = true;
+                    Log("[V_FrameWorkState] disabled_modules.txt is active, so the symbols "
+                        "those modules register are absent by request, not because a mod "
+                        "was uninstalled. The unreferenced-constant counters are frozen "
+                        "for this launch: two bisect runs would otherwise expire every "
+                        "persisted equipId and renumber the whole equip table on the next "
+                        "boot.\n");
+                }
+                return false;
+            }
+            return true;
+        }
         static std::unordered_set<std::int32_t> g_SessionPinnedIds;
         static bool g_PinSetFreshThisSession = false;
 
@@ -431,6 +466,7 @@ namespace V_FrameWorkState
             in.close();
 
             bool gcChanged = false;
+            std::size_t evicted = 0;
             for (auto it = g_State.tapes.begin(); it != g_State.tapes.end(); )
             {
                 if (it->second.misses >= kTapeOrphanGraceLaunches)
@@ -460,11 +496,19 @@ namespace V_FrameWorkState
                     if (mit != g_State.constantMisses.end())
                         g_State.constantMisses.erase(mit);
                     it = g_State.constants.erase(it);
+                    ++evicted;
                     gcChanged = true;
                     continue;
                 }
                 ++it;
             }
+            if (evicted != 0)
+                Log("[V_FrameWorkState] WARNING: %zu persisted equip constant(s) expired and "
+                    "their equipIds returned to the free pool. Every id allocated this boot "
+                    "shifts, so the loadout and R&D rows stored in your game save now name "
+                    "different weapons than when they were saved - a saved weapon can come "
+                    "up with no model on the body. Re-pick affected slots once this boot.\n",
+                    evicted);
 
             for (auto it = g_State.equips.begin(); it != g_State.equips.end(); )
             {
@@ -725,6 +769,7 @@ namespace V_FrameWorkState
             }
 
             {
+                const bool countMisses = CanCountConstantMisses();
                 std::vector<std::pair<std::string, std::int32_t>> sorted;
                 sorted.reserve(g_State.constants.size());
                 for (const auto& kv : g_State.constants)
@@ -734,7 +779,7 @@ namespace V_FrameWorkState
                     const auto mit = g_State.constantMisses.find(kv.first);
                     const std::int32_t loaded =
                         (mit != g_State.constantMisses.end()) ? mit->second : 0;
-                    sorted.emplace_back(kv.first, loaded + 1);
+                    sorted.emplace_back(kv.first, countMisses ? loaded + 1 : loaded);
                 }
                 std::sort(sorted.begin(), sorted.end(),
                     [](const auto& a, const auto& b) { return a.first < b.first; });
@@ -862,16 +907,17 @@ namespace V_FrameWorkState
 
         static void BuildVanillaIdentitySet_NoLock()
         {
-            static bool s_attempted = false;
-            if (s_attempted)
+            static bool s_built = false;
+            static int s_warned = 0;
+            if (s_built)
                 return;
-            s_attempted = true;
 
             std::vector<std::int32_t> ids(4096);
             const std::size_t n =
                 equip::CollectVanillaIdentityEquipIds(ids.data(), ids.size());
             if (n < 64)
             {
+                if (s_warned++ < 4)
                 Log("[V_FrameWorkState] WARNING: the vanilla equip-identity set is "
                     "still empty at first allocation (develop lookup returned %zu "
                     "id(s), below the %d-id sanity floor) - custom ids can land on "
@@ -880,9 +926,22 @@ namespace V_FrameWorkState
                     n, 64);
                 return;
             }
+            s_built = true;
             for (std::size_t i = 0; i < n; ++i)
                 if (ids[i] > 0)
                     g_VanillaIdentityIds.insert(ids[i]);
+        }
+
+        static void NoteIdentitySetLive_NoLock()
+        {
+            static bool s_said = false;
+            if (s_said || g_VanillaIdentityIds.empty())
+                return;
+            s_said = true;
+            Log("[V_FrameWorkState] vanilla equip-identity set is LIVE: %zu id(s) - "
+                "collision checks against vanilla-owned rows are in effect from here"
+                " on\n",
+                g_VanillaIdentityIds.size());
         }
 
         static std::int32_t AllocateNextFreeEquipId_NoLock(std::int32_t minimum,
@@ -901,6 +960,7 @@ namespace V_FrameWorkState
 
             if (g_VanillaIdentityIds.empty())
                 BuildVanillaIdentitySet_NoLock();
+            NoteIdentitySetLive_NoLock();
 
             const auto inUse = [isWeapon](std::int32_t equipId) {
                 if (isWeapon && IsItemCategoryRow(equipId))
@@ -1067,8 +1127,9 @@ namespace V_FrameWorkState
             bool sessionTaken = false;
             for (const auto& kv : g_SessionEquipIds)
                 if (kv.second == persisted) { sessionTaken = true; break; }
+            const bool isExtended = EquipIdCompression::IsExtendedEquipId(persisted);
             const std::int32_t slot = EquipIdCompression::ComputeCompressed(persisted);
-            const bool bandOk = isWeapon
+            const bool bandOk = isExtended || isWeapon
                 || slot < EquipIdCompression::kWeaponBandFirst;
             if (!bandOk)
                 LogDebug("[V_FrameWorkState] persisted equipId 0x%X for '%s' sits in "
@@ -1077,6 +1138,7 @@ namespace V_FrameWorkState
                     "item band\n", persisted, key);
             if (g_VanillaIdentityIds.empty())
                 BuildVanillaIdentitySet_NoLock();
+            NoteIdentitySetLive_NoLock();
             const bool identityClash =
                 g_VanillaIdentityIds.count(persisted) != 0;
             if (identityClash)
@@ -1093,11 +1155,16 @@ namespace V_FrameWorkState
                     "type, so the weapon renders as a supply-drop item; "
                     "reallocating\n",
                     persisted, key, kItemCategoryRowFirst, kItemCategoryRowLast);
+            const bool slotFree = isExtended
+                ? !EquipIdCompression::IsExtendedEquipIdUsed(persisted)
+                : !EquipIdCompression::IsCompressedSlotUsed(slot);
             if (!sessionTaken && bandOk && !identityClash && !itemListClash
-                && !EquipIdCompression::IsCompressedSlotUsed(slot))
+                && slotFree)
             {
                 g_SessionEquipIds[key] = persisted;
                 NoteClaimedEquipId_NoLock(persisted);
+                if (isExtended)
+                    EquipIdCompression::MarkExtendedEquipIdUsed(persisted);
                 pit->second.misses = 0;
                 outEquipId = persisted;
                 return true;

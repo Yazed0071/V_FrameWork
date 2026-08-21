@@ -4059,11 +4059,39 @@ namespace equip
         };
         constexpr std::size_t kMaxHealed = 600;
 
+        constexpr std::size_t kDetourWindow = 5;
+
+        bool SiteInsideOurDetour(std::uintptr_t va)
+        {
+            void* const site = ResolveGameAddress(va);
+            if (!site)
+                return false;
+
+            void* const hooks[] = {
+                g_HookBlockReset,    g_HookSetDeveloped,  g_HookSetUndeveloped,
+                g_HookFindByDevId,   g_HookFindByEquipId, g_HookListDevCount,
+                g_HookListDevFill,   g_HookEquipIdCount,  g_HookEquipIdRow,
+                g_HookGetBaseId,     g_HookEdcDtor,
+            };
+
+            const std::uintptr_t s = reinterpret_cast<std::uintptr_t>(site);
+            for (void* h : hooks)
+            {
+                if (!h)
+                    continue;
+                const std::uintptr_t b = reinterpret_cast<std::uintptr_t>(h);
+                if (s >= b && s < b + kDetourWindow)
+                    return true;
+            }
+            return false;
+        }
+
         void RepairHealedPatches()
         {
             static HealedSite healed[kMaxHealed];
             std::size_t nHealed        = 0;
             int         nForeign       = 0;
+            int         nDetoured      = 0;
             std::uintptr_t foreignAddr = 0;
             std::uint32_t  foreignVal  = 0;
             const char*    foreignWhat = nullptr;
@@ -4093,6 +4121,11 @@ namespace equip
             for (std::size_t i = 0; i < kCtlSiteCount && nHealed < kMaxHealed;
                  ++i)
             {
+                if (SiteInsideOurDetour(kCtlDispSites[i].addr))
+                {
+                    ++nDetoured;
+                    continue;
+                }
                 std::uint32_t v = 0;
                 if (!TryReadU32(kCtlDispSites[i].addr, g_CtlDispOff[i], v))
                     continue;
@@ -4112,6 +4145,11 @@ namespace equip
             for (std::size_t i = 0;
                  i < kBoundSiteCount && nHealed < kMaxHealed; ++i)
             {
+                if (SiteInsideOurDetour(kBoundImmSites[i].addr))
+                {
+                    ++nDetoured;
+                    continue;
+                }
                 std::uint32_t v = 0;
                 if (!TryReadU32(kBoundImmSites[i].addr,
                                 kBoundImmSites[i].immOff, v))
@@ -4140,6 +4178,18 @@ namespace equip
                 if (std::memcmp(cur, f.oldBytes, f.len) == 0)
                     healed[nHealed++] =
                         { 3, static_cast<std::uint16_t>(i) };
+            }
+
+            static bool detourNoteLogged = false;
+            if (nDetoured != 0 && !detourNoteLogged)
+            {
+                detourNoteLogged = true;
+                LogDebug("[DevelopArrayGrow] %d patched site(s) live in the first bytes "
+                    "of a function this module also detours. The patch was applied "
+                    "before the hook, so MinHook copied the patched instruction into "
+                    "its trampoline and the bound is live through it - the bytes at "
+                    "the site are now the detour jump, not an immediate. Excluded "
+                    "from the integrity re-check.\n", nDetoured);
             }
 
             static int foreignLogged = 0;

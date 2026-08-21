@@ -6,6 +6,7 @@ extern "C" {
 }
 
 #include <Windows.h>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -282,9 +283,243 @@ namespace
         return isPerCp;
     }
 
+    static std::atomic<DWORD> g_GameTid{ 0 };
+    static std::atomic<DWORD> g_LastTickMs{ 0 };
+    static std::atomic<bool>  g_StallWatchStarted{ false };
+
+    static void DescribeAddr(std::uint64_t addr, char* out, std::size_t outLen)
+    {
+        out[0] = 0;
+        HMODULE mod = nullptr;
+        if (!GetModuleHandleExA(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCSTR>(addr), &mod) || !mod)
+        {
+            sprintf_s(out, outLen, "<unmapped>");
+            return;
+        }
+        char path[MAX_PATH]{};
+        if (!GetModuleFileNameA(mod, path, MAX_PATH))
+        {
+            sprintf_s(out, outLen, "<module?>");
+            return;
+        }
+        const char* base = strrchr(path, '\\');
+        base = base ? base + 1 : path;
+        sprintf_s(out, outLen, "%s+0x%llX", base,
+            static_cast<unsigned long long>(addr - reinterpret_cast<std::uint64_t>(mod)));
+    }
+
+    static bool SampleThread(DWORD tid, DWORD64* rip, DWORD64* rsp)
+    {
+        HANDLE h = OpenThread(
+            THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION,
+            FALSE, tid);
+        if (!h) return false;
+        bool ok = false;
+        SuspendThread(h);
+        CONTEXT ctx;
+        std::memset(&ctx, 0, sizeof(ctx));
+        ctx.ContextFlags = CONTEXT_CONTROL;
+        if (GetThreadContext(h, &ctx))
+        {
+            *rip = ctx.Rip;
+            *rsp = ctx.Rsp;
+            ok = true;
+        }
+        ResumeThread(h);
+        CloseHandle(h);
+        return ok;
+    }
+
+    static void DumpFrozenThread(DWORD tid, const char* kind, DWORD64 rip, DWORD64 rsp,
+                                 unsigned heldMs, int shot)
+    {
+        std::uint64_t stackbuf[192] = {};
+        std::size_t   stackn = 0;
+
+        HANDLE h = OpenThread(
+            THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION,
+            FALSE, tid);
+        if (h)
+        {
+            SuspendThread(h);
+            __try
+            {
+                auto* sp = reinterpret_cast<std::uint64_t*>(rsp);
+                for (std::size_t i = 0; i < 192; ++i)
+                {
+                    stackbuf[i] = sp[i];
+                    ++stackn;
+                }
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) {}
+            ResumeThread(h);
+            CloseHandle(h);
+        }
+
+        const unsigned long logStall = LogIoStalledMs();
+        const unsigned long logOwner = LogIoOwnerThreadId();
+
+        char ripDesc[MAX_PATH + 32];
+        DescribeAddr(rip, ripDesc, sizeof(ripDesc));
+
+        Log("[StallWatchdog] %s (report %d): the game thread has been parked at ONE "
+            "instruction for %ums. rip=0x%llX = %s, rsp=0x%llX. If that module is ntdll or "
+            "KERNELBASE this is a BLOCKING WAIT, and the frames below name what the game "
+            "was doing when it decided to wait.\n",
+            kind, shot, heldMs,
+            static_cast<unsigned long long>(rip), ripDesc,
+            static_cast<unsigned long long>(rsp));
+
+        if (logStall)
+            Log("[StallWatchdog]   AT THAT MOMENT the framework logger was already inside "
+                "its own console/disk write for %lums, on thread %lu (game thread is %lu). "
+                "If that thread IS the game thread, the freeze is this DLL's logging "
+                "blocking the game - not anything in the equip or mission code.\n",
+                logStall, logOwner, static_cast<unsigned long>(tid));
+        else
+            Log("[StallWatchdog]   the framework logger was NOT mid-write when the freeze "
+                "was sampled, so the stall is somewhere other than this DLL's logging.\n");
+
+        int shown = 0;
+        for (std::size_t i = 0; i < stackn && shown < 20; ++i)
+        {
+            const std::uint64_t v = stackbuf[i];
+            if (v < 0x10000ull) continue;
+            char desc[MAX_PATH + 32];
+            DescribeAddr(v, desc, sizeof(desc));
+            if (desc[0] == '<') continue;
+            Log("[StallWatchdog]   stack[rsp+0x%03zX] = 0x%llX = %s\n",
+                i * 8, static_cast<unsigned long long>(v), desc);
+            ++shown;
+        }
+        if (!shown)
+            Log("[StallWatchdog]   no game-code addresses in the first 1.5KB of stack - "
+                "the thread is parked deep inside a system DLL (a wait or an I/O call)\n");
+    }
+
+    static void ReportQuietWindow(DWORD tid, DWORD64 rip, DWORD64 rsp,
+                                  unsigned quietMs, int shot, DWORD64 prevRsp)
+    {
+        char ripName[192];
+        ripName[0] = 0;
+        DescribeAddr(static_cast<std::uint64_t>(rip), ripName, sizeof(ripName));
+
+        unsigned mission = 0xFFFFu;
+        __try
+        {
+            mission = static_cast<unsigned>(MissionCodeGuard::GetCurrentMissionCode());
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            mission = 0xFFFFu;
+        }
+
+        Log("[LoadStall] #%d quiet=%u.%us mission=%u thread=%s rip=0x%llX = %s rsp=0x%llX\n",
+            shot, quietMs / 1000u, (quietMs % 1000u) / 100u, mission,
+            (prevRsp && rsp == prevRsp) ? "PARKED" : "RUNNING",
+            static_cast<unsigned long long>(rip), ripName,
+            static_cast<unsigned long long>(rsp));
+
+        if (shot == 3 || shot == 8 || shot == 15)
+            DumpFrozenThread(tid, "LOAD-STALL", rip, rsp, quietMs, shot);
+    }
+
+    static DWORD WINAPI StallWatchProc(LPVOID)
+    {
+        const DWORD kPeriodMs = 250;
+        const int   kPinnedToFire = 80;
+
+        DWORD64 lastRip = 0, lastRsp = 0;
+        int samePair = 0;
+        int sameRsp = 0;
+        int shots = 0;
+        bool haveLast = false;
+
+        unsigned long lastSerial = LogLineSerial();
+        DWORD quietSinceTick = GetTickCount();
+        DWORD lastQuietReportTick = 0;
+        int quietReports = 0;
+        DWORD64 prevReportRsp = 0;
+
+        for (;;)
+        {
+            Sleep(kPeriodMs);
+            const DWORD tid = g_GameTid.load(std::memory_order_relaxed);
+            if (!tid) continue;
+
+            DWORD64 rip = 0, rsp = 0;
+            if (!SampleThread(tid, &rip, &rsp)) continue;
+
+            if (haveLast && rip == lastRip && rsp == lastRsp) ++samePair; else samePair = 0;
+            if (haveLast && rsp == lastRsp)                   ++sameRsp;  else sameRsp  = 0;
+            lastRip = rip;
+            lastRsp = rsp;
+            haveLast = true;
+
+            const DWORD nowTick = GetTickCount();
+            const unsigned long serial = LogLineSerial();
+            if (serial != lastSerial)
+            {
+                lastSerial = serial;
+                quietSinceTick = nowTick;
+                lastQuietReportTick = 0;
+                quietReports = 0;
+                prevReportRsp = 0;
+            }
+            else
+            {
+                const DWORD quietMs = nowTick - quietSinceTick;
+                if (quietMs >= 6000u && quietReports < 60 &&
+                    (lastQuietReportTick == 0 || nowTick - lastQuietReportTick >= 2000u))
+                {
+                    lastQuietReportTick = nowTick;
+                    ++quietReports;
+                    ReportQuietWindow(tid, rip, rsp, quietMs, quietReports, prevReportRsp);
+                    prevReportRsp = rsp;
+                    lastSerial = LogLineSerial();
+                }
+            }
+
+            if (samePair == 0 && sameRsp == 0)
+            {
+                shots = 0;
+                continue;
+            }
+            if (shots >= 6) continue;
+
+            if (samePair >= kPinnedToFire)
+            {
+                ++shots;
+                DumpFrozenThread(tid, "BLOCKED", rip, rsp,
+                                 static_cast<unsigned>(samePair) * kPeriodMs, shots);
+                samePair = 0;
+                sameRsp = 0;
+            }
+            else if (sameRsp >= kPinnedToFire)
+            {
+                ++shots;
+                DumpFrozenThread(tid, "SPINNING", rip, rsp,
+                                 static_cast<unsigned>(sameRsp) * kPeriodMs, shots);
+                samePair = 0;
+                sameRsp = 0;
+            }
+        }
+    }
+
+    static void NoteGameThreadTick()
+    {
+        g_GameTid.store(GetCurrentThreadId(), std::memory_order_relaxed);
+        g_LastTickMs.store(GetTickCount(), std::memory_order_relaxed);
+        (void)&StallWatchProc;
+    }
+
     static int __fastcall hk_SendCommand(lua_State* L)
     {
         if (!g_OrigSendCommand) return 0;
+        NoteGameThreadTick();
 
         MISSION_GUARD_ORIGINAL_RET(g_OrigSendCommand, L);
 
@@ -489,18 +724,15 @@ namespace
             ::Set_UseCustomNonVipHoldupRecovery(enable);
             return 0;
         }
-        if (idStr == "AddCallSignPatrolSoldier")
+        if (idStr == "SetRadioCallSign")
         {
             const std::uint32_t id = ReadCommandTargetId(L);
+            const int callSign = static_cast<int>(ReadCommandNumber(L, 2, "callSign"));
             g_lua_settop(L, top);
-            ::Add_CallSignExtraSoldier(id);
-            return 0;
-        }
-        if (idStr == "RemoveCallSignPatrolSoldier")
-        {
-            const std::uint32_t id = ReadCommandTargetId(L);
-            g_lua_settop(L, top);
-            ::Remove_CallSignExtraSoldier(id);
+            if (callSign <= 0)
+                ::Remove_SoldierCallSign(id);
+            else
+                ::Set_SoldierCallSign(id, static_cast<std::uint8_t>(callSign > 255 ? 255 : callSign));
             return 0;
         }
         if (idStr == "ClearLostHostages")
@@ -528,7 +760,7 @@ namespace
             ::Remove_LostHostageDiscovery(id);
             return 0;
         }
-        if (idStr == "EnableSoldierStealthCamo")
+        if (idStr == "SetOpticalCamo")
         {
             const std::uint32_t mappedIndex = ReadCommandTargetId(L);
             const bool enable = ReadCommandBool(L, 2, "enable");

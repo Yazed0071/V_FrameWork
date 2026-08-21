@@ -475,6 +475,7 @@ namespace AddressSetRuntime
         uintptr_t MotionLoaderImpl_GetSightType = 0;
         uintptr_t TppPickable_ItemWindowBoundSite = 0;
         uintptr_t UiUtility_GetWeaponItemNameLangId = 0;
+        uintptr_t SoundPlayerAnimEvent_StepNoiseQuietCmp = 0;
     };
 
     inline GameBuild& GetGameBuild()

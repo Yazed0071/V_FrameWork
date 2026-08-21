@@ -413,8 +413,9 @@ static const char* const kAddrFieldNames[] = {
     "MotionLoaderImpl_GetSightType",
     "TppPickable_ItemWindowBoundSite",
     "UiUtility_GetWeaponItemNameLangId",
+    "SoundPlayerAnimEvent_StepNoiseQuietCmp",
 };
-static const int kAddrFieldCount = 401;
+static const int kAddrFieldCount = 402;
 static_assert(sizeof(AddressSetRuntime::AddressSet) / sizeof(uintptr_t) == kAddrFieldCount,
               "kAddrFieldNames must stay in lockstep with the AddressSet layout");
 static_assert(sizeof(kAddrFieldNames) / sizeof(kAddrFieldNames[0]) == kAddrFieldCount,

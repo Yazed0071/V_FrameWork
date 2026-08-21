@@ -1,8 +1,9 @@
 #include "pch.h"
 
 #include <Windows.h>
+#include <cstddef>
 #include <cstdint>
-#include <unordered_set>
+#include <unordered_map>
 #include <mutex>
 
 #include "HookUtils.h"
@@ -24,16 +25,21 @@ namespace
     static GetVoiceParamWithCallSign_t g_OrigGetVoiceParamWithCallSign = nullptr;
 
 
-    static std::unordered_set<std::uint16_t> g_ExtraSoldierIndices;
+    static std::unordered_map<std::uint16_t, std::uint8_t> g_SoldierCallSigns;
 
     static std::mutex g_CallSignMutex;
 
 
-    struct HardcodedCallSignExtra
+    static constexpr std::uint8_t kMinCallSign = 1;
+
+    static constexpr std::uint8_t kMaxCallSign = 13;
+
+
+    struct CallSignFamily
     {
-        std::uint32_t baseVoiceParam = 0;
-        std::uint32_t extraStateId = 0;
-        const char* label = nullptr;
+        std::uint32_t wildcard = 0;
+        const char* clipPrefix = nullptr;
+        bool skipBroadcastClip = false;
     };
 
 
@@ -52,21 +58,21 @@ namespace
     };
 
 
-    static constexpr HardcodedCallSignExtra kHardcodedCallSignExtras[] =
+    static constexpr CallSignFamily kCallSignFamilies[] =
     {
-        { 0x69C268FEu, 0xBF58FDC6u, "DAT_142345928_EXTRA" },
-        { 0x29E1F784u, 0x24324540u, "SIGNS_11_EXTRA" },
-        { 0x15E302E6u, 0xEC26AC4Eu, "SIGNS_43_EXTRA" },
-        { 0x005E7532u, 0xBF58FDC6u, "DAT_142345AD8_EXTRA" },
-        { 0x04B10EF0u, 0xAA35573Bu, "DAT_142345AA8_EXTRA" },
-        { 0x55d358ADu, 0x5353D6F4u, "DAT_142345A48_EXTRA" },
-        { 0x55d358ADu, 0xADDF8BF6u, "DAT_142345A78_EXTRA" },
-        { 0x60C307FEu, 0x2FFAA7E7u, "SIGNS_12_EXTRA" },
-        { 0x96470469u, 0xA7DD43FFu, "SIGNS_16_EXTRA" },
-        { 0xAB3DA1D5u, 0x41DA64A4u, "DAT_142345B08_EXTRA" },
-        { 0x8E45B284u, 0xAA35573Bu, "DAT_1423458F8_EXTRA" },
-        { 0xD0553D69u, 0x41DA64A4u, "DAT_142345958_EXTRA" },
-        { 0xE3166019u, 0x1E2FFD49u, "SIGNS_14_EXTRA" },
+        { 0x8E45B284u, "csn01", false },
+        { 0x69C268FEu, "csc01", false },
+        { 0xD0553D69u, "csa01", false },
+        { 0x29E1F784u, "csn02", false },
+        { 0x60C307FEu, "csc02", false },
+        { 0x96470469u, "csa02", false },
+        { 0xE3166019u, "csn03", false },
+        { 0x55D358ADu, "csc03", false },
+        { 0x5FF58302u, "csa03", false },
+        { 0x04B10EF0u, "csn01", true  },
+        { 0x005E7532u, "csc01", true  },
+        { 0xAB3DA1D5u, "csa01", true  },
+        { 0x15E302E6u, "cpi02", false },
     };
 }
 
@@ -239,15 +245,66 @@ static bool TryReadBaseVoiceParam(void* self, std::uint32_t ownerIndex, std::uin
 }
 
 
-static const HardcodedCallSignExtra* FindHardcodedCallSignExtra(std::uint32_t baseVoiceParam)
+static const CallSignFamily* FindCallSignFamily(std::uint32_t baseVoiceParam)
 {
-    for (const auto& entry : kHardcodedCallSignExtras)
+    for (const auto& family : kCallSignFamilies)
     {
-        if (entry.baseVoiceParam == baseVoiceParam)
-            return &entry;
+        if (family.wildcard == baseVoiceParam)
+            return &family;
     }
 
     return nullptr;
+}
+
+
+static std::uint32_t Fnv1Lower32(const char* text)
+{
+    std::uint32_t hash = 0x811C9DC5u;
+
+    for (; text && *text; ++text)
+    {
+        char c = *text;
+        if (c >= 'A' && c <= 'Z')
+            c = static_cast<char>(c + 0x20);
+
+        hash = (hash * 0x01000193u) ^ static_cast<std::uint8_t>(c);
+    }
+
+    return hash;
+}
+
+
+static bool BuildCallSignClipName(const CallSignFamily& family, std::uint8_t callSign,
+    char* out, std::size_t cap)
+{
+    if (callSign < kMinCallSign || callSign > kMaxCallSign)
+        return false;
+
+    if (!out || cap < 8)
+        return false;
+
+    int clipIndex = static_cast<int>(callSign) - static_cast<int>(kMinCallSign);
+    if (family.skipBroadcastClip && clipIndex >= 10)
+        clipIndex += 1;
+
+    std::size_t n = 0;
+    for (const char* p = family.clipPrefix; p && *p && n + 3 < cap; ++p)
+        out[n++] = *p;
+
+    out[n++] = static_cast<char>('0' + (clipIndex / 10));
+    out[n++] = static_cast<char>('0' + (clipIndex % 10));
+    out[n] = '\0';
+    return true;
+}
+
+
+static std::uint32_t ResolveCallSignVoiceParam(const CallSignFamily& family, std::uint8_t callSign)
+{
+    char clipName[16];
+    if (!BuildCallSignClipName(family, callSign, clipName, sizeof(clipName)))
+        return 0;
+
+    return Fnv1Lower32(clipName);
 }
 
 
@@ -262,36 +319,82 @@ static std::uint64_t __fastcall hkGetVoiceParamWithCallSign(void* self, std::uin
     }
 
     std::uint64_t baseVoiceParam64 = 0;
-    const bool hasBaseVoiceParam = TryReadBaseVoiceParam(self, ownerIndex, baseVoiceParam64);
-    const std::uint32_t baseVoiceParam = static_cast<std::uint32_t>(baseVoiceParam64 & 0xFFFFFFFFu);
-
-    CallSignOwnerEntry58 entry58{};
-    const bool hasEntry58 = TryReadCallSignOwnerEntry58(self, ownerIndex, entry58);
-
-    const std::uint16_t resolvedSoldierIndex =
-        hasEntry58 ? NormalizeSoldierIndexFromOwnerEntry(entry58.soldierIndex0C) : 0xFFFFu;
-
-    if (hasBaseVoiceParam)
+    if (TryReadBaseVoiceParam(self, ownerIndex, baseVoiceParam64))
     {
-        const HardcodedCallSignExtra* extra = FindHardcodedCallSignExtra(baseVoiceParam);
-        if (extra)
-        {
-            bool isRegisteredSoldier = false;
+        const std::uint32_t baseVoiceParam = static_cast<std::uint32_t>(baseVoiceParam64 & 0xFFFFFFFFu);
 
+        const CallSignFamily* family = FindCallSignFamily(baseVoiceParam);
+        if (family)
+        {
+            CallSignOwnerEntry58 entry58{};
+            if (TryReadCallSignOwnerEntry58(self, ownerIndex, entry58))
             {
-                std::lock_guard<std::mutex> lock(g_CallSignMutex);
+                const std::uint16_t resolvedSoldierIndex =
+                    NormalizeSoldierIndexFromOwnerEntry(entry58.soldierIndex0C);
+
+                std::uint8_t callSign = 0;
+
                 if (resolvedSoldierIndex != 0xFFFFu)
                 {
-                    isRegisteredSoldier =
-                        g_ExtraSoldierIndices.find(resolvedSoldierIndex) != g_ExtraSoldierIndices.end();
+                    std::lock_guard<std::mutex> lock(g_CallSignMutex);
+                    const auto it = g_SoldierCallSigns.find(resolvedSoldierIndex);
+                    if (it != g_SoldierCallSigns.end())
+                        callSign = it->second;
+                }
+
+                if (callSign != 0)
+                {
+                    const std::uint32_t voiceParam = ResolveCallSignVoiceParam(*family, callSign);
+                    if (voiceParam != 0)
+                    {
+#ifdef _DEBUG
+                        char clipName[16] = {};
+                        BuildCallSignClipName(*family, callSign, clipName, sizeof(clipName));
+
+                        std::uint32_t vanillaVoiceParam = 0;
+                        if (g_OrigGetVoiceParamWithCallSign)
+                            vanillaVoiceParam = static_cast<std::uint32_t>(
+                                g_OrigGetVoiceParamWithCallSign(self, ownerIndex) & 0xFFFFFFFFu);
+
+                        LogDebug("[SoldierCallSign] APPLIED callSign %u -> clip %s (0x%08X) on soldier "
+                            "0x%04X, line wildcard 0x%08X, rawCallSign %u; vanilla would have played "
+                            "0x%08X\n",
+                            static_cast<unsigned>(callSign),
+                            clipName,
+                            voiceParam,
+                            static_cast<unsigned>(0x0400u | resolvedSoldierIndex),
+                            baseVoiceParam,
+                            static_cast<unsigned>(entry58.rawCallSign0A),
+                            vanillaVoiceParam);
+#endif
+                        return static_cast<std::uint64_t>(voiceParam);
+                    }
                 }
             }
-
-            if (isRegisteredSoldier)
+        }
+#ifdef _DEBUG
+        else
+        {
+            CallSignOwnerEntry58 skipped{};
+            if (TryReadCallSignOwnerEntry58(self, ownerIndex, skipped))
             {
-                return static_cast<std::uint64_t>(extra->extraStateId);
+                const std::uint16_t skippedIndex =
+                    NormalizeSoldierIndexFromOwnerEntry(skipped.soldierIndex0C);
+
+                bool isRegistered = false;
+                if (skippedIndex != 0xFFFFu)
+                {
+                    std::lock_guard<std::mutex> lock(g_CallSignMutex);
+                    isRegistered = g_SoldierCallSigns.find(skippedIndex) != g_SoldierCallSigns.end();
+                }
+
+                if (isRegistered)
+                    LogDebug("[SoldierCallSign] SKIPPED soldier 0x%04X: line wildcard 0x%08X carries no "
+                        "call sign clips, so it keeps its vanilla voice\n",
+                        static_cast<unsigned>(0x0400u | skippedIndex), baseVoiceParam);
             }
         }
+#endif
     }
 
     const std::uint64_t finalVoiceParam =
@@ -303,57 +406,69 @@ static std::uint64_t __fastcall hkGetVoiceParamWithCallSign(void* self, std::uin
 }
 
 
-void Add_CallSignExtraSoldier(std::uint32_t gameObjectId)
+void Set_SoldierCallSign(std::uint32_t gameObjectId, std::uint8_t callSign)
 {
     const std::uint16_t soldierIndex =
         NormalizeSoldierIndexFromGameObjectId(gameObjectId);
 
     if (soldierIndex == 0xFFFFu)
     {
-        LogDebug("[CallSignExtra] Add soldier ignored: invalid GameObjectId=0x%08X\n", gameObjectId);
+        LogDebug("[SoldierCallSign] Set ignored: invalid GameObjectId=0x%08X\n", gameObjectId);
+        return;
+    }
+
+    if (callSign < kMinCallSign || callSign > kMaxCallSign)
+    {
+        Log("[SoldierCallSign] ERROR: SetRadioCallSign could not apply callSign %u to game object 0x%08X "
+            "- valid call signs are %u to %u, so that soldier keeps its vanilla call sign.\n",
+            static_cast<unsigned>(callSign), gameObjectId,
+            static_cast<unsigned>(kMinCallSign), static_cast<unsigned>(kMaxCallSign));
         return;
     }
 
     {
         std::lock_guard<std::mutex> lock(g_CallSignMutex);
-        g_ExtraSoldierIndices.insert(soldierIndex);
+        g_SoldierCallSigns[soldierIndex] = callSign;
     }
+
+    LogDebug("[SoldierCallSign] REGISTERED callSign %u for game object 0x%08X (soldier index %u)\n",
+        static_cast<unsigned>(callSign), gameObjectId, static_cast<unsigned>(soldierIndex));
 }
 
 
-void Remove_CallSignExtraSoldier(std::uint32_t gameObjectId)
+void Remove_SoldierCallSign(std::uint32_t gameObjectId)
 {
     const std::uint16_t soldierIndex =
         NormalizeSoldierIndexFromGameObjectId(gameObjectId);
 
     if (soldierIndex == 0xFFFFu)
     {
-        LogDebug("[CallSignExtra] Remove soldier ignored: invalid GameObjectId=0x%08X\n", gameObjectId);
+        LogDebug("[SoldierCallSign] Remove ignored: invalid GameObjectId=0x%08X\n", gameObjectId);
         return;
     }
 
     {
         std::lock_guard<std::mutex> lock(g_CallSignMutex);
-        g_ExtraSoldierIndices.erase(soldierIndex);
+        g_SoldierCallSigns.erase(soldierIndex);
     }
 }
 
 
-void Clear_CallSignExtraSoldiers()
+void Clear_SoldierCallSigns()
 {
     {
         std::lock_guard<std::mutex> lock(g_CallSignMutex);
-        g_ExtraSoldierIndices.clear();
+        g_SoldierCallSigns.clear();
     }
 }
 
 
-bool Install_CallSignExtra_Hook()
+bool Install_SoldierCallSign_Hook()
 {
     void* target = ResolveGameAddress(gAddr.GetVoiceParamWithCallSign);
     if (!target)
     {
-        Log("[Hook] CallSignExtra: target resolve failed\n");
+        Log("[Hook] SoldierCallSign: target resolve failed\n");
         return false;
     }
 
@@ -363,27 +478,27 @@ bool Install_CallSignExtra_Hook()
         reinterpret_cast<void**>(&g_OrigGetVoiceParamWithCallSign));
 
 #ifdef _DEBUG
-    Log("[Hook] CallSignExtra: %s\n", ok ? "OK" : "FAIL");
+    Log("[Hook] SoldierCallSign: %s\n", ok ? "OK" : "FAIL");
 #else
     if (!ok)
-        Log("[Hook] CallSignExtra: %s\n", ok ? "OK" : "FAIL");
+        Log("[Hook] SoldierCallSign: %s\n", ok ? "OK" : "FAIL");
 #endif
     return ok;
 }
 
 
-bool Uninstall_CallSignExtra_Hook()
+bool Uninstall_SoldierCallSign_Hook()
 {
     DisableAndRemoveHook(ResolveGameAddress(gAddr.GetVoiceParamWithCallSign));
     g_OrigGetVoiceParamWithCallSign = nullptr;
 
     {
         std::lock_guard<std::mutex> lock(g_CallSignMutex);
-        g_ExtraSoldierIndices.clear();
+        g_SoldierCallSigns.clear();
     }
 
 #ifdef _DEBUG
-    LogDebug("[Hook] CallSignExtra: removed\n");
+    LogDebug("[Hook] SoldierCallSign: removed\n");
 #endif
     return true;
 }

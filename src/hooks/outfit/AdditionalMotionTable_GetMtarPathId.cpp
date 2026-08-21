@@ -69,6 +69,16 @@ namespace
     constexpr std::size_t kCtlWalkIndexOff  = 0x128;
     constexpr std::uint32_t kMotionTableCount = 32;
 
+    struct MotionEntrySwap
+    {
+        void* original;
+        void* written;
+        bool  valid;
+    };
+    static MotionEntrySwap            g_EntrySwaps[kMotionTableCount] = {};
+    static std::atomic<int>           g_SwapsLive{ 0 };
+    static std::atomic<std::uint32_t> g_SwapEpochMission{ 0xFFFFFFFFu };
+
 
     static std::uint64_t ResolveDesiredHash_SEH(
         std::uint64_t currentHash, int* outSlot)
@@ -574,7 +584,7 @@ namespace
     }
 
     static void DirectSwapEntryFile_SEH(
-        std::uint64_t* pathPtr, int* swapped, int* unresolved)
+        std::uint32_t idx, std::uint64_t* pathPtr, int* swapped, int* unresolved)
     {
         __try
         {
@@ -591,7 +601,18 @@ namespace
             {
                 if (*filePtr != file)
                 {
+                    if (idx < kMotionTableCount)
+                    {
+                        if (!g_EntrySwaps[idx].valid)
+                            g_SwapsLive.fetch_add(1, std::memory_order_relaxed);
+                        if (!g_EntrySwaps[idx].valid
+                            || *filePtr != g_EntrySwaps[idx].written)
+                            g_EntrySwaps[idx].original = *filePtr;
+                        g_EntrySwaps[idx].valid = true;
+                    }
                     *filePtr = file;
+                    if (idx < kMotionTableCount)
+                        g_EntrySwaps[idx].written = file;
                     ++*swapped;
                 }
             }
@@ -630,12 +651,86 @@ namespace
         {
         }
     }
+
+    static int RevertSwappedEntries_SEH()
+    {
+        if (!g_OrigGetMtarPathId)
+            return 0;
+
+        int restored = 0;
+        for (std::uint32_t idx = 0; idx < kMotionTableCount; ++idx)
+        {
+            if (!g_EntrySwaps[idx].valid)
+                continue;
+            __try
+            {
+                std::uint64_t out = 0;
+                std::uint64_t* r = g_OrigGetMtarPathId(&out, idx);
+                if (r)
+                {
+                    void** filePtr = reinterpret_cast<void**>(
+                        reinterpret_cast<std::uint8_t*>(r) + 0x10);
+                    if (*filePtr == g_EntrySwaps[idx].written)
+                    {
+                        *filePtr = g_EntrySwaps[idx].original;
+                        ++restored;
+                    }
+                }
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+            }
+            g_EntrySwaps[idx].original = nullptr;
+            g_EntrySwaps[idx].written  = nullptr;
+            g_EntrySwaps[idx].valid    = false;
+        }
+        g_SwapsLive.store(0, std::memory_order_relaxed);
+        return restored;
+    }
 }
 
 namespace outfit
 {
+    void RevertAdditionalMotionSwaps()
+    {
+        const std::uint32_t mission =
+            static_cast<std::uint32_t>(MissionCodeGuard::GetCurrentMissionCode());
+
+        const int live = g_SwapsLive.load(std::memory_order_relaxed);
+        if (!g_Installed || live == 0)
+        {
+            g_SwapEpochMission.store(mission, std::memory_order_relaxed);
+            static std::atomic<int> s_idle{ 0 };
+            if (s_idle.fetch_add(1, std::memory_order_relaxed) < 16)
+                Log("[OutfitMotionMtar] mission is now %u - no archive entry to "
+                    "restore (installed=%d, %d entr%s swapped since the last "
+                    "revert), so this load starts with the engine's own file "
+                    "pointers in the table.\n",
+                    mission, g_Installed ? 1 : 0, live, live == 1 ? "y" : "ies");
+            return;
+        }
+
+        const int restored = RevertSwappedEntries_SEH();
+        g_SwapEpochMission.store(mission, std::memory_order_relaxed);
+
+        static std::atomic<int> s_done{ 0 };
+        if (s_done.fetch_add(1, std::memory_order_relaxed) < 16)
+            Log("[OutfitMotionMtar] mission is now %u - %d of %d swapped player "
+                "archive entr%s restored to the engine's own file pointer; any "
+                "remainder already held a pointer the engine itself rebound and "
+                "was left alone. Our pointers come from blocks outside the "
+                "player's own controller groups, and such a block is unloaded on "
+                "a mission change.\n",
+                mission, restored, live, live == 1 ? "y" : "ies");
+    }
+
     void RequestAdditionalMotionReresolve()
     {
+        const std::uint32_t mission =
+            static_cast<std::uint32_t>(MissionCodeGuard::GetCurrentMissionCode());
+        if (g_SwapEpochMission.load(std::memory_order_relaxed) != mission)
+            RevertAdditionalMotionSwaps();
+
         MISSION_GUARD_RETURN_VOID();
         if (!g_FallbackReady)
             return;
@@ -675,7 +770,7 @@ namespace outfit
             std::uint64_t* r = hkGetMtarPathId(&out, idx);
             if (!r)
                 continue;
-            DirectSwapEntryFile_SEH(r, &swapped, &unresolved);
+            DirectSwapEntryFile_SEH(idx, r, &swapped, &unresolved);
         }
         g_InMotionFallback = wasInFallback;
 

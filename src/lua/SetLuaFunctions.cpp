@@ -1902,6 +1902,7 @@ static void RegisterAllUiLuaLibraries(lua_State* L)
         Register_V_TppGameObjectConstants(L);
         Register_V_TppMbDevConstants(L);
         Register_V_PlayerCqcStanceConstants(L);
+        Register_V_TppCallSignConstants(L);
         Register_V_TppCassetteLibrary(L);
         Register_V_TppSahelanLibrary(L);
         Register_V_TppPlayerLibrary(L);
@@ -1941,6 +1942,7 @@ extern "C" __declspec(dllexport) int __cdecl luaopen_V_FrameWork(lua_State* L)
     Register_V_TppGameObjectConstants(L);
     Register_V_TppMbDevConstants(L);
     Register_V_PlayerCqcStanceConstants(L);
+    Register_V_TppCallSignConstants(L);
     Register_V_TppCassetteLibrary(L);
     Register_V_TppSahelanLibrary(L);
     Register_V_TppPlayerLibrary(L);

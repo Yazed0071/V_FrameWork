@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cstring>
+#include <atomic>
 #include <mutex>
 #include <share.h>
 
@@ -12,6 +13,9 @@ static FILE* g_LogFile = nullptr;
 static std::mutex g_LogMutex;
 static bool g_AtLineStart = true;
 static DWORD g_LastFlushTick = 0;
+static std::atomic<unsigned long> g_LogIoBeginTick{ 0 };
+static std::atomic<unsigned long> g_LogIoTid{ 0 };
+static std::atomic<unsigned long> g_LogSerial{ 0 };
 
 static inline void ConsoleWrite(const char* data, int len)
 {
@@ -59,6 +63,9 @@ void Log(const char* fmt, ...)
         len = static_cast<int>(sizeof(buf)) - 1;
 
     std::lock_guard<std::mutex> lock(g_LogMutex);
+
+    g_LogIoTid.store(GetCurrentThreadId(), std::memory_order_relaxed);
+    g_LogIoBeginTick.store(GetTickCount() | 1u, std::memory_order_release);
 
     char ts[32];
     SYSTEMTIME st;
@@ -111,6 +118,29 @@ void Log(const char* fmt, ...)
             g_LastFlushTick = now;
         }
     }
+
+    g_LogIoBeginTick.store(0, std::memory_order_release);
+    g_LogSerial.fetch_add(1, std::memory_order_relaxed);
+}
+
+unsigned long LogLineSerial()
+{
+    return g_LogSerial.load(std::memory_order_relaxed);
+}
+
+unsigned long LogIoStalledMs()
+{
+    const unsigned long began = g_LogIoBeginTick.load(std::memory_order_acquire);
+    if (!began)
+        return 0;
+    return static_cast<unsigned long>(GetTickCount()) - began;
+}
+
+unsigned long LogIoOwnerThreadId()
+{
+    if (!g_LogIoBeginTick.load(std::memory_order_acquire))
+        return 0;
+    return g_LogIoTid.load(std::memory_order_relaxed);
 }
 
 void CrashLogf(const char* fmt, ...)
@@ -158,6 +188,15 @@ void EnsureConsole()
     freopen_s(&fp, "CONIN$", "r", stdin);
 
     SetConsoleOutputCP(CP_UTF8);
+
+    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD inMode = 0;
+    if (hIn != INVALID_HANDLE_VALUE && GetConsoleMode(hIn, &inMode))
+    {
+        inMode &= ~(ENABLE_QUICK_EDIT_MODE | ENABLE_MOUSE_INPUT);
+        inMode |= ENABLE_EXTENDED_FLAGS;
+        SetConsoleMode(hIn, inMode);
+    }
 
     SetConsoleTitleW(L"V_FrameWork");
 }

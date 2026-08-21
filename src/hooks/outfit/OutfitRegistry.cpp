@@ -909,12 +909,21 @@ namespace outfit
             && perPlayerType[kPlayerType_Snake].used)
             return &perPlayerType[kPlayerType_Snake];
 
+        for (std::uint8_t alt = 0; alt < kPlayerTypeMax; ++alt)
+            if (perPlayerType[alt].used)
+                return &perPlayerType[alt];
+
         return nullptr;
     }
 
     bool OutfitEntry::IsPlayerTypeSupported(std::uint8_t playerType) const
     {
         return GetPTData(playerType) != nullptr;
+    }
+
+    bool OutfitEntry::DeclaresPlayerType(std::uint8_t playerType) const
+    {
+        return playerType < kPlayerTypeMax && perPlayerType[playerType].used;
     }
 
     std::uint8_t OutfitEntry::FirstSupportedPlayerType() const
