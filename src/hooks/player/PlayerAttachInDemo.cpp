@@ -33,9 +33,6 @@ namespace
     using IsPlaying_t = bool(__fastcall*)(void* demoAnimController, std::uint32_t index);
     using Warp_t = void(__fastcall*)(void* self, std::uint32_t instanceIndex,
                                      const float* pos, const float* rot, bool waitForBlock);
-    using GetGameObjectIdByNameId_t = void(__fastcall*)(std::uint16_t* out,
-                                                        std::uint64_t typeNameId,
-                                                        std::uint64_t instanceNameId);
 
     constexpr std::uint32_t kInvalidId         = 0xFFFFu;
     constexpr std::uint32_t kInstanceMask      = 0x1FFu;
@@ -56,19 +53,6 @@ namespace
     constexpr std::size_t   kPlayerSubLocalIndex     = 0x218;
     constexpr std::size_t   kDemoAnimIsPlayingSlot   = 0x18;
     constexpr std::size_t   kUpdateStreamMotionSlot  = 0x330;
-
-    constexpr std::size_t   kPlaybackConstraintArray = 0x278;
-    constexpr std::size_t   kConstraintStride        = 0x90;
-    constexpr std::size_t   kConstraintNameId        = 0x08;
-    constexpr std::size_t   kConstraintMode          = 0x40;
-    constexpr std::uint32_t kConstraintSaneMax       = 4096;
-    constexpr std::uint32_t kConstraintDumpCap       = 32;
-    constexpr std::uintptr_t kMinUserPointer         = 0x10000ull;
-    constexpr std::uintptr_t kMaxUserPointer         = 0x7FFFFFFFFFFFull;
-    constexpr std::uint64_t kStringIdMask            = 0x0000FFFFFFFFFFFFull;
-    constexpr std::size_t   kPlaybackAddonCount      = 0x1C8;
-    constexpr std::size_t   kPlaybackAddonArray      = 0x1D0;
-    constexpr std::uint32_t kAddonSaneMax            = 64;
 
     OnPlayingAfterUpdateStream_t g_OrigOnPlayingAfterUpdateStream = nullptr;
     DemoState_t                  g_OrigDoFinish    = nullptr;
@@ -92,62 +76,6 @@ namespace
     bool g_ReportedHookLive = false;
     bool g_ReportedAttached = false;
     bool g_ReportedPlaced = false;
-    bool g_ReportedConstraints = false;
-    bool g_ReportedAddons = false;
-
-    bool          g_HaveFirstOwnerPos = false;
-    float         g_FirstOwnerPos[3]  = {};
-    float         g_MaxOwnerDelta     = 0.0f;
-    std::uint32_t g_OwnerSamples      = 0;
-    bool          g_ReportedOwnerMoved = false;
-    std::uint32_t g_LastOwnerObjectId  = 0xFFFFu;
-
-    constexpr float kOwnerMovedMetres = 0.5f;
-
-    void TrackOwnerMotion(std::uint32_t ownerObjectId, const float* matrix16)
-    {
-        const float x = matrix16[12];
-        const float y = matrix16[13];
-        const float z = matrix16[14];
-
-        ++g_OwnerSamples;
-
-        if (!g_HaveFirstOwnerPos)
-        {
-            g_HaveFirstOwnerPos = true;
-            g_FirstOwnerPos[0] = x;
-            g_FirstOwnerPos[1] = y;
-            g_FirstOwnerPos[2] = z;
-            return;
-        }
-
-        const float dx = x - g_FirstOwnerPos[0];
-        const float dy = y - g_FirstOwnerPos[1];
-        const float dz = z - g_FirstOwnerPos[2];
-        const float delta = std::sqrt(dx * dx + dy * dy + dz * dz);
-
-        if (delta > g_MaxOwnerDelta)
-            g_MaxOwnerDelta = delta;
-
-        if (!g_ReportedOwnerMoved && delta > kOwnerMovedMetres)
-        {
-            g_ReportedOwnerMoved = true;
-            Log("[AttachInDemo] owner 0x%04X IS moving - %.2f m from where the attach armed, so the "
-                "cutscene is driving it and the player is riding along\n",
-                ownerObjectId, delta);
-        }
-    }
-
-    void ReportOwnerMotion()
-    {
-        if (!g_HaveFirstOwnerPos || g_ReportedOwnerMoved)
-            return;
-
-        Log("[AttachInDemo] owner 0x%04X never moved: %u frame(s) sampled, furthest %.3f m from the "
-            "start position - nothing drove the vehicle during the demo, so this is a route/driver "
-            "problem in the mission, not the attach\n",
-            g_LastOwnerObjectId, g_OwnerSamples, g_MaxOwnerDelta);
-    }
 
     bool PlayerIsUnconscious()
     {
@@ -269,185 +197,6 @@ namespace
         }
     }
 
-    std::uint32_t VehicleIdForNameId(std::uint64_t instanceNameId)
-    {
-        if (!gAddr.GameObject_GetGameObjectIdWithName)
-            return kInvalidId;
-
-        auto fn = reinterpret_cast<GetGameObjectIdByNameId_t>(
-            ResolveGameAddress(gAddr.GameObject_GetGameObjectIdWithName));
-        if (!fn)
-            return kInvalidId;
-
-        const std::uint64_t typeNameId =
-            FoxHashes::StrCode64(kVehicleTypeName) & kStringIdMask;
-        std::uint16_t result = 0xFFFFu;
-
-        __try
-        {
-            fn(&result, typeNameId, instanceNameId);
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            return kInvalidId;
-        }
-
-        return static_cast<std::uint32_t>(result);
-    }
-
-    void DumpDemoConstraints(void* playback, std::uint32_t ownerObjectId)
-    {
-        std::uint32_t count = 0;
-        std::uint8_t* data  = nullptr;
-
-        __try
-        {
-            auto* base = reinterpret_cast<std::uint8_t*>(playback);
-            count = *reinterpret_cast<std::uint32_t*>(base + kPlaybackConstraintArray);
-            data  = *reinterpret_cast<std::uint8_t**>(base + kPlaybackConstraintArray + 8);
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            Log("[AttachInDemo] the demo object-constraint list could not be read at "
-                "playback+0x%zX - that offset is wrong for this build, so nothing can be said "
-                "about which objects this demo drives\n", kPlaybackConstraintArray);
-            return;
-        }
-
-        const std::uintptr_t dataAddr = reinterpret_cast<std::uintptr_t>(data);
-        const bool dataIsPointer = dataAddr >= kMinUserPointer
-                                && dataAddr <= kMaxUserPointer
-                                && (dataAddr & 7) == 0;
-
-        if (count > kConstraintSaneMax || (data && !dataIsPointer))
-        {
-            Log("[AttachInDemo] playback+0x%zX is not an object-constraint array on this build - it "
-                "read count=%u data=%p, which is neither a plausible count nor a pointer, so the "
-                "offset is wrong and this probe says NOTHING about what the demo drives\n",
-                kPlaybackConstraintArray, count, data);
-            return;
-        }
-
-        if (!data || count == 0)
-        {
-            Log("[AttachInDemo] this demo declares no object constraints (count=%u data=%p), so it "
-                "animates nobody but the player - owner 0x%04X is never driven by the cutscene and "
-                "the attach can only hold the player where the mission already placed it\n",
-                count, data, ownerObjectId);
-            return;
-        }
-
-        const std::uint32_t shown = count < kConstraintDumpCap ? count : kConstraintDumpCap;
-        bool ownerFound = false;
-
-        for (std::uint32_t i = 0; i < shown; ++i)
-        {
-            std::uint64_t nameId = 0;
-            std::uint32_t mode   = 0;
-
-            __try
-            {
-                auto* entry = data + static_cast<std::size_t>(i) * kConstraintStride;
-                nameId = *reinterpret_cast<std::uint64_t*>(entry + kConstraintNameId) & kStringIdMask;
-                mode   = *reinterpret_cast<std::uint32_t*>(entry + kConstraintMode);
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                Log("[AttachInDemo] demo constraint[%u] could not be read - the entry stride "
-                    "0x%zX is wrong for this build and the rest of the list is unreadable\n",
-                    i, kConstraintStride);
-                return;
-            }
-
-            const std::uint32_t vehicleId = VehicleIdForNameId(nameId);
-            const bool isOwner = (vehicleId != kInvalidId && vehicleId == ownerObjectId);
-            if (isOwner)
-                ownerFound = true;
-
-            Log("[AttachInDemo] demo constraint[%u] name=0x%012llX mode=%u vehicleId=0x%04X%s\n",
-                i,
-                static_cast<unsigned long long>(nameId),
-                mode,
-                vehicleId,
-                isOwner ? "  <<< this is the attach owner" : "");
-        }
-
-        if (ownerFound)
-        {
-            Log("[AttachInDemo] the demo does declare a constraint on owner 0x%04X, so if the "
-                "vehicle still does not move the constraint is being refused downstream rather "
-                "than missing from the demo\n", ownerObjectId);
-        }
-        else
-        {
-            Log("[AttachInDemo] owner 0x%04X is not among the %u constraint(s) this demo declares, "
-                "so the demo never asks to move it - the attach is holding the player onto a "
-                "vehicle nothing is driving\n", ownerObjectId, count);
-        }
-    }
-
-    void LogPlaybackAddons(void* playback)
-    {
-        if (g_ReportedAddons || !playback)
-            return;
-
-        g_ReportedAddons = true;
-
-        const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(playback);
-        std::uint32_t count   = 0;
-        void**        addons  = nullptr;
-
-        __try
-        {
-            count  = *reinterpret_cast<const std::uint32_t*>(base + kPlaybackAddonCount);
-            addons = *reinterpret_cast<void***>(base + kPlaybackAddonArray);
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            Log("[AttachInDemo] the demo addon list could not be read, so whether TPP's demo "
-                "callback is attached to this playback stays unknown\n");
-            return;
-        }
-
-        if (!addons || count == 0 || count > kAddonSaneMax)
-        {
-            Log("[AttachInDemo] the demo addon list reads as count=%u array=%p, which is not "
-                "usable, so whether TPP's demo callback is attached stays unknown\n",
-                count, static_cast<void*>(addons));
-            return;
-        }
-
-        const std::uintptr_t exeBase = GetExeBase();
-
-        Log("[AttachInDemo] this demo playback carries %u addon(s)\n", count);
-
-        for (std::uint32_t i = 0; i < count; ++i)
-        {
-            void*          addon  = nullptr;
-            std::uintptr_t vtable = 0;
-
-            __try
-            {
-                addon = addons[i];
-                if (addon)
-                    vtable = *reinterpret_cast<const std::uintptr_t*>(addon);
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                addon  = nullptr;
-                vtable = 0;
-            }
-
-            const std::uintptr_t rva =
-                (vtable && exeBase && vtable > exeBase) ? (vtable - exeBase) : 0;
-
-            Log("[AttachInDemo] demo addon %u/%u object=%p vtable=0x%llX rva=0x%llX\n",
-                i + 1, count, addon,
-                static_cast<unsigned long long>(vtable),
-                static_cast<unsigned long long>(rva));
-        }
-    }
-
     void __fastcall hkOnPlayingAfterUpdateStream(void* playback)
     {
         if (g_OrigOnPlayingAfterUpdateStream)
@@ -458,8 +207,6 @@ namespace
 
         if (MissionCodeGuard::ShouldBypassHooks())
             return;
-
-        LogPlaybackAddons(playback);
 
         if (!g_ReportedHookLive)
         {
@@ -480,14 +227,6 @@ namespace
         if (ownerObjectId == kInvalidId)
             return;
 
-        if (!g_ReportedConstraints)
-        {
-            g_ReportedConstraints = true;
-            DumpDemoConstraints(playback, ownerObjectId);
-        }
-
-        g_LastOwnerObjectId = ownerObjectId;
-
         if (unattachOnSleep && PlayerIsUnconscious())
         {
             ClearAttachInDemo();
@@ -506,8 +245,6 @@ namespace
             }
             return;
         }
-
-        TrackOwnerMotion(ownerObjectId, matrix);
 
         const bool warped = WarpPlayerTo(matrix);
 
@@ -668,13 +405,6 @@ bool RequestToAttachInDemoById(std::uint32_t ownerObjectId, const char* connectP
     g_ReportedHookLive  = false;
     g_ReportedAttached  = false;
     g_ReportedPlaced    = false;
-    g_ReportedConstraints = false;
-    g_ReportedAddons = false;
-    g_HaveFirstOwnerPos = false;
-    g_MaxOwnerDelta = 0.0f;
-    g_OwnerSamples = 0;
-    g_ReportedOwnerMoved = false;
-    g_LastOwnerObjectId = ownerObjectId;
     g_Active.store(true, std::memory_order_relaxed);
 
     Log("[AttachInDemo] armed: owner=%s connectPoint hash=0x%08X unattachOnSleep=%d\n",
@@ -709,9 +439,6 @@ bool RequestToAttachInDemo(const char* ownerName, const char* connectPointName,
 
 void ClearAttachInDemo()
 {
-    if (g_Active.load(std::memory_order_relaxed))
-        ReportOwnerMotion();
-
     g_Active.store(false, std::memory_order_relaxed);
 }
 
