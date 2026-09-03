@@ -36,9 +36,8 @@ namespace
         if (L && ResolveLuaApi())
             msg = ReadLuaErrorMessageSEH(L);
 
-        LogDebug("[LuaError] a Lua script raised an error; the engine converts it "
-            "into a C++ exception that nothing catches, so the process dies "
-            "here: %s\n",
+        LogDebug("[LuaError] a Lua script raised an error; the engine turns it into "
+                 "a C++ exception nothing catches, so the process dies here: %s\n",
             (msg && *msg) ? msg : "(message could not be read off the stack)");
 
         g_OrigLuaErrorThrow(L);
@@ -58,8 +57,8 @@ bool Install_LuaErrorThrow()
                              reinterpret_cast<void*>(&hkLuaErrorThrow),
                              reinterpret_cast<void**>(&g_OrigLuaErrorThrow)))
     {
-        Log("[LuaError] hook install FAILED - a Lua script error will still "
-            "kill the process, but without naming the script or the message\n");
+        Log("[LuaError] hook install FAILED - a Lua error still kills the process, "
+            "but without naming the script or message\n");
         return true;
     }
 

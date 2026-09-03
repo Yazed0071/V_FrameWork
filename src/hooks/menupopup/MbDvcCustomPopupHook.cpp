@@ -1379,8 +1379,8 @@ static bool Show_MbDvcAnnouncePopup_Impl(std::uint8_t  reserveId,
 
     if (!landed)
     {
-        LogDebug("[MbDvcCustomPopup] Show: post-reserve verification found no V_FrameWork slot "
-            "(ring may have been full and our reservation was rejected); entry rolled back\n");
+        LogDebug("[MbDvcCustomPopup] Show: post-reserve verification found no "
+                 "V_FrameWork slot (the ring was likely full) - entry rolled back\n");
         return false;
     }
 

@@ -10,6 +10,7 @@
 #include "log.h"
 #include "VIPHoldupHook.h"
 #include "MissionCodeGuard.h"
+#include "PlayerAlertPhase.h"
 #include "AddressSet.h"
 
 namespace
@@ -51,7 +52,10 @@ namespace
     };
 
 
-    static bool g_UseCustomNonVipHoldupRecovery = false;
+    static bool UseCustomNonVipRecoveryNow()
+    {
+        return PlayerAlertPhase::IsAtOrAbove(PlayerAlertPhase::kCaution);
+    }
 
 
     struct RecentRecoveryDispatch
@@ -403,6 +407,8 @@ static void __fastcall hkState_StandRecoveryHoldup(
 
     if (proc == 6 && evt)
     {
+        const bool useCustomNonVipRecovery = UseCustomNonVipRecoveryNow();
+
         const std::uint32_t eventHash = GetEventHash(evt);
 
         std::uint16_t recoveredGameObjectId = 0xFFFFu;
@@ -420,7 +426,7 @@ static void __fastcall hkState_StandRecoveryHoldup(
             TryGetImportantTargetInfo(recoveredSoldierIndex, info);
 
 
-        if (g_UseCustomNonVipHoldupRecovery &&
+        if (useCustomNonVipRecovery &&
             resolvedTarget &&
             !isImportant &&
             (eventHash == HASH_EVENT_HOLDUP_RECOVERY || eventHash == HASH_EVENT_VOICE_NOTICE) &&
@@ -443,7 +449,7 @@ static void __fastcall hkState_StandRecoveryHoldup(
             }
 
 
-            if (g_UseCustomNonVipHoldupRecovery && resolvedTarget)
+            if (useCustomNonVipRecovery && resolvedTarget)
             {
                 if (ShouldDispatchCustomNonVipRecovery(recoveredGameObjectId, recoveredSoldierIndex))
                 {
@@ -471,7 +477,7 @@ static void __fastcall hkState_StandRecoveryHoldup(
                 }
             }
 
-            if (g_UseCustomNonVipHoldupRecovery &&
+            if (useCustomNonVipRecovery &&
                 resolvedTarget &&
                 !isImportant &&
                 ShouldSuppressCustomNonVipRecoveryNow(recoveredGameObjectId, recoveredSoldierIndex))
@@ -528,6 +534,19 @@ void Remove_VIPHoldupImportantGameObjectId(std::uint32_t gameObjectId)
 }
 
 
+bool IsVIPHoldupImportantSoldierIndex(std::uint16_t soldierIndex, bool* outIsOfficer)
+{
+    ImportantTargetInfo info{};
+    if (!TryGetImportantTargetInfo(soldierIndex, info))
+        return false;
+
+    if (outIsOfficer)
+        *outIsOfficer = info.isOfficer;
+
+    return true;
+}
+
+
 void Clear_VIPHoldupImportantGameObjectIds()
 {
     {
@@ -540,27 +559,10 @@ void Clear_VIPHoldupImportantGameObjectIds()
 }
 
 
-void Set_UseCustomNonVipHoldupRecovery(bool enabled)
+void Reset_CustomNonVipRecoveryTracking()
 {
-    g_UseCustomNonVipHoldupRecovery = enabled;
-
-    if (!enabled)
-    {
-        ClearAllCustomNonVipRecovery();
-        ClearAllCustomNonVipRecoverySuppressWindows();
-    }
-
-#ifdef _DEBUG
-    LogDebug("[Holdup] Custom non-VIP holdup recovery: %s (hash=0x%08X)\n",
-        enabled ? "ON" : "OFF",
-        static_cast<unsigned>(HASH_HOLDUP_RECOVERY_NONVIP_CUSTOM));
-#endif
-}
-
-
-bool Get_UseCustomNonVipHoldupRecovery()
-{
-    return g_UseCustomNonVipHoldupRecovery;
+    ClearAllCustomNonVipRecovery();
+    ClearAllCustomNonVipRecoverySuppressWindows();
 }
 
 

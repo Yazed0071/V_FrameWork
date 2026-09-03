@@ -223,11 +223,7 @@ static const char* const kAddrFieldNames[] = {
     "Dm_Alloc",
     "Dm_BackLinkPool",
     "Dm_OneShot",
-    "EquipCrossEvCall_IsItemNoUse",
     "AttackActionImpl_IsWeaponNoUseInPlaceAction",
-    "EquipCrossSetEquipItem_Site1",
-    "EquipCrossSetEquipItem_Site2",
-    "EquipCrossSetEquipItem_Site3",
     "TppMotherBaseManagement_RegCstDev",
     "TppMotherBaseManagement_RegFlwDev",
     "EquipDevCtrl_GetSuitDevelopInfoIndex",
@@ -414,8 +410,70 @@ static const char* const kAddrFieldNames[] = {
     "TppPickable_ItemWindowBoundSite",
     "UiUtility_GetWeaponItemNameLangId",
     "SoundPlayerAnimEvent_StepNoiseQuietCmp",
+    "CollectionLocatorArray_SetUpLinearAccessor",
+    "CollectionSystemImpl_PickUp",
+    "CollectionSystemImpl_RepopCountOperation",
+    "CollectionSystemImpl_GetCollectionInfo",
+    "Collection_GetModelFilePath",
+    "Collection_GetCatchEffectColorAndScale",
+    "Collection_GetGroundEffectSize",
+    "PickUpActionPluginImpl_DoPickUpCollection",
+    "GetCollectionIconFtexPath",
+    "GetCollectionNameText",
+    "UixUtility_GetUixUtility",
+    "Collection_GetModelFilePathRoot",
+    "Collection_GetFovaFilePath",
+    "Collection_IsHerbByType",
+    "Collection_IsMaterialByType",
+    "Collection_IsDiamondByType",
+    "MbmImpl_IsGotDataBase",
+    "MbmImpl_AddTempDataBase",
+    "AttackAction_UpdateSecondWeaponMatrix",
+    "QuietChokeHold",
+    "QuietInterrogate",
+    "QuietInterrogateBypass",
+    "QuietHoldupInterrogate",
+    "CharaSlotSelectionNumGate",
+    "CharaSlotSelectionNum",
+    "UiMbmDataBase_RefreshPrefabList",
+    "UiMbmDataBase_RefreshDataBaseNameText",
+    "UiMbmDataBase_RefreshDataBaseIcon",
+    "UiMbmDataBase_GetDataBaseInfoText",
+    "UiMbmDataBase_RefreshInfoLayout",
+    "UiMbmDataBase_RefreshImageRecord",
+    "UiMbmDataBase_RefreshCollectionRate",
+    "SkillAndItemParameterSystem_GetSuitParam",
+    "MbDvcMapCallbackIconImpl_DispOnNewMarkerIcon",
+    "MbDvcMapCallbackIconImpl_DispOnImportantIcon",
+    "MbDvcMapCallbackIconImpl_DispOnGoalIcon",
+    "MbDvcMapCallbackIconImpl_DispOnGeneralIcon",
+    "MbDvcMapCallbackIconImpl_DispOnTargetMarkerIcon",
+    "MbDvcMapCallbackIconImpl_DispOnAreaIcon",
+    "MbDvcMapCallbackIconImpl_GetIconDisplayParam",
+    "PlayerInfo_GetLocalPartsType",
+    "PlayerInfo_CheckStatusBit",
+    "UpdatePartsStatus_QuietCamoStrip",
+    "MissionPrepSystem_GetPlayerNameFromPlayerTypeAndStaffId",
+    "Player2BlockController_ApplyQuietSuitShaderParams",
+    "UiControllerImpl_GetUiSightTypeBySightId",
+    "SightCommonFactory_CreateWindow",
+    "SightCommonFactory_DeleteWindow",
+    "UiMbmDataBase_RefreshNewIcon",
+    "UiMbmDataBase_SetPutCursorFlag",
+    "UiMbmDataBase_OnStop",
+    "MbmImpl_CalcDocumentationUnreadCount",
+    "MbmImpl_CalcEncyclopediaUnreadCount",
+    "Net_ServerManagerBufferRelease",
+    "NoticeControllerImpl_CheckSightNoticePlayer",
+    "DemoPlayback_OnPlayingAfterUpdateStream",
+    "DemoPlayback_DoFinish",
+    "DemoPlayback_DoInterrupt",
+    "UpdateMusicPlayer",
+    "GameObject_GetGameObjectIdWithName",
+    "Vehicle_GetConnectPointWorldMatrix",
+    "Player_SequentialDemoActionExecute",
 };
-static const int kAddrFieldCount = 402;
+static const int kAddrFieldCount = 460;
 static_assert(sizeof(AddressSetRuntime::AddressSet) / sizeof(uintptr_t) == kAddrFieldCount,
               "kAddrFieldNames must stay in lockstep with the AddressSet layout");
 static_assert(sizeof(kAddrFieldNames) / sizeof(kAddrFieldNames[0]) == kAddrFieldCount,
@@ -677,11 +735,7 @@ namespace AddressSetRuntime
             0x140BFF0E0ull, // FUN_140bff0e0
             0x140AF3E80ull, // FUN_140af3e80
             0x1404ECD40ull, // FUN_1404ecd40
-            0x1408AE340ull, // EquipCrossEvCall_IsItemNoUse
             0x141052820ull, // AttackActionImpl_IsWeaponNoUseInPlaceAction
-            0x1408B2278ull, // EquipCrossSetEquipItem_Site1
-            0x1408B22D2ull, // EquipCrossSetEquipItem_Site2
-            0x1408B2314ull, // EquipCrossSetEquipItem_Site3
             0x140A97B80ull, // TppMotherBaseManagement_RegCstDev
             0x140A983E0ull, // TppMotherBaseManagement_RegFlwDev
             0x140F6AED0ull, // EquipDevCtrl_GetSuitDevelopInfoIndex
@@ -857,16 +911,79 @@ namespace AddressSetRuntime
             0x141681CC0ull, // UiEquipPreviewController_ScrollNext
             0x141681B10ull, // UiEquipPreviewController_ScrollPrev
             0x141682160ull, // UiEquipPreviewController_StopEquipPreview
-            0x1409BB960ull, // Player2Impl_AddAdditionalMtarAll (EN15.4 shares the EN15.4a layout)
-            0x1409C9440ull, // Player2Impl_RemoveAdditionalMtarAll (EN15.4 shares the EN15.4a layout)
-            0x142349B80ull, // MotionLoaderImpl_BarrelTypeTable (shares EN15.4a layout)
+            0x1409BB960ull, // Player2Impl_AddAdditionalMtarAll
+            0x1409C9440ull, // Player2Impl_RemoveAdditionalMtarAll
+            0x142349B80ull, // MotionLoaderImpl_BarrelTypeTable
             0x140DB69D0ull, // MotionLoaderImpl_GetBarrelType
             0x142349C00ull, // MotionLoaderImpl_MagazineTypeTable
             0x140DB6A20ull, // MotionLoaderImpl_GetMagazineType
             0x142349CC0ull, // MotionLoaderImpl_SightTypeTable
             0x140DB6CC0ull, // MotionLoaderImpl_GetSightType
-            0x14120A4F5ull, // TppPickable_ItemWindowBoundSite (EN15.4 shares the EN15.4a layout)
-            0x140915130ull, // UiUtility_GetWeaponItemNameLangId (EN15.4 shares the EN15.4a layout)
+            0x14120A4F5ull, // TppPickable_ItemWindowBoundSite
+            0x140915130ull, // UiUtility_GetWeaponItemNameLangId
+            0x1409849B5ull,           // SoundPlayerAnimEvent_StepNoiseQuietCmp
+            0x140A0B5A0ull, // CollectionLocatorArray_SetUpLinearAccessor
+            0x140D4FA70ull, // CollectionSystemImpl_PickUp
+            0x140D50D60ull, // CollectionSystemImpl_RepopCountOperation
+            0x140D4D410ull, // CollectionSystemImpl_GetCollectionInfo
+            0x140D4E390ull, // Collection_GetModelFilePath
+            0x140D4D1C0ull, // Collection_GetCatchEffectColorAndScale
+            0x140D4DF20ull, // Collection_GetGroundEffectSize
+            0x1412091A0ull, // PickUpActionPluginImpl_DoPickUpCollection
+            0x140910840ull, // GetCollectionIconFtexPath
+            0x140910C20ull, // GetCollectionNameText
+            0x14050B580ull, // UixUtility_GetUixUtility
+            0x140D4E5B0ull, // Collection_GetModelFilePathRoot
+            0x140D4DDC0ull, // Collection_GetFovaFilePath
+            0x140A0C240ull, // Collection_IsHerbByType
+            0x140A0C2B0ull, // Collection_IsMaterialByType
+            0x140A0C160ull, // Collection_IsDiamondByType
+            0x140A963A0ull, // MbmImpl_IsGotDataBase
+            0x140A88670ull, // MbmImpl_AddTempDataBase
+            0x141095450ull, // AttackAction_UpdateSecondWeaponMatrix
+            0x1411603E4ull, // QuietChokeHold
+            0x141160B79ull, // QuietInterrogate
+            0x14110F7FCull, // QuietInterrogateBypass
+            0x14110DC77ull, // QuietHoldupInterrogate
+            0x1416BB359ull, // CharaSlotSelectionNumGate
+            0x1416BB310ull, // CharaSlotSelectionNum
+            0x14196F900ull, // UiMbmDataBase_RefreshPrefabList
+            0x14196E940ull, // UiMbmDataBase_RefreshDataBaseNameText
+            0x14196E800ull, // UiMbmDataBase_RefreshDataBaseIcon
+            0x14196D480ull, // UiMbmDataBase_GetDataBaseInfoText
+            0x14196EF60ull, // UiMbmDataBase_RefreshInfoLayout
+            0x14196ED80ull, // UiMbmDataBase_RefreshImageRecord
+            0x14196E6F0ull, // UiMbmDataBase_RefreshCollectionRate
+            0x140FE59B0ull,           // SkillAndItemParameterSystem_GetSuitParam
+            0x140F1BA10ull, // MbDvcMapCallbackIconImpl_DispOnNewMarkerIcon
+            0x140F1B3B0ull, // MbDvcMapCallbackIconImpl_DispOnImportantIcon
+            0x140F1A910ull, // MbDvcMapCallbackIconImpl_DispOnGoalIcon
+            0x140F1A6B0ull, // MbDvcMapCallbackIconImpl_DispOnGeneralIcon
+            0x140F1B4E0ull, // MbDvcMapCallbackIconImpl_DispOnTargetMarkerIcon
+            0x140F19B50ull, // MbDvcMapCallbackIconImpl_DispOnAreaIcon
+            0x140F21B30ull, // MbDvcMapCallbackIconImpl_GetIconDisplayParam
+            0x141E02D50ull, // PlayerInfo_GetLocalPartsType
+            0x141E02520ull, // PlayerInfo_CheckStatusBit
+            0x1409CDB7Full, // UpdatePartsStatus_QuietCamoStrip
+            0x140956F00ull, // MissionPrepSystem_GetPlayerNameFromPlayerTypeAndStaffId
+            0x1409C93D0ull, // Player2BlockController_ApplyQuietSuitShaderParams
+            0x140FE7430ull, // UiControllerImpl_GetUiSightTypeBySightId
+            0x1408EDDC0ull, // SightCommonFactory_CreateWindow
+            0x1408EE7A0ull, // SightCommonFactory_DeleteWindow
+            0x14196F850ull, // UiMbmDataBase_RefreshNewIcon
+            0x1419702C0ull, // UiMbmDataBase_SetPutCursorFlag
+            0x14196E530ull, // UiMbmDataBase_OnStop
+            0x140F5A130ull, // MbmImpl_CalcDocumentationUnreadCount
+            0x140F5A300ull, // MbmImpl_CalcEncyclopediaUnreadCount
+            0x141E0B230ull, // Net_ServerManagerBufferRelease
+            0x1414E0FC0ull, // NoticeControllerImpl_CheckSightNoticePlayer
+            0x141AEAA80ull, // DemoPlayback_OnPlayingAfterUpdateStream
+            0x141AE81D0ull, // DemoPlayback_DoFinish
+            0x141AE82E0ull, // DemoPlayback_DoInterrupt
+            0x140976410ull, // UpdateMusicPlayer
+            0x140BF41B0ull, // GameObject_GetGameObjectIdWithName
+            0x14124A040ull, // Vehicle_GetConnectPointWorldMatrix
+            0x1412799F0ull, // Player_SequentialDemoActionExecute
         };
 
         return value;
@@ -1087,11 +1204,7 @@ namespace AddressSetRuntime
             0x140BFF060ull, // FUN_140bff060
             0x140AF3DE0ull, // FUN_140af3de0
             0x1404ED130ull, // FUN_1404ed130
-            0x1408AE270ull, // EquipCrossEvCall_IsItemNoUse
             0x1410528A0ull, // AttackActionImpl_IsWeaponNoUseInPlaceAction
-            0x1408B21A8ull, // EquipCrossSetEquipItem_Site1
-            0x1408B2202ull, // EquipCrossSetEquipItem_Site2
-            0x1408B2244ull, // EquipCrossSetEquipItem_Site3
             0x140a97b20ull, // TppMotherBaseManagement_RegCstDev
             0x140a98380ull, // TppMotherBaseManagement_RegFlwDev
             0x140f6af30ull, // EquipDevCtrl_GetSuitDevelopInfoIndex
@@ -1178,8 +1291,8 @@ namespace AddressSetRuntime
             0x142A711F0ull, // EquipParameterTablesImpl_Instance
             0x142349B40ull, // MotionLoaderImpl_ReceiverTypeTable
             0x140DB6C70ull, // MotionLoaderImpl_GetReceiverType
-            0x142349B28ull, // MotionLoaderImpl_UnderBarrelTypeTable (Ghidra JP154; =ReceiverTable-0x18, referenced by accessor 0x140db6c90)
-            0x140DB6C90ull, // MotionLoaderImpl_GetUnderBarrelType (Ghidra JP154; =GetReceiverType+0x20, leaf accessor reading 0x142349B28)
+            0x142349B28ull, // MotionLoaderImpl_UnderBarrelTypeTable
+            0x140DB6C90ull, // MotionLoaderImpl_GetUnderBarrelType
             0x140F6B2C0ull, // EquipDevelopControllerImpl_GetSuppressorAmount
             0x142BDCFF0ull, // DamageParameterTable_Instance
             0x1405CE410ull, // DamageParameterTable_ReloadDamageParameter
@@ -1261,22 +1374,85 @@ namespace AddressSetRuntime
             0x14006D7F0ull, // Fox_BlockGroup_GetBlockAtIndex
             0x140DB98A0ull, // EquipPreviewSystem_RequestLoadEquip
             0x1416AC540ull, // ItemSelector_StartEquipPreviewImpl
-            0x140A03820ull, // EquipBlockController2_RequestLoad (JP15.4 shares the JP15.4a layout)
-            0x142C1E3B0ull, // EquipBlockController2_Instance (JP15.4 shares the JP15.4a layout)
-            0x1416ACA00ull, // ItemSelector_UpdateSelect (JP15.4 shares the JP15.4a layout)
+            0x140A03820ull, // EquipBlockController2_RequestLoad
+            0x142C1E3B0ull, // EquipBlockController2_Instance
+            0x1416ACA00ull, // ItemSelector_UpdateSelect
             0x141681C90ull, // UiEquipPreviewController_ScrollNext
             0x141681AE0ull, // UiEquipPreviewController_ScrollPrev
-            0x141682130ull, // UiEquipPreviewController_StopEquipPreview (JP15.4 shares the JP15.4a layout)
-            0x1409BB870ull, // Player2Impl_AddAdditionalMtarAll (JP15.4 shares the JP15.4a layout)
-            0x1409C9350ull, // Player2Impl_RemoveAdditionalMtarAll (JP15.4 shares the JP15.4a layout)
-            0x142349C30ull, // MotionLoaderImpl_BarrelTypeTable (Ghidra JP154; =ReceiverTable+0xF0)
-            0x140DB6990ull, // MotionLoaderImpl_GetBarrelType (Ghidra JP154; LEA RCX,[142349c30])
-            0x142349CB0ull, // MotionLoaderImpl_MagazineTypeTable (Ghidra JP154; =ReceiverTable+0x170)
-            0x140DB69E0ull, // MotionLoaderImpl_GetMagazineType (Ghidra JP154; LEA RCX,[142349cb0])
-            0x142349D70ull, // MotionLoaderImpl_SightTypeTable (Ghidra JP154; =ReceiverTable+0x230)
-            0x140DB6C80ull, // MotionLoaderImpl_GetSightType (Ghidra JP154; =GetReceiverType+0x10)
-            0x14120A535ull, // TppPickable_ItemWindowBoundSite (JP15.4; CMP EBX,0x209, JG -> +0xA9)
-            0x140915010ull, // UiUtility_GetWeaponItemNameLangId (JP15.4; prologue byte-identical to EN15.4)
+            0x141682130ull, // UiEquipPreviewController_StopEquipPreview
+            0x1409BB870ull, // Player2Impl_AddAdditionalMtarAll
+            0x1409C9350ull, // Player2Impl_RemoveAdditionalMtarAll
+            0x142349C30ull, // MotionLoaderImpl_BarrelTypeTable
+            0x140DB6990ull, // MotionLoaderImpl_GetBarrelType
+            0x142349CB0ull, // MotionLoaderImpl_MagazineTypeTable
+            0x140DB69E0ull, // MotionLoaderImpl_GetMagazineType
+            0x142349D70ull, // MotionLoaderImpl_SightTypeTable
+            0x140DB6C80ull, // MotionLoaderImpl_GetSightType
+            0x14120A535ull, // TppPickable_ItemWindowBoundSite
+            0x140915010ull, // UiUtility_GetWeaponItemNameLangId
+            0x1409848F5ull, // SoundPlayerAnimEvent_StepNoiseQuietCmp
+            0x140A0B3C0ull, // CollectionLocatorArray_SetUpLinearAccessor
+            0x140D4FA20ull, // CollectionSystemImpl_PickUp
+            0x140D50D10ull, // CollectionSystemImpl_RepopCountOperation
+            0x140D4D3C0ull, // CollectionSystemImpl_GetCollectionInfo
+            0x140D4E340ull, // Collection_GetModelFilePath
+            0x140D4D170ull, // Collection_GetCatchEffectColorAndScale
+            0x140D4DED0ull, // Collection_GetGroundEffectSize
+            0x1412091E0ull, // PickUpActionPluginImpl_DoPickUpCollection
+            0x140910720ull, // GetCollectionIconFtexPath
+            0x140910B00ull, // GetCollectionNameText
+            0x14050B9D0ull, // UixUtility_GetUixUtility
+            0x140D4E560ull, // Collection_GetModelFilePathRoot
+            0x140D4DD70ull, // Collection_GetFovaFilePath
+            0x140A0C060ull, // Collection_IsHerbByType
+            0x140A0C0D0ull, // Collection_IsMaterialByType
+            0x140A0BF80ull, // Collection_IsDiamondByType
+            0x140A96340ull, // MbmImpl_IsGotDataBase
+            0x140A88610ull, // MbmImpl_AddTempDataBase
+            0x1410954C0ull, // AttackAction_UpdateSecondWeaponMatrix
+            0x141160474ull, // QuietChokeHold
+            0x141160C09ull, // QuietInterrogate
+            0x14110F87Cull, // QuietInterrogateBypass
+            0x14110DCF7ull, // QuietHoldupInterrogate
+            0x1416BB339ull, // CharaSlotSelectionNumGate
+            0x1416BB2F0ull, // CharaSlotSelectionNum
+            0x14196F850ull, // UiMbmDataBase_RefreshPrefabList
+            0x14196E890ull, // UiMbmDataBase_RefreshDataBaseNameText
+            0x14196E750ull, // UiMbmDataBase_RefreshDataBaseIcon
+            0x14196D3D0ull, // UiMbmDataBase_GetDataBaseInfoText
+            0x14196EEB0ull, // UiMbmDataBase_RefreshInfoLayout
+            0x14196ECD0ull, // UiMbmDataBase_RefreshImageRecord
+            0x14196E640ull, // UiMbmDataBase_RefreshCollectionRate
+            0x140FE59E0ull, // SkillAndItemParameterSystem_GetSuitParam
+            0x140F1BA40ull, // MbDvcMapCallbackIconImpl_DispOnNewMarkerIcon
+            0x140F1B3E0ull, // MbDvcMapCallbackIconImpl_DispOnImportantIcon
+            0x140F1A940ull, // MbDvcMapCallbackIconImpl_DispOnGoalIcon
+            0x140F1A6E0ull, // MbDvcMapCallbackIconImpl_DispOnGeneralIcon
+            0x140F1B510ull, // MbDvcMapCallbackIconImpl_DispOnTargetMarkerIcon
+            0x140F19B80ull, // MbDvcMapCallbackIconImpl_DispOnAreaIcon
+            0x140F21B60ull, // MbDvcMapCallbackIconImpl_GetIconDisplayParam
+            0x141E02D20ull, // PlayerInfo_GetLocalPartsType
+            0x141E024F0ull, // PlayerInfo_CheckStatusBit
+            0x1409CDA7Full, // UpdatePartsStatus_QuietCamoStrip
+            0x140956E30ull, // MissionPrepSystem_GetPlayerNameFromPlayerTypeAndStaffId
+            0x1409C92E0ull, // Player2BlockController_ApplyQuietSuitShaderParams
+            0x140FE7460ull, // UiControllerImpl_GetUiSightTypeBySightId
+            0x1408EDCB0ull, // SightCommonFactory_CreateWindow
+            0x1408EE690ull, // SightCommonFactory_DeleteWindow
+            0x14196F7A0ull, // UiMbmDataBase_RefreshNewIcon
+            0x141970210ull, // UiMbmDataBase_SetPutCursorFlag
+            0x14196E480ull, // UiMbmDataBase_OnStop
+            0x140F5A190ull, // MbmImpl_CalcDocumentationUnreadCount
+            0x140F5A360ull, // MbmImpl_CalcEncyclopediaUnreadCount
+            0x141E0B210ull, // Net_ServerManagerBufferRelease
+            0x1414E0FD0ull, // NoticeControllerImpl_CheckSightNoticePlayer
+            0ull, // DemoPlayback_OnPlayingAfterUpdateStream
+            0ull, // DemoPlayback_DoFinish
+            0ull, // DemoPlayback_DoInterrupt
+            0x140976360ull, // UpdateMusicPlayer
+            0ull, // GameObject_GetGameObjectIdWithName
+            0ull, // Vehicle_GetConnectPointWorldMatrix
+            0ull, // Player_SequentialDemoActionExecute
         };
         return value;
     }

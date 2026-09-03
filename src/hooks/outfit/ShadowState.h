@@ -6,7 +6,7 @@
 namespace outfit::shadow
 {
     constexpr std::size_t kMaxSlots = 4;
-    constexpr std::size_t kPlayerTypeMax = 4;
+    constexpr std::size_t kPlayerTypeMax = 7;
 
     struct Slot
     {

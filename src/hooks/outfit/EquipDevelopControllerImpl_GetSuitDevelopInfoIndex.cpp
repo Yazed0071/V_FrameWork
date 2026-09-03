@@ -14,6 +14,10 @@
 
 #include "AddressSet.h"
 #include "HookUtils.h"
+#include "MissionCodeGuard.h"
+#include "EquipDevelopControllerImpl_GetItemNameMessageId.h"
+#include "UniqueCharacterOwnSuit.h"
+#include "UniqueCharacterDefaultOutfit.h"
 #include "log.h"
 #include "../equip/EquipDevelop_SetEquipUndeveloped.h"
 #include "../equip/EquipDevelop_AddToEquipDevelopTable.h"
@@ -142,13 +146,28 @@ namespace
             ClearDevelopedNow(edc, idx);
 
         EquipDevelop_DrainPendingUndevelops();
+#ifdef _DEBUG
+        LogDebug("[BadgeProbe] the suit-index drain ran - every managed develop row has had its developed bit replayed from the state file by this point\n");
+#endif
+    }
+
+    static bool AsksAboutWornSuit(std::uint8_t livePT,
+                                  std::uint8_t liveSelector,
+                                  std::uint8_t askCamo)
+    {
+        if (askCamo >= outfit::kCustomSelectorStart) return false;
+        if (askCamo == liveSelector) return true;
+        if (askCamo == 0x00) return true;
+        return askCamo == ((livePT == outfit::kPlayerType_Ocelot)
+                               ? std::uint8_t{ 0x73 }
+                               : std::uint8_t{ 0x74 });
     }
 
     static std::uint32_t __fastcall hkEdcGetSuitIndex(
         void* self, std::uint32_t camoType, std::uint32_t level)
     {
         equip::MenuPerfScope _perf(equip::kPerf_GetSuitIdx);
-        if (!g_CachedEDC && self)
+        if (self && g_CachedEDC != self)
         {
             g_CachedEDC = self;
             DrainPendingDeveloped(self);
@@ -162,6 +181,43 @@ namespace
         std::uint8_t selector  = 0;
         const bool haveLive =
             outfit::GetCurrentEquippedSuitBytes(&partsType, &selector);
+
+        const std::uint8_t livePT = outfit::ReadLivePlayerType();
+        if (haveLive
+            && outfit::IsUniqueCharacterPlayerType(livePT)
+            && !MissionCodeGuard::ShouldBypassHooks()
+            && AsksAboutWornSuit(livePT, selector,
+                                 static_cast<std::uint8_t>(camoType)))
+        {
+            const outfit::OutfitEntry* liveSuit = nullptr;
+            if (partsType >= outfit::kCustomPartsTypeStart
+             && partsType <= outfit::kCustomPartsTypeEnd)
+                outfit::TryGetOutfitByPartsType(partsType, &liveSuit);
+
+            if (liveSuit && liveSuit->flowIndex != 0
+                && liveSuit->flowIndex < kEdcRowCapacity)
+                return liveSuit->flowIndex;
+
+            const std::uint16_t own = uniqueownsuit::GetOwnSuitRow(livePT);
+            if (own != 0 && own < kEdcRowCapacity)
+                return own;
+
+            const std::uint16_t def =
+                uniquedefaultoutfit::GetDefaultOutfitRow(livePT);
+            if (def != 0 && def < kEdcRowCapacity)
+            {
+                static std::atomic<int> s_defLogged{ 0 };
+                if (s_defLogged.fetch_add(1, std::memory_order_relaxed) == 0)
+                    LogDebug("[UniqueOwnSuit] player type %u is on the vanilla "
+                        "pin, so the equipped-suit query resolved to a vanilla "
+                        "develop row - answered with their default-outfit row %u "
+                        "instead, which is where the Uniform name, icon and "
+                        "description come from\n",
+                        static_cast<unsigned>(livePT),
+                        static_cast<unsigned>(def));
+                return def;
+            }
+        }
 
         if (ret != kDevelopIndexSentinel)
         {
@@ -230,7 +286,7 @@ namespace
 
     static std::uint32_t __fastcall hkEdcGetFaceIndex(void* self, std::uint32_t faceVal)
     {
-        if (!g_CachedEDC && self)
+        if (self && g_CachedEDC != self)
         {
             g_CachedEDC = self;
             DrainPendingDeveloped(self);
@@ -351,6 +407,16 @@ namespace
         return lvl;
     }
 
+    static bool IsWornDevelopRow(void* self, std::uint8_t baseCamo,
+                                 std::uint32_t devIndex)
+    {
+        if (!g_OrigEdcGetSuitIndex) return true;
+        const std::uint32_t wornRow = g_OrigEdcGetSuitIndex(
+            self, baseCamo, ReadLiveSuitLevelClamped(self));
+        if (wornRow == kDevelopIndexSentinel) return true;
+        return wornRow == devIndex;
+    }
+
     static std::uint32_t __fastcall hkEdcGetSuitCamoType(
         void* self, std::uint32_t devIndex)
     {
@@ -371,7 +437,8 @@ namespace
                     const std::uint8_t baseCamo =
                         outfit::VanillaExtGetVariantSourceCamo(vpt, vidx);
                     if (baseCamo != 0xFF
-                        && static_cast<std::uint32_t>(baseCamo) == r)
+                        && static_cast<std::uint32_t>(baseCamo) == r
+                        && IsWornDevelopRow(self, baseCamo, devIndex))
                         return sel;
                 }
             }
@@ -412,6 +479,20 @@ namespace
         return IsEnBuild() ? ReadLiveSuitLevelClamped(self) : std::uint8_t{1};
     }
 
+    constexpr std::uint32_t kOcelotOwnSuitCamo = 0x73;
+    constexpr std::uint32_t kQuietOwnSuitCamo   = 0x74;
+
+    static bool IsOwnCharacterSuit(void* self, std::uint8_t playerType,
+                                   std::uint32_t devIndex)
+    {
+        if (!g_OrigEdcGetSuitCamoType) return true;
+        const std::uint32_t camo = g_OrigEdcGetSuitCamoType(self, devIndex);
+        const std::uint32_t own  =
+            (playerType == outfit::kPlayerType_Ocelot) ? kOcelotOwnSuitCamo
+                                                       : kQuietOwnSuitCamo;
+        return camo == own;
+    }
+
     static std::uint8_t __fastcall hkEdcIsEquipSuit(
         void* self, std::uint32_t playerType, std::uint32_t devIndex)
     {
@@ -428,6 +509,36 @@ namespace
         {
             return 0;
         }
+
+        const std::uint8_t pt = static_cast<std::uint8_t>(playerType & 0xFF);
+        if (outfit::IsUniqueCharacterPlayerType(pt)
+            && !MissionCodeGuard::ShouldBypassHooks())
+        {
+            const outfit::OutfitEntry* own = nullptr;
+            const bool declaredForPt =
+                outfit::TryGetOutfitByFlowIndex(
+                    static_cast<std::uint16_t>(devIndex), &own)
+                && own && own->IsPlayerTypeSupported(pt);
+            if (declaredForPt)
+                return 1;
+
+            if (!IsOwnCharacterSuit(self, pt, devIndex))
+            {
+                if (uniquedefaultoutfit::IsRegisteredFor(pt))
+                    return 0;
+
+                const bool okForSnake =
+                    g_OrigEdcIsEquipSuit
+                    && g_OrigEdcIsEquipSuit(self, outfit::kPlayerType_Snake,
+                                            devIndex) != 0;
+                if (!uniqueownsuit::AdoptOrMatchRow(
+                        pt, static_cast<std::uint16_t>(devIndex), okForSnake))
+                    return 0;
+
+                outfit::Install_OwnSuitRowLabel_Hooks();
+            }
+        }
+
         return g_OrigEdcIsEquipSuit
             ? g_OrigEdcIsEquipSuit(self, playerType, devIndex)
             : std::uint8_t{0};
@@ -469,7 +580,7 @@ namespace
 
     static std::uint8_t __fastcall hkIsEquipVisile(void* self, std::uint16_t idx)
     {
-        if (!g_CachedEDC && self)
+        if (self && g_CachedEDC != self)
         {
             g_CachedEDC = self;
             DrainPendingDeveloped(self);
@@ -524,11 +635,9 @@ namespace outfit
                 reinterpret_cast<void**>(&g_OrigIsEquipVisile));
             if (!g_InstalledIsEquipVisile)
                 Log("[OutfitDevelopVisibility] ERROR: IsEquipVisile hook at %p "
-                    "was refused - another module (DevelopArrayGrow claims the "
-                    "same address) already owns it. The develop-menu hide filter "
-                    "now runs from that owner instead; if it does not, "
-                    "showInDevelopMenu=false is ignored and hidden rows appear "
-                    "in R&D.\n", tVisile);
+                    "refused - DevelopArrayGrow already owns that address, so the "
+                    "develop-menu hide filter runs from there instead; if it does "
+                    "not, showInDevelopMenu=false is ignored\n", tVisile);
         }
 
         if (void* tCamo = ResolveGameAddress(gAddr.EquipDevCtrl_GetSuitCamoType);

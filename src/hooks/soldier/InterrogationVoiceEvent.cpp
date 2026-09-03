@@ -258,10 +258,10 @@ namespace
         {
             static std::atomic<bool> s_warnedUnmappedSlot{ false };
             if (!s_warnedUnmappedSlot.exchange(true, std::memory_order_relaxed))
-                Log("[InterrogationVoice] WARN: a soldier vox call on sound slot %u arrived "
-                    "while an interrogation voice was pending, but that slot is not mapped to "
-                    "a soldier index yet - the call keeps its vanilla voice so unrelated "
-                    "soldiers cannot lose their lines.\n", slot);
+                Log("[InterrogationVoice] WARN: a soldier vox call on sound slot %u "
+                    "arrived with an interrogation voice pending, but that slot is "
+                    "not mapped to a soldier index yet - keeping the vanilla "
+                    "voice\n", slot);
             return 0;
         }
 

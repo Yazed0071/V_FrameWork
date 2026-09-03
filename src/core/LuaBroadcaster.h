@@ -10,6 +10,7 @@ struct lua_State;
 
 lua_State* V_FrameWork_AnyLuaState();
 unsigned long V_FrameWork_LuaOwnerThreadId();
+void V_FrameWork_NoteLiveLuaState(lua_State* L);
 
 namespace V_FrameWork
 {

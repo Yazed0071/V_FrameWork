@@ -49,6 +49,17 @@ namespace EquipDevelopAdd
 
     bool TryGetFlowIndexForDevelopId(std::uint16_t developId, std::uint16_t& outFlowIndex);
 
+    struct NativeDevelopNumber { const char* name; int value; };
+    struct NativeDevelopString { const char* name; const char* value; };
+
+    bool QueueNativeDevelopRequest(const char* key,
+                                   const NativeDevelopNumber* constNums,
+                                   std::size_t constNumCount,
+                                   const NativeDevelopString* constStrs,
+                                   std::size_t constStrCount,
+                                   const NativeDevelopNumber* flowNums,
+                                   std::size_t flowNumCount);
+
     bool IsManagedFlowIndex(std::uint16_t flowIndex);
 
     void MaybeRefreshDynamicGates();

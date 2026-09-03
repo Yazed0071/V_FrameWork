@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include <Windows.h>
+#include <atomic>
 #include <cstdint>
 #include <cstddef>
 #include <cstdio>
@@ -10,16 +11,12 @@
 #include "HookUtils.h"
 #include "log.h"
 #include "VIPSleepFaintHook.h"
-#include "VIPRadioHook.h"
+#include "VIPHoldupHook.h"
 #include "MissionCodeGuard.h"
 #include "AddressSet.h"
 
 namespace
 {
-
-
-    using State_ComradeAction_t =
-        void(__fastcall*)(void* self, std::uint32_t actorId, std::uint32_t proc, void* evt);
 
 
     using State_RecoveryTouch_t =
@@ -39,7 +36,6 @@ namespace
     static constexpr std::uint32_t HASH_SLEEP_WAKE_OFFICER = 0x9CD0A89Cu;
 
 
-    static State_ComradeAction_t g_OrigState_ComradeAction = nullptr;
     static State_RecoveryTouch_t g_OrigState_RecoveryTouch = nullptr;
     static State_RecoveryKick_t  g_OrigState_RecoveryKick  = nullptr;
 
@@ -51,38 +47,13 @@ namespace
     };
 
 
-    struct PendingWakeInfo
-    {
-        std::uint16_t sleeperIndex = 0xFFFFu;
-        std::uint16_t sleeperGameObjectId = 0xFFFFu;
-        ULONGLONG tickMs = 0;
-    };
-
-
     static std::unordered_map<std::uint16_t, ImportantTargetInfo> g_ImportantTargetsBySoldierIndex;
 
 
-    static std::unordered_map<std::uint32_t, PendingWakeInfo> g_PendingWakeByActor;
-
-
     static std::mutex g_SleepFaintMutex;
-}
 
 
-static bool SafeReadByte(std::uintptr_t addr, std::uint8_t& outValue)
-{
-    if (!addr)
-        return false;
-
-    __try
-    {
-        outValue = *reinterpret_cast<const std::uint8_t*>(addr);
-        return true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        return false;
-    }
+    static std::atomic<unsigned> g_UnresolvedTargetLogs{0};
 }
 
 
@@ -100,16 +71,6 @@ static bool SafeReadWord(std::uintptr_t addr, std::uint16_t& outValue)
     {
         return false;
     }
-}
-
-
-static bool IsFreshTick(ULONGLONG tickMs, ULONGLONG maxAgeMs = 10000ull)
-{
-    if (tickMs == 0)
-        return false;
-
-    const ULONGLONG now = GetTickCount64();
-    return (now - tickMs) <= maxAgeMs;
 }
 
 
@@ -247,172 +208,72 @@ static bool TryGetImportantTargetInfo(std::uint16_t soldierIndex, ImportantTarge
 }
 
 
-static void SetPendingWake(
-    std::uint32_t actorId,
-    std::uint16_t sleeperIndex,
-    std::uint16_t sleeperGameObjectId)
-{
-    PendingWakeInfo info{};
-    info.sleeperIndex = sleeperIndex;
-    info.sleeperGameObjectId = sleeperGameObjectId;
-    info.tickMs = GetTickCount64();
-
-    {
-        std::lock_guard<std::mutex> lock(g_SleepFaintMutex);
-        g_PendingWakeByActor[actorId] = info;
-    }
-}
-
-
-static bool TryGetPendingWake(std::uint32_t actorId, PendingWakeInfo& outInfo)
-{
-    outInfo = {};
-
-    std::lock_guard<std::mutex> lock(g_SleepFaintMutex);
-
-    const auto it = g_PendingWakeByActor.find(actorId);
-    if (it == g_PendingWakeByActor.end())
-    {
-        return false;
-    }
-
-    if (!IsFreshTick(it->second.tickMs))
-    {
-        g_PendingWakeByActor.erase(it);
-        return false;
-    }
-
-    outInfo = it->second;
-
-    return true;
-}
-
-
-static void ErasePendingWake(std::uint32_t actorId, const char* reason)
-{
-    {
-        std::lock_guard<std::mutex> lock(g_SleepFaintMutex);
-        g_PendingWakeByActor.erase(actorId);
-    }
-}
-
-
-static bool TryExtractSleepFaintCandidatesFromEntry(
+static bool TryResolveDownedSoldierIndex(
     void* self,
     std::uint32_t actorId,
-    std::uint16_t& outSleeperIndexFrom5D,
-    std::uint16_t& outSleeperGameObjectIdFrom52,
-    std::uint16_t& outSleeperIndexFrom52,
-    bool emitRawLog)
+    std::uint16_t& outSoldierIndex)
 {
-    outSleeperIndexFrom5D = 0xFFFFu;
-    outSleeperGameObjectIdFrom52 = 0xFFFFu;
-    outSleeperIndexFrom52 = 0xFFFFu;
+    outSoldierIndex = 0xFFFFu;
 
     const std::uintptr_t entry = GetNoticeActionEntry(self, actorId);
     if (!entry)
-    {
         return false;
-    }
 
-    std::uint8_t b5D = 0xFFu;
-    std::uint16_t w52 = 0xFFFFu;
+    std::uint16_t downedGameObjectId = 0xFFFFu;
+    if (!SafeReadWord(entry + 0x52ull, downedGameObjectId))
+        return false;
 
-    SafeReadByte(entry + 0x5Dull, b5D);
-    SafeReadWord(entry + 0x52ull, w52);
+    const std::uint16_t index = NormalizeSoldierIndexFromGameObjectId(downedGameObjectId);
+    if (index == 0xFFFFu)
+        return false;
 
-    if (b5D != 0xFFu)
-    {
-        outSleeperIndexFrom5D = static_cast<std::uint16_t>(b5D);
-    }
-
-    if (w52 != 0xFFFFu)
-    {
-        outSleeperGameObjectIdFrom52 = w52;
-        outSleeperIndexFrom52 = NormalizeSoldierIndexFromGameObjectId(w52);
-    }
-
+    outSoldierIndex = index;
     return true;
 }
 
 
-static void __fastcall hkState_ComradeAction(
+static bool IsRegisteredImportantSoldier(std::uint16_t soldierIndex)
+{
+    if (soldierIndex == 0xFFFFu)
+        return false;
+
+    ImportantTargetInfo info{};
+    if (TryGetImportantTargetInfo(soldierIndex, info))
+        return true;
+
+    bool isOfficer = false;
+    return IsVIPHoldupImportantSoldierIndex(soldierIndex, &isOfficer);
+}
+
+
+static bool TryInterceptRecoveryWake(
     void* self,
     std::uint32_t actorId,
     std::uint32_t proc,
     void* evt)
 {
-    MISSION_GUARD_ORIGINAL_VOID(g_OrigState_ComradeAction, self, actorId, proc, evt);
+    if (proc != 6 || evt == nullptr)
+        return false;
 
-    UNREFERENCED_PARAMETER(evt);
+    if (GetEventHash(evt) != HASH_EVENT_VOICE_NOTICE)
+        return false;
 
-    if (proc == 1)
+    std::uint16_t sleeperIndex = 0xFFFFu;
+    if (!TryResolveDownedSoldierIndex(self, actorId, sleeperIndex))
     {
-        std::uint16_t sleeperIndexFrom5D = 0xFFFFu;
-        std::uint16_t sleeperGameObjectIdFrom52 = 0xFFFFu;
-        std::uint16_t sleeperIndexFrom52 = 0xFFFFu;
+        if (g_UnresolvedTargetLogs.fetch_add(1u) < 8u)
+            Log("[SleepFaint] actor=%u: the downed soldier could not be identified from the notice "
+                "record, so no important-comrade line is substituted and the vanilla line plays\n",
+                actorId);
 
-        if (TryExtractSleepFaintCandidatesFromEntry(
-            self,
-            actorId,
-            sleeperIndexFrom5D,
-            sleeperGameObjectIdFrom52,
-            sleeperIndexFrom52,
-            true))
-        {
-            std::uint16_t chosenIndex = 0xFFFFu;
-            ImportantTargetInfo info{};
-            bool isImportant = false;
-
-
-            if (sleeperIndexFrom5D != 0xFFFFu && sleeperIndexFrom5D != 0)
-            {
-                if (TryGetImportantTargetInfo(sleeperIndexFrom5D, info))
-                {
-                    chosenIndex = sleeperIndexFrom5D;
-                    isImportant = true;
-                }
-            }
-
-            if (!isImportant && sleeperIndexFrom52 != 0xFFFFu)
-            {
-                if (TryGetImportantTargetInfo(sleeperIndexFrom52, info))
-                {
-                    chosenIndex = sleeperIndexFrom52;
-                    isImportant = true;
-                }
-            }
-
-
-            if (!isImportant)
-            {
-                std::uint16_t fallbackIndex = 0xFFFFu;
-                bool fallbackOfficer = false;
-
-                if (Try_GetSingleRecentImportantCorpseIndex(fallbackIndex, fallbackOfficer))
-                {
-                    chosenIndex = fallbackIndex;
-                    isImportant = TryGetImportantTargetInfo(chosenIndex, info);
-                }
-            }
-
-
-            if (chosenIndex == 0xFFFFu)
-            {
-                if (sleeperIndexFrom5D != 0xFFFFu && sleeperIndexFrom5D != 0)
-                    chosenIndex = sleeperIndexFrom5D;
-                else if (sleeperIndexFrom52 != 0xFFFFu)
-                    chosenIndex = sleeperIndexFrom52;
-            }
-
-            if (chosenIndex != 0xFFFFu)
-            {
-                SetPendingWake(actorId, chosenIndex, sleeperGameObjectIdFrom52);
-            }
-        }
+        return false;
     }
 
-    g_OrigState_ComradeAction(self, actorId, proc, evt);
+    if (!IsRegisteredImportantSoldier(sleeperIndex))
+        return false;
+
+    DispatchNoticeReaction(self, actorId, HASH_SLEEP_WAKE_OFFICER);
+    return true;
 }
 
 
@@ -424,123 +285,10 @@ static void __fastcall hkState_RecoveryTouch(
 {
     MISSION_GUARD_ORIGINAL_VOID(g_OrigState_RecoveryTouch, self, actorId, proc, evt);
 
-    if (proc == 6 && evt)
-    {
-        const std::uint32_t eventHash = GetEventHash(evt);
-
-        if (eventHash == HASH_EVENT_VOICE_NOTICE)
-        {
-            PendingWakeInfo cached{};
-            std::uint16_t sleeperIndex = 0xFFFFu;
-            std::uint16_t sleeperGameObjectId = 0xFFFFu;
-
-            if (TryGetPendingWake(actorId, cached))
-            {
-                sleeperIndex = cached.sleeperIndex;
-                sleeperGameObjectId = cached.sleeperGameObjectId;
-            }
-            else
-            {
-                std::uint16_t sleeperIndexFrom5D = 0xFFFFu;
-                std::uint16_t sleeperGameObjectIdFrom52 = 0xFFFFu;
-                std::uint16_t sleeperIndexFrom52 = 0xFFFFu;
-
-                if (TryExtractSleepFaintCandidatesFromEntry(
-                    self,
-                    actorId,
-                    sleeperIndexFrom5D,
-                    sleeperGameObjectIdFrom52,
-                    sleeperIndexFrom52,
-                    true))
-                {
-
-                    if (sleeperIndexFrom52 != 0xFFFFu)
-                    {
-                        sleeperIndex = sleeperIndexFrom52;
-                        sleeperGameObjectId = sleeperGameObjectIdFrom52;
-                    }
-                    else if (sleeperIndexFrom5D != 0xFFFFu && sleeperIndexFrom5D != 0)
-                    {
-                        sleeperIndex = sleeperIndexFrom5D;
-                    }
-                }
-            }
-
-            ImportantTargetInfo info{};
-            const bool isImportant = TryGetImportantTargetInfo(sleeperIndex, info);
-
-            if (isImportant)
-            {
-                ErasePendingWake(actorId, "dispatch");
-                DispatchNoticeReaction(self, actorId, HASH_SLEEP_WAKE_OFFICER);
-                return;
-            }
-        }
-    }
+    if (TryInterceptRecoveryWake(self, actorId, proc, evt))
+        return;
 
     g_OrigState_RecoveryTouch(self, actorId, proc, evt);
-}
-
-
-static bool TryInterceptRecoveryWake(
-    void* self,
-    std::uint32_t actorId,
-    std::uint32_t proc,
-    void* evt,
-    const char* tag)
-{
-    if (proc != 6 || evt == nullptr)
-        return false;
-
-    const std::uint32_t eventHash = GetEventHash(evt);
-
-    if (eventHash != HASH_EVENT_VOICE_NOTICE)
-        return false;
-
-    PendingWakeInfo cached{};
-    std::uint16_t sleeperIndex = 0xFFFFu;
-    std::uint16_t sleeperGameObjectId = 0xFFFFu;
-
-    if (TryGetPendingWake(actorId, cached))
-    {
-        sleeperIndex = cached.sleeperIndex;
-        sleeperGameObjectId = cached.sleeperGameObjectId;
-    }
-    else
-    {
-        std::uint16_t sleeperIndexFrom5D = 0xFFFFu;
-        std::uint16_t sleeperGameObjectIdFrom52 = 0xFFFFu;
-        std::uint16_t sleeperIndexFrom52 = 0xFFFFu;
-
-        if (TryExtractSleepFaintCandidatesFromEntry(
-            self,
-            actorId,
-            sleeperIndexFrom5D,
-            sleeperGameObjectIdFrom52,
-            sleeperIndexFrom52,
-            true))
-        {
-            if (sleeperIndexFrom52 != 0xFFFFu)
-            {
-                sleeperIndex = sleeperIndexFrom52;
-                sleeperGameObjectId = sleeperGameObjectIdFrom52;
-            }
-            else if (sleeperIndexFrom5D != 0xFFFFu && sleeperIndexFrom5D != 0)
-            {
-                sleeperIndex = sleeperIndexFrom5D;
-            }
-        }
-    }
-
-    ImportantTargetInfo info{};
-    const bool isImportant = TryGetImportantTargetInfo(sleeperIndex, info);
-
-    if (!isImportant)
-        return false;
-
-    ErasePendingWake(actorId, "dispatch");
-    DispatchNoticeReaction(self, actorId, HASH_SLEEP_WAKE_OFFICER);
-    return true;
 }
 
 
@@ -552,7 +300,7 @@ static void __fastcall hkState_RecoveryKick(
 {
     MISSION_GUARD_ORIGINAL_VOID(g_OrigState_RecoveryKick, self, actorId, proc, evt);
 
-    if (TryInterceptRecoveryWake(self, actorId, proc, evt, "KICK"))
+    if (TryInterceptRecoveryWake(self, actorId, proc, evt))
         return;
 
     g_OrigState_RecoveryKick(self, actorId, proc, evt);
@@ -600,18 +348,25 @@ void Clear_VIPSleepFaintImportantGameObjectIds()
     {
         std::lock_guard<std::mutex> lock(g_SleepFaintMutex);
         g_ImportantTargetsBySoldierIndex.clear();
-        g_PendingWakeByActor.clear();
     }
+}
+
+
+bool IsVIPSleepFaintImportantSoldierIndex(std::uint16_t soldierIndex, bool* outIsOfficer)
+{
+    ImportantTargetInfo info{};
+    if (!TryGetImportantTargetInfo(soldierIndex, info))
+        return false;
+
+    if (outIsOfficer)
+        *outIsOfficer = info.isOfficer;
+
+    return true;
 }
 
 
 bool Install_VIPSleepFaint_Hook()
 {
-    const bool okComrade = CreateAndEnableHook(
-        ResolveGameAddress(gAddr.State_ComradeAction),
-        reinterpret_cast<void*>(&hkState_ComradeAction),
-        reinterpret_cast<void**>(&g_OrigState_ComradeAction));
-
     const bool okTouch = CreateAndEnableHook(
         ResolveGameAddress(gAddr.State_RecoveryTouch),
         reinterpret_cast<void*>(&hkState_RecoveryTouch),
@@ -623,36 +378,30 @@ bool Install_VIPSleepFaint_Hook()
         reinterpret_cast<void**>(&g_OrigState_RecoveryKick));
 
 #ifdef _DEBUG
-    Log("[SleepFaint] Install State_ComradeAction: %s\n", okComrade ? "OK" : "FAIL");
     Log("[SleepFaint] Install State_RecoveryTouch: %s\n", okTouch ? "OK" : "FAIL");
     Log("[SleepFaint] Install State_RecoveryKick:  %s\n", okKick ? "OK" : "FAIL");
 #else
-    if (!okComrade)
-        Log("[SleepFaint] Install State_ComradeAction: %s\n", okComrade ? "OK" : "FAIL");
     if (!okTouch)
         Log("[SleepFaint] Install State_RecoveryTouch: %s\n", okTouch ? "OK" : "FAIL");
     if (!okKick)
         Log("[SleepFaint] Install State_RecoveryKick:  %s\n", okKick ? "OK" : "FAIL");
 #endif
 
-    return okComrade && okTouch && okKick;
+    return okTouch && okKick;
 }
 
 
 bool Uninstall_VIPSleepFaint_Hook()
 {
-    DisableAndRemoveHook(ResolveGameAddress(gAddr.State_ComradeAction));
     DisableAndRemoveHook(ResolveGameAddress(gAddr.State_RecoveryTouch));
     DisableAndRemoveHook(ResolveGameAddress(gAddr.State_RecoveryKick));
 
-    g_OrigState_ComradeAction = nullptr;
     g_OrigState_RecoveryTouch = nullptr;
     g_OrigState_RecoveryKick  = nullptr;
 
     {
         std::lock_guard<std::mutex> lock(g_SleepFaintMutex);
         g_ImportantTargetsBySoldierIndex.clear();
-        g_PendingWakeByActor.clear();
     }
 
 #ifdef _DEBUG

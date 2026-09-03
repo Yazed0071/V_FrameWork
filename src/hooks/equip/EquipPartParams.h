@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 struct lua_State;
 
@@ -34,6 +34,8 @@ bool Install_MotionLoader_MagazineTypeHook();
 void Uninstall_MotionLoader_MagazineTypeHook();
 bool Install_MotionLoader_SightTypeHook();
 void Uninstall_MotionLoader_SightTypeHook();
+bool Install_UiController_UiSightTypeHook();
+void Uninstall_UiController_UiSightTypeHook();
 int  EquipParam_InheritPartMotionTypes(int barrelDst, int barrelSrc,
                                        int magazineDst, int magazineSrc,
                                        int sightDst, int sightSrc,

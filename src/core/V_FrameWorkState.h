@@ -12,6 +12,8 @@ namespace V_FrameWorkState
 
     void Load();
 
+    void NoteInstallOutcome(bool allInstalled);
+
 
     void Save();
 
@@ -40,11 +42,14 @@ namespace V_FrameWorkState
 
     bool IsClaimedEquipId(std::int32_t equipId);
 
+    bool IsDevelopedByFlowRowDevelopId(std::int32_t developId, bool& developed);
+
     void SetVanillaIdentityEquipIds(const std::int32_t* equipIds,
                                     std::size_t count);
 
     void NotePinnedEquipId(std::int32_t equipId);
-    void ReplacePinnedEquipIds(const std::int32_t* equipIds, std::size_t count);
+    void NoteStickyPinnedEquipId(std::int32_t equipId);
+    void UnpinEquipId(std::int32_t equipId);
 
 
     bool ResolveOrCreateDevelopId(
@@ -54,6 +59,12 @@ namespace V_FrameWorkState
         bool* outCreated = nullptr);
 
     std::int32_t GetDevelopIdByKey(const char* key);
+
+    constexpr std::uint8_t kRowKindUnknown = 0;
+    constexpr std::uint8_t kRowKindWeapon  = 1;
+    constexpr std::uint8_t kRowKindOutfit  = 2;
+
+    void SetRowKind(const char* key, std::uint8_t kind);
 
     std::int32_t GetDevelopIdAtOldFlowIndex(std::int32_t oldFlowIndex);
 
@@ -133,6 +144,14 @@ namespace V_FrameWorkState
                                  std::uint8_t selector,
                                  const std::uint8_t* variants)>& callback);
 
+
+    bool ResolveOrCreateBluePrintId(const char* key, std::int32_t& outId);
+    std::int32_t GetBluePrintId(const char* key);
+    void ForEachBluePrint(void (*fn)(const char* key, std::int32_t id, bool owned));
+    void SetBluePrintOwned(const char* key, bool owned);
+    bool GetBluePrintOwned(const char* key);
+    void SetBluePrintNew(const char* key, bool isNew);
+    bool GetBluePrintNew(const char* key);
 
     void SetTapeOwned(const char* key, bool owned);
     void SetTapeNew(const char* key, bool isNew);

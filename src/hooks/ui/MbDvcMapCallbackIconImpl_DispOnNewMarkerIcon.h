@@ -1,0 +1,4 @@
+#pragma once
+
+bool Install_MbDvcMapCallbackIconImpl_DispOnNewMarkerIcon_Patch();
+void Uninstall_MbDvcMapCallbackIconImpl_DispOnNewMarkerIcon_Patch();

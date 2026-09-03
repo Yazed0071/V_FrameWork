@@ -45,9 +45,40 @@ void InitLog()
     strcat_s(logPath, "mod\\V_FrameWork\\V_FrameWork_log.txt");
 
 
+    char prevPath[MAX_PATH]{};
+    strcpy_s(prevPath, gameDir);
+    strcat_s(prevPath, "mod\\V_FrameWork\\V_FrameWork_log.prev.txt");
+
+    bool rotated      = false;
+    bool rotateFailed = false;
+    DWORD rotateErr   = 0;
+    if (GetFileAttributesA(logPath) != INVALID_FILE_ATTRIBUTES)
+    {
+        if (MoveFileExA(logPath, prevPath, MOVEFILE_REPLACE_EXISTING))
+            rotated = true;
+        else
+        {
+            rotateFailed = true;
+            rotateErr    = GetLastError();
+        }
+    }
+
     g_LogFile = _fsopen(logPath, "w", _SH_DENYWR);
     if (g_LogFile)
+    {
         fprintf(g_LogFile, "[LOG] V_FrameWork log initialized at %s\n", logPath);
+        if (rotated)
+            fprintf(g_LogFile,
+                "[LOG] the previous session's log was kept as %s - after a freeze "
+                "or crash the run that caused it is in that file, not this one\n",
+                prevPath);
+        else if (rotateFailed)
+            fprintf(g_LogFile,
+                "[LOG] could not roll the previous log to %s (error %lu, usually "
+                "another process still holding it) - that session's evidence is "
+                "gone, so a freeze reported from it cannot be traced\n",
+                prevPath, rotateErr);
+    }
 }
 
 void Log(const char* fmt, ...)

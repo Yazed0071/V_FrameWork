@@ -2,6 +2,7 @@
 #include "V_FrameWorkState.h"
 #include "log.h"
 #include "AddressSet.h"
+#include "../hooks/equip/CustomBluePrint.h"
 #include "../hooks/equip/EquipIdCompression.h"
 #include "../hooks/equip/DevelopArrayGrow.h"
 #include "FeatureModule.h"
@@ -11,6 +12,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <mutex>
@@ -54,7 +56,17 @@ namespace V_FrameWorkState
         static constexpr std::int32_t kTapeOrphanGraceLaunches = 2;
         static constexpr std::int32_t kEquipOrphanGraceLaunches = 2;
         static constexpr std::int32_t kConstantOrphanGraceLaunches = 2;
+        static constexpr std::int32_t kBluePrintOrphanGraceLaunches = 2;
         static constexpr std::int32_t kMaxCustomConstantValue = 0xFFF0;
+
+        static constexpr char kUniqueStaffKeyPrefix[] = "USTAFF:";
+        static constexpr std::size_t kUniqueStaffKeyPrefixLen =
+            sizeof(kUniqueStaffKeyPrefix) - 1;
+
+        static bool IsUniqueStaffConstantKey(const std::string& key)
+        {
+            return key.compare(0, kUniqueStaffKeyPrefixLen, kUniqueStaffKeyPrefix) == 0;
+        }
 
         struct EquipEntry
         {
@@ -76,6 +88,8 @@ namespace V_FrameWorkState
 
             bool isNew = false;
             bool devReqAnnounced = false;
+
+            std::uint8_t kind = 0;
         };
 
         struct TapeEntry
@@ -86,18 +100,29 @@ namespace V_FrameWorkState
             std::int32_t misses = 0;
         };
 
+        struct BluePrintEntry
+        {
+            std::int32_t id = 0;
+            bool owned = false;
+            bool isNew = false;
+            std::int32_t misses = 0;
+        };
+
         struct State
         {
             bool loaded = false;
             bool dirty = false;
+            bool launchHealthy = false;
             std::unordered_map<std::string, EquipEntry> equips;
             std::unordered_map<std::string, TapeEntry> tapes;
+            std::unordered_map<std::string, BluePrintEntry> bluePrints;
             std::unordered_map<std::string, std::int32_t> constants;
             std::unordered_map<std::string, std::int32_t> constantMisses;
             std::unordered_set<std::int32_t> pinnedEquipIds;
         };
 
         static State g_State;
+        static bool g_PrevLaunchHealthy = true;
         static std::mutex g_Mutex;
         static std::vector<std::int32_t> g_PendingDevelopedResets;
         static int g_BatchDepth = 0;
@@ -114,20 +139,22 @@ namespace V_FrameWorkState
 
 
         static std::unordered_set<std::string> g_ConstantsTouched;
+        static bool g_ExitSave = false;
 
         static bool CanCountConstantMisses()
         {
-            if (g_ConstantsTouched.empty())
+            if (!g_ExitSave)
+                return false;
+            if (!g_State.launchHealthy)
             {
                 static bool s_said = false;
                 if (!s_said)
                 {
                     s_said = true;
-                    Log("[V_FrameWorkState] no custom constant was registered before this "
-                        "save, so this launch is not evidence that any mod was removed - "
-                        "the unreferenced-constant counters are held where they are. "
-                        "Without this a boot that saves before registration ages every "
-                        "persisted equipId toward eviction.\n");
+                    Log("[V_FrameWorkState] this launch did not install cleanly, so no "
+                        "mod could register - unreferenced-constant counters frozen; "
+                        "counting this launch would expire persisted ids that are still "
+                        "in use\n");
                 }
                 return false;
             }
@@ -137,28 +164,29 @@ namespace V_FrameWorkState
                 if (!s_said)
                 {
                     s_said = true;
-                    Log("[V_FrameWorkState] disabled_modules.txt is active, so the symbols "
-                        "those modules register are absent by request, not because a mod "
-                        "was uninstalled. The unreferenced-constant counters are frozen "
-                        "for this launch: two bisect runs would otherwise expire every "
-                        "persisted equipId and renumber the whole equip table on the next "
-                        "boot.\n");
+                    Log("[V_FrameWorkState] disabled_modules.txt is active, so "
+                        "absent symbols are by request, not an uninstall - "
+                        "unreferenced-constant counters frozen this launch; two "
+                        "bisect runs would otherwise expire every persisted "
+                        "equipId\n");
                 }
                 return false;
             }
             return true;
         }
         static std::unordered_set<std::int32_t> g_SessionPinnedIds;
+        static std::unordered_set<std::int32_t> g_StickyPinnedIds;
         static bool g_PinSetFreshThisSession = false;
 
         static std::unordered_map<std::string, std::int32_t> g_SessionEquipIds;
 
-        static std::uint64_t g_ClaimedEquipBits[4096 / 64] = {};
+        static std::atomic<std::uint64_t> g_ClaimedEquipBits[0x10000 / 64] = {};
 
         static void NoteClaimedEquipId_NoLock(std::int32_t equipId)
         {
-            if (equipId > 0 && equipId < 4096)
-                g_ClaimedEquipBits[equipId >> 6] |= 1ull << (equipId & 63);
+            if (equipId > 0 && equipId <= 0xFFFF)
+                g_ClaimedEquipBits[equipId >> 6].fetch_or(
+                    1ull << (equipId & 63), std::memory_order_relaxed);
         }
 
         static std::unordered_set<std::int32_t> g_VanillaIdentityIds;
@@ -200,6 +228,30 @@ namespace V_FrameWorkState
         }
 
 
+        static std::int32_t ParseStateInt(const std::string& text)
+        {
+            std::size_t at = 0;
+            bool negative = false;
+            if (at < text.size() && (text[at] == '-' || text[at] == '+'))
+            {
+                negative = (text[at] == '-');
+                ++at;
+            }
+            int base = 10;
+            if (text.size() - at > 2 && text[at] == '0'
+                && (text[at + 1] == 'x' || text[at + 1] == 'X'))
+            {
+                base = 16;
+                at += 2;
+            }
+            try
+            {
+                const long v = std::stol(text.substr(at), nullptr, base);
+                return static_cast<std::int32_t>(negative ? -v : v);
+            }
+            catch (...) { return 0; }
+        }
+
         static bool ParseEquipLine(const std::string& line, std::string& outKey, EquipEntry& out)
         {
             const auto lb = line.find("[\"");
@@ -213,7 +265,7 @@ namespace V_FrameWorkState
             auto findField = [&](const char* name) -> std::int32_t
             {
                 const std::string field = std::string(name) + " = ";
-                const auto pos = line.find(field);
+                const auto pos = line.find(field, rb);
                 if (pos == std::string::npos) return 0;
                 const auto start = pos + field.size();
                 std::string numStr;
@@ -223,8 +275,7 @@ namespace V_FrameWorkState
                     if (c == ',' || c == '}' || c == ' ') break;
                     numStr.push_back(c);
                 }
-                try { return static_cast<std::int32_t>(std::stol(numStr, nullptr, 0)); }
-                catch (...) { return 0; }
+                return ParseStateInt(numStr);
             };
 
             out.developId = findField("developId");
@@ -237,7 +288,7 @@ namespace V_FrameWorkState
 
             {
                 const char* tag = "variantSelectors = \"";
-                const auto pos = line.find(tag);
+                const auto pos = line.find(tag, rb);
                 if (pos != std::string::npos)
                 {
                     std::size_t i = pos + std::strlen(tag);
@@ -250,28 +301,30 @@ namespace V_FrameWorkState
                         if (c >= '0' && c <= '9') { numStr.push_back(c); continue; }
                         if (!numStr.empty())
                         {
-                            try
-                            {
-                                const long v = std::stol(numStr);
-                                if (v > 0 && v <= 0xFF)
-                                    out.variantSelectors[vi++] =
-                                        static_cast<std::uint8_t>(v);
-                            }
-                            catch (...) {}
+                            long v = 0;
+                            try { v = std::stol(numStr); }
+                            catch (...) { v = 0; }
+                            if (v > 0 && v <= 0xFF)
+                                out.variantSelectors[vi] =
+                                    static_cast<std::uint8_t>(v);
+                            ++vi;
                             numStr.clear();
                         }
                         if (c == '"') break;
                     }
                 }
             }
-            if (line.find("developed = true") != std::string::npos)
+            if (line.find("developed = true", rb) != std::string::npos)
                 out.developed = 1;
-            else if (line.find("developed = false") != std::string::npos)
+            else if (line.find("developed = false", rb) != std::string::npos)
                 out.developed = 0;
 
-            out.isNew = line.find("new = true") != std::string::npos;
+            out.isNew =
+                line.find("new = true", rb) != std::string::npos
+                || line.find("seen = true", rb) == std::string::npos;
             out.devReqAnnounced =
-                line.find("reqAnnounced = true") != std::string::npos;
+                line.find("reqAnnounced = true", rb) != std::string::npos
+                || line.find("announcePending = true", rb) == std::string::npos;
 
             return !outKey.empty();
         }
@@ -290,7 +343,7 @@ namespace V_FrameWorkState
             auto findIntField = [&](const char* name) -> std::int32_t
             {
                 const std::string field = std::string(name) + " = ";
-                const auto pos = line.find(field);
+                const auto pos = line.find(field, rb);
                 if (pos == std::string::npos) return 0;
                 const auto start = pos + field.size();
                 std::string numStr;
@@ -300,15 +353,59 @@ namespace V_FrameWorkState
                     if (c == ',' || c == '}' || c == ' ') break;
                     numStr.push_back(c);
                 }
-                try { return static_cast<std::int32_t>(std::stol(numStr, nullptr, 0)); }
-                catch (...) { return 0; }
+                return ParseStateInt(numStr);
             };
 
             out.saveIndex = static_cast<std::int16_t>(findIntField("saveIndex"));
-            out.owned = line.find("owned = true") != std::string::npos;
-            out.isNew = line.find("new = true") != std::string::npos;
+            out.owned = line.find("owned = true", rb) != std::string::npos;
+            out.isNew = line.find("new = true", rb) != std::string::npos;
             out.misses = findIntField("misses");
             return !outKey.empty() && out.saveIndex > 0;
+        }
+
+        static bool ParseBluePrintLine(const std::string& line, std::string& outKey,
+                                       BluePrintEntry& out)
+        {
+            const auto lb = line.find("[\"");
+            if (lb == std::string::npos) return false;
+            const auto rb = line.find("\"]", lb + 2);
+            if (rb == std::string::npos) return false;
+
+            outKey = line.substr(lb + 2, rb - (lb + 2));
+            out = {};
+
+            const std::string field = "bluePrintId = ";
+            const auto pos = line.find(field, rb);
+            if (pos != std::string::npos)
+            {
+                std::string numStr;
+                for (auto i = pos + field.size(); i < line.size(); ++i)
+                {
+                    const char c = line[i];
+                    if (c == ',' || c == '}' || c == ' ') break;
+                    numStr.push_back(c);
+                }
+                out.id = ParseStateInt(numStr);
+            }
+
+            out.owned = line.find("owned = true", rb) != std::string::npos;
+            out.isNew = line.find("new = true", rb) != std::string::npos;
+
+            const std::string missField = "misses = ";
+            const auto mpos = line.find(missField, rb);
+            if (mpos != std::string::npos)
+            {
+                std::string numStr;
+                for (auto i = mpos + missField.size(); i < line.size(); ++i)
+                {
+                    const char c = line[i];
+                    if (c == ',' || c == '}' || c == ' ') break;
+                    numStr.push_back(c);
+                }
+                out.misses = ParseStateInt(numStr);
+            }
+
+            return !outKey.empty();
         }
 
         static bool ParseConstantLine(const std::string& line, std::string& outKey, std::int32_t& outValue)
@@ -332,9 +429,16 @@ namespace V_FrameWorkState
                 if (c == ',' || c == '}' || c == ' ') break;
                 numStr.push_back(c);
             }
-            try { outValue = static_cast<std::int32_t>(std::stol(numStr, nullptr, 0)); }
-            catch (...) { return false; }
+            outValue = ParseStateInt(numStr);
             return !outKey.empty() && outValue != 0;
+        }
+
+        static std::string CanonicalConstantKey(std::string key)
+        {
+            static const char kLegacyWeaponSlot[] = "WPSLOT:";
+            if (key.rfind(kLegacyWeaponSlot, 0) == 0)
+                key = "WP:" + key.substr(sizeof(kLegacyWeaponSlot) - 1);
+            return key;
         }
 
         static void SaveToDisk_NoLock();
@@ -346,9 +450,11 @@ namespace V_FrameWorkState
             g_State.loaded = true;
             g_State.equips.clear();
             g_State.tapes.clear();
+            g_State.bluePrints.clear();
             g_State.constants.clear();
             g_State.constantMisses.clear();
             g_State.pinnedEquipIds.clear();
+            g_VanillaIdentityIds.clear();
             g_ConstantsTouched.clear();
             g_TapeSaveIndexInUse.clear();
 
@@ -360,13 +466,35 @@ namespace V_FrameWorkState
                 return;
             }
 
-            enum Section { None, Equips, Tapes, Constants, ConstantMisses,
-                           PinnedIds } section = None;
+            g_PrevLaunchHealthy = false;
+
+            enum Section { None, Equips, Weapons, Outfits, Tapes, BluePrints,
+                           Constants, ConstantMisses, PinnedIds,
+                           VanillaIdentity } section = None;
+
+            std::string constantSpace;
 
             std::string line;
             while (std::getline(in, line))
             {
                 const std::string trimmed = Trim(line);
+
+                if ((section == Constants || section == ConstantMisses)
+                    && trimmed.find("[\"") == std::string::npos
+                    && trimmed.find('{') != std::string::npos)
+                {
+                    const auto eq = trimmed.find('=');
+                    if (eq != std::string::npos)
+                        constantSpace = Trim(trimmed.substr(0, eq));
+                    continue;
+                }
+
+                if (section == None && trimmed.rfind("launchHealthy", 0) == 0)
+                {
+                    g_PrevLaunchHealthy =
+                        trimmed.find("false") == std::string::npos;
+                    continue;
+                }
 
                 if (trimmed.rfind("equips", 0) == 0 &&
                     trimmed.find('{') != std::string::npos)
@@ -375,10 +503,39 @@ namespace V_FrameWorkState
                     continue;
                 }
 
+                if (trimmed.rfind("develop", 0) == 0 &&
+                    trimmed.find('{') != std::string::npos)
+                {
+                    section = Equips;
+                    continue;
+                }
+
+                if (trimmed.rfind("weapons", 0) == 0 &&
+                    trimmed.find('{') != std::string::npos)
+                {
+                    section = Weapons;
+                    continue;
+                }
+
+                if (trimmed.rfind("outfits", 0) == 0 &&
+                    trimmed.find('{') != std::string::npos)
+                {
+                    section = Outfits;
+                    continue;
+                }
+
                 if (trimmed.rfind("tapes", 0) == 0 &&
                     trimmed.find('{') != std::string::npos)
                 {
                     section = Tapes;
+                    continue;
+                }
+
+                if ((trimmed.rfind("DataBase", 0) == 0
+                     || trimmed.rfind("BluePrint", 0) == 0) &&
+                    trimmed.find('{') != std::string::npos)
+                {
+                    section = BluePrints;
                     continue;
                 }
 
@@ -396,6 +553,13 @@ namespace V_FrameWorkState
                     continue;
                 }
 
+                if (trimmed.rfind("vanillaEquipIdentity", 0) == 0 &&
+                    trimmed.find('{') != std::string::npos)
+                {
+                    section = VanillaIdentity;
+                    continue;
+                }
+
                 if (trimmed.rfind("constants", 0) == 0 &&
                     trimmed.find('{') != std::string::npos)
                 {
@@ -406,16 +570,24 @@ namespace V_FrameWorkState
 
                 if (trimmed == "}," || (trimmed == "}" && section != None))
                 {
-                    section = None;
+                    if ((section == Constants || section == ConstantMisses)
+                        && !constantSpace.empty())
+                        constantSpace.clear();
+                    else
+                        section = None;
                     continue;
                 }
 
-                if (section == Equips)
+                if (section == Equips || section == Weapons
+                    || section == Outfits)
                 {
                     std::string key;
                     EquipEntry entry;
                     if (ParseEquipLine(trimmed, key, entry))
                     {
+                        entry.kind = (section == Weapons) ? kRowKindWeapon
+                                   : (section == Outfits) ? kRowKindOutfit
+                                                          : kRowKindUnknown;
                         const auto colon = key.rfind(':');
                         if (colon != std::string::npos && entry.equipId != 0)
                         {
@@ -440,19 +612,34 @@ namespace V_FrameWorkState
                         LogDebug("[CustomTapes] tape loaded: '%s' (saveIndex %d)\n", key.c_str(), static_cast<int>(entry.saveIndex));
                     }
                 }
+                else if (section == BluePrints)
+                {
+                    std::string key;
+                    BluePrintEntry entry;
+                    if (ParseBluePrintLine(trimmed, key, entry))
+                        g_State.bluePrints[key] = entry;
+                }
                 else if (section == Constants)
                 {
                     std::string key;
                     std::int32_t value = 0;
                     if (ParseConstantLine(trimmed, key, value))
-                        g_State.constants[key] = value;
+                    {
+                        if (!constantSpace.empty())
+                            key = constantSpace + ":" + key;
+                        g_State.constants[CanonicalConstantKey(key)] = value;
+                    }
                 }
                 else if (section == ConstantMisses)
                 {
                     std::string key;
                     std::int32_t value = 0;
                     if (ParseConstantLine(trimmed, key, value))
-                        g_State.constantMisses[key] = value;
+                    {
+                        if (!constantSpace.empty())
+                            key = constantSpace + ":" + key;
+                        g_State.constantMisses[CanonicalConstantKey(key)] = value;
+                    }
                 }
                 else if (section == PinnedIds)
                 {
@@ -461,14 +648,84 @@ namespace V_FrameWorkState
                     if (ParseConstantLine(trimmed, key, value))
                         g_State.pinnedEquipIds.insert(value);
                 }
+                else if (section == VanillaIdentity)
+                {
+                    std::size_t pos = 0;
+                    while (pos < trimmed.size())
+                    {
+                        while (pos < trimmed.size()
+                               && (trimmed[pos] < '0' || trimmed[pos] > '9'))
+                            ++pos;
+                        std::size_t start = pos;
+                        while (pos < trimmed.size()
+                               && trimmed[pos] >= '0' && trimmed[pos] <= '9')
+                            ++pos;
+                        if (pos > start)
+                        {
+                            const long v = std::strtol(
+                                trimmed.substr(start, pos - start).c_str(),
+                                nullptr, 10);
+                            if (v > 0 && v < 0x10000)
+                                g_VanillaIdentityIds.insert(
+                                    static_cast<std::int32_t>(v));
+                        }
+                    }
+                }
             }
 
             in.close();
+
+            {
+                const std::string prefix = "BLUEPRINT:";
+                for (auto it = g_State.constants.begin(); it != g_State.constants.end(); )
+                {
+                    if (it->first.compare(0, prefix.size(), prefix) == 0 && it->second > 0)
+                    {
+                        const std::string key = it->first.substr(prefix.size());
+                        auto bp = g_State.bluePrints.find(key);
+                        if (bp == g_State.bluePrints.end() || bp->second.id <= 0)
+                            g_State.bluePrints[key].id = it->second;
+                        g_State.constantMisses.erase(it->first);
+                        it = g_State.constants.erase(it);
+                        g_State.dirty = true;
+                        continue;
+                    }
+                    ++it;
+                }
+
+                for (auto it = g_State.bluePrints.begin(); it != g_State.bluePrints.end(); )
+                {
+                    if (it->second.id <= 0)
+                        it = g_State.bluePrints.erase(it);
+                    else
+                        ++it;
+                }
+
+                for (auto it = g_State.bluePrints.begin(); it != g_State.bluePrints.end(); )
+                {
+                    if (!g_PrevLaunchHealthy) { ++it; continue; }
+                    if (it->second.misses >= kBluePrintOrphanGraceLaunches)
+                    {
+                        Log("[V_FrameWorkState] blueprint \"%s\" (id %d) has not registered for "
+                            "%d launches - entry removed, its id returns to the pool and any "
+                            "ownership of it is lost\n",
+                            it->first.c_str(), it->second.id, it->second.misses);
+                        it = g_State.bluePrints.erase(it);
+                        continue;
+                    }
+                    ++it->second.misses;
+                    ++it;
+                }
+            }
+
+            static const char kRewardLangKeyPrefix[] = "REWARDLANG32:";
+            const std::size_t kRewardLangKeyPrefixLen = sizeof(kRewardLangKeyPrefix) - 1;
 
             bool gcChanged = false;
             std::size_t evicted = 0;
             for (auto it = g_State.tapes.begin(); it != g_State.tapes.end(); )
             {
+                if (!g_PrevLaunchHealthy) { ++it; continue; }
                 if (it->second.misses >= kTapeOrphanGraceLaunches)
                 {
                     LogDebug("[CustomTapes] tape deleted: '%s' (saveIndex %d) - mod uninstalled; freeing the save slot.\n", it->first.c_str(), static_cast<int>(it->second.saveIndex));
@@ -485,33 +742,43 @@ namespace V_FrameWorkState
 
             for (auto it = g_State.constants.begin(); it != g_State.constants.end(); )
             {
+                if (!g_PrevLaunchHealthy) { ++it; continue; }
+                if (IsUniqueStaffConstantKey(it->first))
+                {
+                    ++it;
+                    continue;
+                }
+
                 const auto mit = g_State.constantMisses.find(it->first);
                 const std::int32_t misses =
                     (mit != g_State.constantMisses.end()) ? mit->second : 0;
                 if (misses >= kConstantOrphanGraceLaunches)
                 {
-                    LogDebug("[Constants] \"%s\" (value %d) has not been referenced for %d "
-                        "launches - entry removed; its value returns to the free pool.\n",
+                    LogDebug("[Constants] \"%s\" (value %d) unreferenced for %d "
+                             "launches - entry removed, value returned to the free "
+                             "pool\n",
                         it->first.c_str(), it->second, misses);
                     if (mit != g_State.constantMisses.end())
                         g_State.constantMisses.erase(mit);
+                    if (it->first.compare(0, kRewardLangKeyPrefixLen,
+                                          kRewardLangKeyPrefix) != 0)
+                        ++evicted;
                     it = g_State.constants.erase(it);
-                    ++evicted;
                     gcChanged = true;
                     continue;
                 }
                 ++it;
             }
             if (evicted != 0)
-                Log("[V_FrameWorkState] WARNING: %zu persisted equip constant(s) expired and "
-                    "their equipIds returned to the free pool. Every id allocated this boot "
-                    "shifts, so the loadout and R&D rows stored in your game save now name "
-                    "different weapons than when they were saved - a saved weapon can come "
-                    "up with no model on the body. Re-pick affected slots once this boot.\n",
+                Log("[V_FrameWorkState] WARNING: %zu persisted equip constant(s) "
+                    "expired and returned their equipIds to the pool - every id "
+                    "allocated this boot shifts, so saved loadout and R&D rows now "
+                    "name different weapons; re-pick affected slots once\n",
                     evicted);
 
             for (auto it = g_State.equips.begin(); it != g_State.equips.end(); )
             {
+                if (!g_PrevLaunchHealthy) { ++it; continue; }
                 if (it->second.misses >= kEquipOrphanGraceLaunches
                     && it->second.equipId != 0)
                 {
@@ -526,9 +793,9 @@ namespace V_FrameWorkState
                         }
                     if (pinned)
                     {
-                        LogDebug("[V_FrameWorkState] '%s' is orphaned but its equipId "
-                            "0x%X is still referenced by a saved loadout - id "
-                            "kept reserved.\n",
+                        LogDebug("[V_FrameWorkState] '%s' is orphaned but its "
+                                 "equipId 0x%X is still referenced by a saved "
+                                 "loadout - id kept reserved\n",
                             it->first.c_str(), it->second.equipId);
                         ++it;
                         continue;
@@ -536,9 +803,10 @@ namespace V_FrameWorkState
                 }
                 if (it->second.misses >= kEquipOrphanGraceLaunches)
                 {
-                    LogDebug("[V_FrameWorkState] \"%s\" (developId %d, equipId 0x%X, partsType 0x%02X, "
-                        "selector 0x%02X) has not registered for %d launches - entry removed; its ids "
-                        "return to the free pool.\n",
+                    LogDebug("[V_FrameWorkState] \"%s\" (developId %d, equipId "
+                             "0x%X, partsType 0x%02X, selector 0x%02X) has not "
+                             "registered for %d launches - entry removed, ids "
+                             "returned to the pool\n",
                         it->first.c_str(), it->second.developId, it->second.equipId,
                         it->second.partsType, it->second.selector, it->second.misses);
                     it = g_State.equips.erase(it);
@@ -556,7 +824,8 @@ namespace V_FrameWorkState
                 const std::int32_t fi = kv.second.flowIndex;
                 const std::int32_t dv = kv.second.developId;
                 if (dv == 0 || fi < kFirstCustomFlowIndex
-                    || fi >= NativeFlowIndexBound() || fi == kNativeFlowSentinel)
+                    || fi >= static_cast<std::int32_t>(equip::kMaxFlowSlots)
+                    || fi == kNativeFlowSentinel || IsReservedFlowIndex(fi))
                     continue;
                 auto found = g_OldFlowLayout.find(fi);
                 if (found == g_OldFlowLayout.end())
@@ -612,6 +881,12 @@ namespace V_FrameWorkState
             if (g_BatchDepth > 0)
                 return;
 
+            if (g_FlusherStop)
+            {
+                WriteToDisk_NoLock();
+                return;
+            }
+
             ++g_CoalescedCount;
             g_SaveDueTick = GetTickCount64() + kCoalesceMs;
 
@@ -624,6 +899,120 @@ namespace V_FrameWorkState
             g_FlushCv.notify_one();
         }
 
+        static void EmitAlignedRows(std::ostream& out,
+                                    const std::vector<std::string>& keys,
+                                    const std::vector<std::vector<std::string>>& rows)
+        {
+            std::size_t keyWidth = 0;
+            std::vector<std::size_t> colWidth;
+            for (std::size_t r = 0; r < keys.size(); ++r)
+            {
+                if (keys[r].size() > keyWidth) keyWidth = keys[r].size();
+                if (colWidth.size() < rows[r].size())
+                    colWidth.resize(rows[r].size(), 0);
+                for (std::size_t c = 0; c < rows[r].size(); ++c)
+                    if (rows[r][c].size() > colWidth[c])
+                        colWidth[c] = rows[r][c].size();
+            }
+            if (keyWidth > 56) keyWidth = 56;
+
+            for (std::size_t r = 0; r < keys.size(); ++r)
+            {
+                std::string body;
+                for (std::size_t c = 0; c < rows[r].size(); ++c)
+                {
+                    if (colWidth[c] == 0) continue;
+                    body.append(rows[r][c]);
+                    if (rows[r][c].size() < colWidth[c])
+                        body.append(colWidth[c] - rows[r][c].size(), ' ');
+                    body.push_back(' ');
+                }
+                while (!body.empty() && body.back() == ' ')
+                    body.pop_back();
+
+                std::string key = keys[r];
+                if (key.size() < keyWidth)
+                    key.append(keyWidth - key.size(), ' ');
+                out << "        " << key << " = { " << body << " },\n";
+            }
+        }
+
+        static const char* ConstantSpaceNote(const std::string& tag)
+        {
+            if (tag == "WP")           return "gunBasic weapon slot per WP_ name";
+            if (tag == "REWARDLANG32") return "TppReward LANG_ENUM index per langId";
+            if (tag == "CUSTOMHEAD")   return "(slotByte << 16) | equipId per head name";
+            return nullptr;
+        }
+
+        static void EmitConstantRows(
+            std::ostream& out,
+            const std::vector<std::pair<std::string, std::int32_t>>& rows,
+            bool withNotes = true)
+        {
+            auto tagOf = [](const std::string& key)
+            {
+                const auto colon = key.find(':');
+                return (colon == std::string::npos)
+                    ? std::string() : key.substr(0, colon);
+            };
+            auto nameOf = [](const std::string& key)
+            {
+                const auto colon = key.find(':');
+                return (colon == std::string::npos)
+                    ? key : key.substr(colon + 1);
+            };
+
+            std::string tag;
+            std::size_t keyWidth = 0;
+            bool first = true;
+            bool open = false;
+
+            for (std::size_t r = 0; r < rows.size(); ++r)
+            {
+                const std::string rowTag = tagOf(rows[r].first);
+                if (first || rowTag != tag)
+                {
+                    if (open)
+                    {
+                        out << "        },\n";
+                        open = false;
+                    }
+                    if (!first) out << "\n";
+                    tag = rowTag;
+                    first = false;
+
+                    keyWidth = 0;
+                    for (std::size_t s = r; s < rows.size(); ++s)
+                    {
+                        if (tagOf(rows[s].first) != tag) break;
+                        const std::size_t w = nameOf(rows[s].first).size() + 4;
+                        if (w > keyWidth) keyWidth = w;
+                    }
+                    if (keyWidth > 60) keyWidth = 60;
+
+                    if (!tag.empty())
+                    {
+                        const char* note =
+                            withNotes ? ConstantSpaceNote(tag) : nullptr;
+                        if (note)
+                            out << "        -- " << note << "\n";
+                        out << "        " << tag << " = {\n";
+                        open = true;
+                    }
+                }
+
+                std::string key = "[\"" + nameOf(rows[r].first) + "\"]";
+                if (key.size() < keyWidth)
+                    key.append(keyWidth - key.size(), ' ');
+                out << (open ? "            " : "        ")
+                    << key << " = " << rows[r].second << ",\n";
+            }
+
+            if (open)
+                out << "        },\n";
+        }
+
         static void WriteToDisk_NoLock()
         {
             EnsureSaveDirectory();
@@ -633,11 +1022,10 @@ namespace V_FrameWorkState
             std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
             if (!out)
             {
-                Log("[V_FrameWorkState] ERROR: could not write '%s' - custom-tape ownership/save-index state will not persist.\n", tmpPath.c_str());
+                Log("[V_FrameWorkState] ERROR: could not write '%s' - custom-tape "
+                    "ownership and save-index state will not persist\n", tmpPath.c_str());
                 return;
             }
-
-            out << "return {\n";
 
             {
                 std::vector<std::pair<std::string, EquipEntry>> sorted;
@@ -673,30 +1061,46 @@ namespace V_FrameWorkState
                 std::sort(sorted.begin(), sorted.end(),
                     [](const auto& a, const auto& b) { return a.first < b.first; });
 
-                out << "    equips = {\n";
+                std::vector<std::string> keys[4];
+                std::vector<std::vector<std::string>> rows[4];
                 for (const auto& kv : sorted)
                 {
-
-
                     if (kv.second.developId == 0 && kv.second.flowIndex == 0 &&
                         kv.second.equipId == 0 && kv.second.subId == 0 &&
                         kv.second.partsType == 0 && kv.second.selector == 0 &&
                         kv.second.misses == 0 && kv.second.developed < 0 &&
                         !kv.second.isNew && !kv.second.devReqAnnounced)
                         continue;
-                    out << "        [\"" << kv.first << "\"] = {";
+
+                    std::vector<std::string> row(11);
+                    auto cell = [&row](std::size_t i, const char* name,
+                                       const std::string& value)
+                    { row[i] = std::string(name) + " = " + value + ","; };
+
                     if (kv.second.developId != 0)
-                        out << " developId = " << kv.second.developId << ",";
+                        cell(0, "developId", std::to_string(kv.second.developId));
                     if (kv.second.flowIndex != 0)
-                        out << " flowIndex = " << kv.second.flowIndex << ",";
+                        cell(1, "flowIndex", std::to_string(kv.second.flowIndex));
+                    if (kv.second.developed >= 0)
+                        cell(2, "developed",
+                             kv.second.developed == 1 ? "true" : "false");
+                    if (kv.second.developId != 0)
+                    {
+                        if (!kv.second.isNew)
+                            cell(3, "seen", "true");
+                        if (!kv.second.devReqAnnounced)
+                            cell(4, "announcePending", "true");
+                    }
                     if (kv.second.equipId != 0)
-                        out << " equipId = " << kv.second.equipId << ",";
+                        cell(5, "equipId", std::to_string(kv.second.equipId));
                     if (kv.second.subId != 0)
-                        out << " subId = " << kv.second.subId << ",";
+                        cell(6, "subId", std::to_string(kv.second.subId));
                     if (kv.second.partsType != 0)
-                        out << " partsType = " << kv.second.partsType << ",";
+                        cell(7, "partsType", std::to_string(kv.second.partsType));
                     if (kv.second.selector != 0)
-                        out << " selector = " << kv.second.selector << ",";
+                        cell(8, "selector", std::to_string(kv.second.selector));
+                    if (kv.second.misses != 0)
+                        cell(9, "misses", std::to_string(kv.second.misses));
                     {
                         std::size_t last = 0;
                         for (std::size_t vi = 0;
@@ -704,26 +1108,62 @@ namespace V_FrameWorkState
                             if (kv.second.variantSelectors[vi] != 0) last = vi + 1;
                         if (last != 0)
                         {
-                            out << " variantSelectors = \"";
+                            std::string csv = "\"";
                             for (std::size_t vi = 0; vi < last; ++vi)
                             {
-                                if (vi) out << ",";
-                                out << static_cast<int>(kv.second.variantSelectors[vi]);
+                                if (vi) csv.push_back(',');
+                                csv += std::to_string(
+                                    static_cast<int>(kv.second.variantSelectors[vi]));
                             }
-                            out << "\",";
+                            csv.push_back('"');
+                            cell(10, "variantSelectors", csv);
                         }
                     }
-                    if (kv.second.misses != 0)
-                        out << " misses = " << kv.second.misses << ",";
-                    if (kv.second.developed >= 0)
-                        out << " developed = " << (kv.second.developed == 1 ? "true" : "false") << ",";
-                    if (kv.second.isNew)
-                        out << " new = true,";
-                    if (kv.second.devReqAnnounced)
-                        out << " reqAnnounced = true,";
-                    out << " },\n";
+
+                    int group = 3;
+                    if (kv.second.kind == kRowKindOutfit
+                        || kv.second.partsType != 0 || kv.second.selector != 0)
+                        group = 2;
+                    else if (kv.second.kind == kRowKindWeapon)
+                        group = 1;
+                    else if (kv.second.developId == 0)
+                        group = 0;
+
+                    keys[group].push_back("[\"" + kv.first + "\"]");
+                    rows[group].push_back(std::move(row));
                 }
-                out << "    },\n";
+
+                std::size_t liveConstants = 0;
+                for (const auto& kv : g_State.constants)
+                    if (kv.second != 0) ++liveConstants;
+
+                out <<
+"-- V_FrameWork state file - written by V_FrameWork.dll.\n";
+                out << "--   equips " << keys[0].size()
+                    << "   weapons " << keys[1].size()
+                    << "   outfits " << keys[2].size();
+                if (!keys[3].empty())
+                    out << "   unclassified " << keys[3].size();
+                out << "   tapes " << g_State.tapes.size()
+                    << "   database " << g_State.bluePrints.size()
+                    << "   constants " << liveConstants
+                    << "   pinned " << g_State.pinnedEquipIds.size() << "\n\n";
+
+                out << "return {\n\n";
+
+                out << "    launchHealthy = "
+                    << (g_State.launchHealthy ? "true" : "false") << ",\n\n";
+
+                static const char* const kEquipTable[4] =
+                    { "equips", "weapons", "outfits", "develop" };
+                for (int g = 0; g < 4; ++g)
+                {
+                    if (g == 3 && keys[g].empty())
+                        continue;
+                    out << "    " << kEquipTable[g] << " = {\n";
+                    EmitAlignedRows(out, keys[g], rows[g]);
+                    out << "    },\n\n";
+                }
             }
 
 
@@ -735,37 +1175,72 @@ namespace V_FrameWorkState
                 std::sort(sorted.begin(), sorted.end(),
                     [](const auto& a, const auto& b) { return a.second.saveIndex < b.second.saveIndex; });
 
-                out << "    tapes = {\n";
+                std::vector<std::string> keys;
+                std::vector<std::vector<std::string>> rows;
                 for (const auto& kv : sorted)
                 {
-                    out << "        [\"" << kv.first << "\"] = {"
-                        << " saveIndex = " << static_cast<int>(kv.second.saveIndex)
-                        << ", owned = " << (kv.second.owned ? "true" : "false")
-                        << ", new = " << (kv.second.isNew ? "true" : "false");
+                    std::vector<std::string> row(4);
+                    row[0] = "saveIndex = "
+                           + std::to_string(static_cast<int>(kv.second.saveIndex)) + ",";
+                    row[1] = std::string("owned = ")
+                           + (kv.second.owned ? "true" : "false") + ",";
+                    row[2] = std::string("new = ")
+                           + (kv.second.isNew ? "true" : "false") + ",";
                     if (kv.second.misses != 0)
-                        out << ", misses = " << kv.second.misses;
-                    out << " },\n";
+                        row[3] = "misses = " + std::to_string(kv.second.misses) + ",";
+                    keys.push_back("[\"" + kv.first + "\"]");
+                    rows.push_back(std::move(row));
                 }
-                out << "    },\n";
+
+                out << "    tapes = {\n";
+                EmitAlignedRows(out, keys, rows);
+                out << "    },\n\n";
             }
 
+
+            {
+                std::vector<std::pair<std::string, BluePrintEntry>> bpSorted;
+                bpSorted.reserve(g_State.bluePrints.size());
+                for (const auto& kv : g_State.bluePrints)
+                    bpSorted.emplace_back(kv.first, kv.second);
+                std::sort(bpSorted.begin(), bpSorted.end(),
+                    [](const auto& a, const auto& b) { return a.second.id < b.second.id; });
+
+                std::vector<std::string> keys;
+                std::vector<std::vector<std::string>> rows;
+                for (const auto& kv : bpSorted)
+                {
+                    std::vector<std::string> row(5);
+                    row[0] = "bluePrintId = " + std::to_string(kv.second.id) + ",";
+                    row[1] = "pickupNumber = "
+                           + std::to_string(bluePrint::PublicId(kv.second.id)) + ",";
+                    row[2] = std::string("owned = ")
+                           + (kv.second.owned ? "true" : "false") + ",";
+                    if (kv.second.isNew)
+                        row[3] = "new = true,";
+                    if (kv.second.misses != 0)
+                        row[4] = "misses = " + std::to_string(kv.second.misses) + ",";
+                    keys.push_back("[\"" + kv.first + "\"]");
+                    rows.push_back(std::move(row));
+                }
+
+                out << "    DataBase = {\n";
+                EmitAlignedRows(out, keys, rows);
+                out << "    },\n\n";
+            }
 
             {
                 std::vector<std::pair<std::string, std::int32_t>> sorted;
                 sorted.reserve(g_State.constants.size());
                 for (const auto& kv : g_State.constants)
-                    sorted.emplace_back(kv.first, kv.second);
+                    if (kv.second != 0)
+                        sorted.emplace_back(kv.first, kv.second);
                 std::sort(sorted.begin(), sorted.end(),
                     [](const auto& a, const auto& b) { return a.first < b.first; });
 
                 out << "    constants = {\n";
-                for (const auto& kv : sorted)
-                {
-                    if (kv.second == 0)
-                        continue;
-                    out << "        [\"" << kv.first << "\"] = " << kv.second << ",\n";
-                }
-                out << "    },\n";
+                EmitConstantRows(out, sorted);
+                out << "    },\n\n";
             }
 
             {
@@ -774,29 +1249,71 @@ namespace V_FrameWorkState
                 sorted.reserve(g_State.constants.size());
                 for (const auto& kv : g_State.constants)
                 {
+                    if (IsUniqueStaffConstantKey(kv.first))
+                        continue;
                     if (g_ConstantsTouched.find(kv.first) != g_ConstantsTouched.end())
                         continue;
                     const auto mit = g_State.constantMisses.find(kv.first);
                     const std::int32_t loaded =
                         (mit != g_State.constantMisses.end()) ? mit->second : 0;
-                    sorted.emplace_back(kv.first, countMisses ? loaded + 1 : loaded);
+                    const std::int32_t misses = countMisses ? loaded + 1 : loaded;
+                    if (misses != 0)
+                        sorted.emplace_back(kv.first, misses);
                 }
                 std::sort(sorted.begin(), sorted.end(),
                     [](const auto& a, const auto& b) { return a.first < b.first; });
 
                 out << "    constantMisses = {\n";
-                for (const auto& kv : sorted)
-                    out << "        [\"" << kv.first << "\"] = " << kv.second << ",\n";
-                out << "    },\n";
+                EmitConstantRows(out, sorted, false);
+                out << "    },\n\n";
             }
 
             {
                 std::vector<std::int32_t> sorted(g_State.pinnedEquipIds.begin(),
                                                  g_State.pinnedEquipIds.end());
                 std::sort(sorted.begin(), sorted.end());
+                std::size_t idWidth = 0;
+                for (const std::int32_t id : sorted)
+                {
+                    const std::size_t w = std::to_string(id).size() + 4;
+                    if (w > idWidth) idWidth = w;
+                }
+
                 out << "    loadoutPinnedIds = {\n";
                 for (const std::int32_t id : sorted)
-                    out << "        [\"" << id << "\"] = " << id << ",\n";
+                {
+                    std::string cell = "[\"" + std::to_string(id) + "\"]";
+                    if (cell.size() < idWidth)
+                        cell.append(idWidth - cell.size(), ' ');
+                    out << "        " << cell << " = " << id << ",";
+                    for (const auto& kv : g_State.equips)
+                        if (kv.second.equipId == id)
+                        {
+                            out << "   -- " << kv.first;
+                            break;
+                        }
+                    out << "\n";
+                }
+                out << "    },\n";
+            }
+
+            if (!g_VanillaIdentityIds.empty())
+            {
+                std::vector<std::int32_t> sorted(g_VanillaIdentityIds.begin(),
+                                                 g_VanillaIdentityIds.end());
+                std::sort(sorted.begin(), sorted.end());
+
+                out << "\n    vanillaEquipIdentity = {\n";
+                for (std::size_t i = 0; i < sorted.size(); ++i)
+                {
+                    if ((i % 16) == 0)
+                        out << "        ";
+                    out << sorted[i] << ",";
+                    if ((i % 16) == 15 || i + 1 == sorted.size())
+                        out << "\n";
+                    else
+                        out << " ";
+                }
                 out << "    },\n";
             }
 
@@ -871,7 +1388,8 @@ namespace V_FrameWorkState
             for (const char* p = s; *p; ++p)
             {
                 const char c = *p;
-                if (c == '"' || c == '[' || c == ']' || c == '\n' || c == '\r')
+                if (c == '"' || c == '[' || c == ']' || c == '\\'
+                    || c == '\n' || c == '\r')
                     return false;
             }
             return true;
@@ -881,17 +1399,19 @@ namespace V_FrameWorkState
         {
             bool bad = false;
             for (const char* p = key; *p; ++p)
-            {
-                if (*p == '\n' || *p == '\r') { bad = true; break; }
-                if (*p == '"' && *(p + 1) == ']') { bad = true; break; }
-            }
+                if (*p == '\n' || *p == '\r' || *p == '"' || *p == '\\')
+                { bad = true; break; }
             if (!bad)
                 return true;
-            Log("[V_FrameWorkState] ERROR: %s rejected key '%s' - a line break or "
-                "the sequence \"] inside a key would corrupt the state file.\n",
+            Log("[V_FrameWorkState] ERROR: %s rejected key '%s' - a line break, a "
+                "quote or a backslash inside a key splits the key on reload and "
+                "stops the state file parsing as Lua; nothing keyed on it "
+                "persists\n",
                 who, key);
             return false;
         }
+
+
 
 
         static bool g_NativeTableSynced = false;
@@ -920,9 +1440,8 @@ namespace V_FrameWorkState
                 if (s_warned++ < 4)
                 Log("[V_FrameWorkState] WARNING: the vanilla equip-identity set is "
                     "still empty at first allocation (develop lookup returned %zu "
-                    "id(s), below the %d-id sanity floor) - custom ids can land on "
-                    "rows the game's own tables own, and a suit that takes a weapon "
-                    "row renders in the prep list with a damage tag\n",
+                    "id(s), below the %d-id floor) - custom ids can land on rows "
+                    "the game's own tables own\n",
                     n, 64);
                 return;
             }
@@ -938,14 +1457,25 @@ namespace V_FrameWorkState
             if (s_said || g_VanillaIdentityIds.empty())
                 return;
             s_said = true;
-            Log("[V_FrameWorkState] vanilla equip-identity set is LIVE: %zu id(s) - "
-                "collision checks against vanilla-owned rows are in effect from here"
-                " on\n",
+            Log("[V_FrameWorkState] vanilla equip-identity set LIVE: %zu id(s) - "
+                "collision checks against vanilla rows are in effect\n",
                 g_VanillaIdentityIds.size());
         }
 
+        static bool IsEquipIdHeldByAnotherKey_NoLock(std::int32_t equipId,
+                                                     const char* key)
+        {
+            for (const auto& kv : g_State.equips)
+                if (kv.second.equipId == equipId
+                    && (!key || kv.first != key))
+                    return true;
+            return false;
+        }
+
+
         static std::int32_t AllocateNextFreeEquipId_NoLock(std::int32_t minimum,
-                                                           bool isWeapon)
+                                                           bool isWeapon,
+                                                           const char* key)
         {
             if (!g_NativeTableSynced)
             {
@@ -988,16 +1518,20 @@ namespace V_FrameWorkState
             }
             if (result < 0)
             {
-                result = EquipIdCompression::FindLowestFreeExtendedEquipId();
+                result = EquipIdCompression::FindLowestFreeExtendedEquipId(
+                    [key](std::int32_t id) {
+                        return IsEquipIdHeldByAnotherKey_NoLock(id, key);
+                    });
                 if (result >= 0)
-                    LogDebug("[V_FrameWorkState] AllocateNextFreeEquipId: native bands "
-                        "full above floor=0x%X - allocated EXTENDED equipId 0x%X "
-                        "(DLL-side table, served via hooked accessors)\n",
+                    LogDebug("[V_FrameWorkState] AllocateNextFreeEquipId: native "
+                             "bands full above floor=0x%X - allocated EXTENDED "
+                             "equipId 0x%X (DLL table, served via hooked "
+                             "accessors)\n",
                         floor, result);
                 else
-                    LogDebug("[V_FrameWorkState] AllocateNextFreeEquipId: native bands "
-                        "AND the extended 0x289-0x3FF range are exhausted above "
-                        "floor=0x%X; allocation fails.\n", floor);
+                    LogDebug("[V_FrameWorkState] AllocateNextFreeEquipId: native "
+                             "bands and the extended 0x289-0x3FF range are "
+                             "exhausted above floor=0x%X - allocation failed\n", floor);
             }
             return result;
         }
@@ -1023,6 +1557,25 @@ namespace V_FrameWorkState
     {
         std::lock_guard<std::mutex> lock(g_Mutex);
         LoadFromDisk_NoLock();
+
+        if (!g_PrevLaunchHealthy)
+            Log("[V_FrameWorkState] the previous launch did not install cleanly, so "
+                "nothing it failed to register counts as an uninstall - orphan "
+                "expiry is frozen for this launch and every persisted id is kept\n");
+
+        g_State.launchHealthy = false;
+        g_State.dirty = true;
+        WriteToDisk_NoLock();
+    }
+
+    void NoteInstallOutcome(bool allInstalled)
+    {
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        if (g_State.launchHealthy == allInstalled)
+            return;
+        g_State.launchHealthy = allInstalled;
+        g_State.dirty = true;
+        WriteToDisk_NoLock();
     }
 
     void Save()
@@ -1038,14 +1591,17 @@ namespace V_FrameWorkState
     {
         std::unique_lock<std::mutex> lock(g_Mutex, std::try_to_lock);
         if (!lock.owns_lock())
-            return;
-
-        if (g_SaveDueTick != 0 || g_State.dirty)
         {
-            g_SaveDueTick = 0;
-            g_CoalescedCount = 0;
-            WriteToDisk_NoLock();
+            Log("[V_FrameWorkState] WARNING: the state file was locked at process "
+                "exit, so this launch could not be recorded - a constant whose mod "
+                "is gone keeps its id for another launch\n");
+            return;
         }
+
+        g_ExitSave = true;
+        g_SaveDueTick = 0;
+        g_CoalescedCount = 0;
+        WriteToDisk_NoLock();
     }
 
     void AbandonFlusherThread()
@@ -1132,28 +1688,27 @@ namespace V_FrameWorkState
             const bool bandOk = isExtended || isWeapon
                 || slot < EquipIdCompression::kWeaponBandFirst;
             if (!bandOk)
-                LogDebug("[V_FrameWorkState] persisted equipId 0x%X for '%s' sits in "
-                    "the weapon band but the item is not a weapon - native "
-                    "GetEquipType would return 0 for it; reallocating into the "
-                    "item band\n", persisted, key);
+                LogDebug("[V_FrameWorkState] persisted equipId 0x%X for '%s' is in "
+                         "the weapon band but the item is not a weapon - native "
+                         "GetEquipType would return 0; reallocating into the item "
+                         "band\n", persisted, key);
             if (g_VanillaIdentityIds.empty())
                 BuildVanillaIdentitySet_NoLock();
             NoteIdentitySetLive_NoLock();
             const bool identityClash =
                 g_VanillaIdentityIds.count(persisted) != 0;
             if (identityClash)
-                LogDebug("[V_FrameWorkState] persisted equipId 0x%X for '%s' is a vanilla "
-                    "equip identity the game's own tables still own - keeping it "
-                    "overwrites that row, and the prep list then renders the vanilla "
-                    "entry with this item's damage tag; reallocating\n",
+                LogDebug("[V_FrameWorkState] persisted equipId 0x%X for '%s' is a "
+                         "vanilla equip identity the game still owns - keeping it "
+                         "overwrites that row and the prep list renders the vanilla "
+                         "entry with this item's damage tag; reallocating\n",
                     persisted, key);
             const bool itemListClash = isWeapon && IsItemCategoryRow(persisted);
             if (itemListClash)
-                LogDebug("[V_FrameWorkState] persisted equipId 0x%X for '%s' is a weapon "
-                    "sitting in the vanilla item-category row span 0x%X-0x%X - that "
-                    "list enumerates the whole span and does not filter on equip "
-                    "type, so the weapon renders as a supply-drop item; "
-                    "reallocating\n",
+                LogDebug("[V_FrameWorkState] persisted equipId 0x%X for '%s' is a "
+                         "weapon in the vanilla item-category span 0x%X-0x%X, which "
+                         "the list enumerates without filtering on type - it would "
+                         "render as a supply item; reallocating\n",
                     persisted, key, kItemCategoryRowFirst, kItemCategoryRowLast);
             const bool slotFree = isExtended
                 ? !EquipIdCompression::IsExtendedEquipIdUsed(persisted)
@@ -1165,17 +1720,23 @@ namespace V_FrameWorkState
                 NoteClaimedEquipId_NoLock(persisted);
                 if (isExtended)
                     EquipIdCompression::MarkExtendedEquipIdUsed(persisted);
-                pit->second.misses = 0;
+                if (pit->second.misses != 0)
+                {
+                    pit->second.misses = 0;
+                    g_State.dirty = true;
+                    SaveToDisk_NoLock();
+                }
                 outEquipId = persisted;
                 return true;
             }
             if (bandOk)
-                LogDebug("[V_FrameWorkState] persisted equipId 0x%X for '%s' is no longer free "
-                    "(vanilla layout change or conflict) - reallocating; loadout references "
-                    "to the old id will be healed or blanked.\n", persisted, key);
+                LogDebug("[V_FrameWorkState] persisted equipId 0x%X for '%s' is no "
+                         "longer free (vanilla layout change or conflict) - "
+                         "reallocating; old loadout references are healed or "
+                         "blanked\n", persisted, key);
         }
 
-        const std::int32_t newId = AllocateNextFreeEquipId_NoLock(minimumId, isWeapon);
+        const std::int32_t newId = AllocateNextFreeEquipId_NoLock(minimumId, isWeapon, key);
         if (newId < 0)
         {
 
@@ -1197,9 +1758,9 @@ namespace V_FrameWorkState
 
     bool IsClaimedEquipId(std::int32_t equipId)
     {
-        if (equipId <= 0 || equipId >= 4096)
+        if (equipId <= 0 || equipId > 0xFFFF)
             return false;
-        return (g_ClaimedEquipBits[equipId >> 6]
+        return (g_ClaimedEquipBits[equipId >> 6].load(std::memory_order_relaxed)
                 & (1ull << (equipId & 63))) != 0;
     }
 
@@ -1207,10 +1768,43 @@ namespace V_FrameWorkState
                                     std::size_t count)
     {
         std::lock_guard<std::mutex> lock(g_Mutex);
-        g_VanillaIdentityIds.clear();
+        LoadFromDisk_NoLock();
+
+        std::unordered_set<std::int32_t> fresh;
         for (std::size_t i = 0; i < count; ++i)
             if (equipIds[i] > 0)
-                g_VanillaIdentityIds.insert(equipIds[i]);
+                fresh.insert(equipIds[i]);
+        if (fresh.empty() || fresh == g_VanillaIdentityIds)
+            return;
+
+        g_VanillaIdentityIds.swap(fresh);
+
+        int cleared = 0;
+        std::int32_t firstId = 0;
+        std::string  firstKey;
+        for (auto& kv : g_State.equips)
+        {
+            if (kv.second.equipId == 0
+                || g_VanillaIdentityIds.count(kv.second.equipId) == 0)
+                continue;
+            if (cleared == 0)
+            {
+                firstId  = kv.second.equipId;
+                firstKey = kv.first;
+            }
+            kv.second.equipId = 0;
+            ++cleared;
+        }
+
+        if (cleared != 0)
+            Log("[V_FrameWorkState] %d persisted equipId(s) sit on rows the game's own "
+                "develop tree still owns (first: '%s' = 0x%X) - the vanilla row renders "
+                "with this item's damage tag, so those ids were dropped and are "
+                "reallocated on the next launch\n",
+                cleared, firstKey.c_str(), firstId);
+
+        g_State.dirty = true;
+        SaveToDisk_NoLock();
     }
 
     static bool IsOwnedEquipId_NoLock(std::int32_t equipId)
@@ -1222,23 +1816,29 @@ namespace V_FrameWorkState
         return false;
     }
 
-    void NotePinnedEquipId(std::int32_t equipId)
+    static void EnsurePinSetFresh_NoLock()
+    {
+        if (g_PinSetFreshThisSession)
+            return;
+        g_PinSetFreshThisSession = true;
+        g_SessionPinnedIds.clear();
+        g_StickyPinnedIds.clear();
+        if (!g_State.pinnedEquipIds.empty())
+        {
+            g_State.pinnedEquipIds.clear();
+            g_State.dirty = true;
+        }
+    }
+
+    static void AddPin_NoLock(std::int32_t equipId, bool sticky)
     {
         if (equipId <= 0) return;
-        std::lock_guard<std::mutex> lock(g_Mutex);
         LoadFromDisk_NoLock();
         if (!IsOwnedEquipId_NoLock(equipId))
             return;
-        if (!g_PinSetFreshThisSession)
-        {
-            g_PinSetFreshThisSession = true;
-            g_SessionPinnedIds.clear();
-            if (!g_State.pinnedEquipIds.empty())
-            {
-                g_State.pinnedEquipIds.clear();
-                g_State.dirty = true;
-            }
-        }
+        EnsurePinSetFresh_NoLock();
+        if (sticky)
+            g_StickyPinnedIds.insert(equipId);
         if (g_SessionPinnedIds.insert(equipId).second)
         {
             g_State.pinnedEquipIds.insert(equipId);
@@ -1247,17 +1847,32 @@ namespace V_FrameWorkState
         }
     }
 
-    void ReplacePinnedEquipIds(const std::int32_t* equipIds, std::size_t count)
+    void NotePinnedEquipId(std::int32_t equipId)
     {
         std::lock_guard<std::mutex> lock(g_Mutex);
+        AddPin_NoLock(equipId, false);
+    }
+
+    void NoteStickyPinnedEquipId(std::int32_t equipId)
+    {
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        AddPin_NoLock(equipId, true);
+    }
+
+    void UnpinEquipId(std::int32_t equipId)
+    {
+        if (equipId <= 0) return;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        if (!g_PinSetFreshThisSession)
+            return;
+        if (g_StickyPinnedIds.find(equipId) != g_StickyPinnedIds.end())
+            return;
         LoadFromDisk_NoLock();
-        std::unordered_set<std::int32_t> next;
-        for (std::size_t i = 0; i < count; ++i)
-            if (equipIds[i] > 0)
-                next.insert(equipIds[i]);
-        if (next != g_State.pinnedEquipIds)
+        bool changed = g_SessionPinnedIds.erase(equipId) != 0;
+        if (g_State.pinnedEquipIds.erase(equipId) != 0)
+            changed = true;
+        if (changed)
         {
-            g_State.pinnedEquipIds = std::move(next);
             g_State.dirty = true;
             SaveToDisk_NoLock();
         }
@@ -1297,6 +1912,23 @@ namespace V_FrameWorkState
         SaveToDisk_NoLock();
 
         return true;
+    }
+
+    void SetRowKind(const char* key, std::uint8_t kind)
+    {
+        if (!key || !key[0] || kind == kRowKindUnknown)
+            return;
+        if (!GuardStateKey(key, "SetRowKind"))
+            return;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        LoadFromDisk_NoLock();
+        auto& e = g_State.equips[key];
+        if (e.kind != kind)
+        {
+            e.kind = kind;
+            g_State.dirty = true;
+            SaveToDisk_NoLock();
+        }
     }
 
     std::int32_t GetDevelopIdByKey(const char* key)
@@ -1426,7 +2058,7 @@ namespace V_FrameWorkState
         std::lock_guard<std::mutex> lock(g_Mutex);
         LoadFromDisk_NoLock();
         for (const auto& kv : g_State.equips)
-            if (kv.second.developId != 0 && kv.second.flowIndex != 0)
+            if (kv.second.developId != 0)
                 callback(kv.second.developId, kv.second.flowIndex,
                          kv.second.devReqAnnounced);
     }
@@ -1449,6 +2081,22 @@ namespace V_FrameWorkState
                 return;
             }
         }
+    }
+
+    bool IsDevelopedByFlowRowDevelopId(std::int32_t developId, bool& developed)
+    {
+        if (developId == 0)
+            return false;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        LoadFromDisk_NoLock();
+        for (const auto& kv : g_State.equips)
+        {
+            if (kv.second.developId != developId || kv.second.developed < 0)
+                continue;
+            developed = (kv.second.developed == 1);
+            return true;
+        }
+        return false;
     }
 
     bool GetDevReqAnnouncedByDevelopId(std::int32_t developId)
@@ -1514,10 +2162,10 @@ namespace V_FrameWorkState
                 outFlowIndex = sit->second;
                 return true;
             }
-            Log("[V_FrameWorkState] WARNING: '%s' held develop flow index %d, which the "
-                "loadout commit reads as a gunsmith slot (flows 0x3FD-0x3FF resolve to "
-                "equip 871/873/875) - picking it would equip a gunsmith pseudo-weapon "
-                "instead. Reallocating outside the reserved range.\n",
+            Log("[V_FrameWorkState] WARNING: '%s' held develop flow index %d, which "
+                "the loadout commit reads as a gunsmith slot (0x3FD-0x3FF resolve "
+                "to equip 871/873/875) - picking it would equip a pseudo-weapon; "
+                "reallocating outside the reserved range\n",
                 key, sit->second);
             g_SessionFlowIndices.erase(sit);
         }
@@ -1547,10 +2195,11 @@ namespace V_FrameWorkState
         }
         if (newIdx == 0)
         {
-            LogDebug("[V_FrameWorkState] ResolveOrCreateFlowIndex: REFUSED '%s' - the native "
-                "develop flow array holds %d rows and indices %d..%d are all allocated. "
-                "Registering this row would corrupt memory past the array. The item will "
-                "not appear in R&D until develop-row paging frees window space.\n",
+            LogDebug("[V_FrameWorkState] ResolveOrCreateFlowIndex REFUSED '%s': the "
+                     "native flow array holds %d rows and indices %d..%d are all "
+                     "allocated - registering would corrupt memory past the array; "
+                     "the item stays out of R&D until develop-row paging frees "
+                     "space\n",
                 key, flowBound, kFirstCustomFlowIndex,
                 flowBound - 1);
             return false;
@@ -1933,7 +2582,9 @@ namespace V_FrameWorkState
         const std::int16_t newIdx = AllocateNextFreeTapeSaveIndex_NoLock(minimumIndex);
         if (newIdx < 0)
         {
-            Log("[CustomTapes] ERROR: custom-tape save-index pool [300-32000] is full - uninstall unused tape mods; no more custom tapes can be registered.\n");
+            Log("[CustomTapes] ERROR: the custom-tape save-index pool [300-32000] "
+                "is full - uninstall unused tape mods; no more custom tapes can "
+                "register\n");
             return false;
         }
 
@@ -1950,10 +2601,109 @@ namespace V_FrameWorkState
         return true;
     }
 
+    bool ResolveOrCreateBluePrintId(const char* key, std::int32_t& outId)
+    {
+        outId = 0;
+        if (!key || !key[0]) return false;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        LoadFromDisk_NoLock();
+
+        auto it = g_State.bluePrints.find(key);
+        if (it != g_State.bluePrints.end() && it->second.id > 0)
+        {
+            outId = it->second.id;
+            if (it->second.misses != 0)
+            {
+                it->second.misses = 0;
+                g_State.dirty = true;
+                SaveToDisk_NoLock();
+            }
+            return true;
+        }
+
+        std::unordered_set<std::int32_t> used;
+        for (const auto& kv : g_State.bluePrints)
+            if (kv.second.id > 0)
+                used.insert(kv.second.id);
+
+        std::int32_t value = 1;
+        while (used.find(value) != used.end())
+            ++value;
+
+        g_State.bluePrints[key].id = value;
+        g_State.dirty = true;
+        SaveToDisk_NoLock();
+        outId = value;
+        return true;
+    }
+
+    std::int32_t GetBluePrintId(const char* key)
+    {
+        if (!key || !key[0]) return 0;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        LoadFromDisk_NoLock();
+        auto it = g_State.bluePrints.find(key);
+        return (it != g_State.bluePrints.end()) ? it->second.id : 0;
+    }
+
+    void ForEachBluePrint(void (*fn)(const char* key, std::int32_t id, bool owned))
+    {
+        if (!fn) return;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        LoadFromDisk_NoLock();
+        for (const auto& kv : g_State.bluePrints)
+            fn(kv.first.c_str(), kv.second.id, kv.second.owned);
+    }
+
+    void SetBluePrintOwned(const char* key, bool owned)
+    {
+        if (!key || !key[0]) return;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        LoadFromDisk_NoLock();
+        auto it = g_State.bluePrints.find(key);
+        if (it != g_State.bluePrints.end() && it->second.owned == owned)
+            return;
+        g_State.bluePrints[key].owned = owned;
+        g_State.dirty = true;
+        SaveToDisk_NoLock();
+    }
+
+    bool GetBluePrintOwned(const char* key)
+    {
+        if (!key || !key[0]) return false;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        LoadFromDisk_NoLock();
+        auto it = g_State.bluePrints.find(key);
+        return (it != g_State.bluePrints.end()) ? it->second.owned : false;
+    }
+
+    void SetBluePrintNew(const char* key, bool isNew)
+    {
+        if (!key || !key[0]) return;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        LoadFromDisk_NoLock();
+        auto it = g_State.bluePrints.find(key);
+        if (it != g_State.bluePrints.end() && it->second.isNew == isNew)
+            return;
+        g_State.bluePrints[key].isNew = isNew;
+        g_State.dirty = true;
+        SaveToDisk_NoLock();
+    }
+
+    bool GetBluePrintNew(const char* key)
+    {
+        if (!key || !key[0]) return false;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        LoadFromDisk_NoLock();
+        auto it = g_State.bluePrints.find(key);
+        return (it != g_State.bluePrints.end()) ? it->second.isNew : false;
+    }
+
     void SetTapeOwned(const char* key, bool owned)
     {
         if (!key || !key[0]) return;
         std::lock_guard<std::mutex> lock(g_Mutex);
+        LoadFromDisk_NoLock();
         auto it = g_State.tapes.find(key);
         if (it != g_State.tapes.end() && it->second.owned != owned)
         {
@@ -1967,6 +2717,7 @@ namespace V_FrameWorkState
     {
         if (!key || !key[0]) return;
         std::lock_guard<std::mutex> lock(g_Mutex);
+        LoadFromDisk_NoLock();
         auto it = g_State.tapes.find(key);
         if (it != g_State.tapes.end() && it->second.isNew != isNew)
         {
@@ -1979,6 +2730,7 @@ namespace V_FrameWorkState
     void SetTapeOwnedBySaveIndex(std::int16_t saveIndex, bool owned)
     {
         std::lock_guard<std::mutex> lock(g_Mutex);
+        LoadFromDisk_NoLock();
         for (auto& kv : g_State.tapes)
         {
             if (kv.second.saveIndex == saveIndex && kv.second.owned != owned)
@@ -1994,6 +2746,7 @@ namespace V_FrameWorkState
     void SetTapeNewBySaveIndex(std::int16_t saveIndex, bool isNew)
     {
         std::lock_guard<std::mutex> lock(g_Mutex);
+        LoadFromDisk_NoLock();
         for (auto& kv : g_State.tapes)
         {
             if (kv.second.saveIndex == saveIndex && kv.second.isNew != isNew)
@@ -2010,6 +2763,7 @@ namespace V_FrameWorkState
     {
         if (!key || !key[0]) return false;
         std::lock_guard<std::mutex> lock(g_Mutex);
+        LoadFromDisk_NoLock();
         auto it = g_State.tapes.find(key);
         return (it != g_State.tapes.end()) ? it->second.owned : false;
     }
@@ -2018,6 +2772,7 @@ namespace V_FrameWorkState
     {
         if (!key || !key[0]) return false;
         std::lock_guard<std::mutex> lock(g_Mutex);
+        LoadFromDisk_NoLock();
         auto it = g_State.tapes.find(key);
         return (it != g_State.tapes.end()) ? it->second.isNew : false;
     }
@@ -2039,11 +2794,14 @@ namespace V_FrameWorkState
         g_State.dirty = false;
         g_State.equips.clear();
         g_State.tapes.clear();
+        g_State.bluePrints.clear();
         g_State.constants.clear();
         g_State.constantMisses.clear();
         g_State.pinnedEquipIds.clear();
         g_ConstantsTouched.clear();
+        g_ExitSave = false;
         g_SessionPinnedIds.clear();
+        g_StickyPinnedIds.clear();
         g_PinSetFreshThisSession = false;
         g_SessionEquipIds.clear();
         g_SessionFlowIndices.clear();

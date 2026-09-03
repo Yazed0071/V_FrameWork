@@ -13,10 +13,8 @@ this.labels = {}
 
 
 local function lookupCustomLabel(gameObjectId, gender, scenario)
-    -- 1. by gameObjectId
     local label = this.labels[gameObjectId]
 
-    -- 2. by name
     if label == nil then
         for k, v in pairs(this.labels) do
             if type(k) == "string" and k ~= "male" and k ~= "female" and k ~= "child" then
@@ -28,7 +26,6 @@ local function lookupCustomLabel(gameObjectId, gender, scenario)
         end
     end
 
-    -- 3. by gender
     if label == nil then
         if gender == 0 then label = this.labels.male
         elseif gender == 1 then label = this.labels.female
@@ -41,8 +38,14 @@ end
 
 
 local function pushEntry(hostage)
-    hostage.customLabel = lookupCustomLabel(hostage.gameObjectId, hostage.gender, hostage.scenario)
-    GameObject.SendCommand(hostage.gameObjectId, { id = "SetLostHostage", hostageType = hostage.gender, customLostLabel = hostage.customLabel or 0 })
+    hostage.customLabel      = lookupCustomLabel(hostage.gameObjectId, hostage.gender, "gone")
+    hostage.customLabelTaken = lookupCustomLabel(hostage.gameObjectId, hostage.gender, "taken")
+    GameObject.SendCommand(hostage.gameObjectId, {
+        id                   = "SetLostHostage",
+        hostageType          = hostage.gender,
+        customLostLabel      = hostage.customLabel or 0,
+        customLostLabelTaken = hostage.customLabelTaken or 0,
+    })
 end
 
 
@@ -90,72 +93,29 @@ function this.ClearLostHostages()
     GameObject.SendCommand({ type = "TppHostage2" }, { id = "ClearLostHostages" })
 end
 
-function this.SetLostHostageFromPlayer(hostageNameOrId, enable)
+
+function this.GetHostageGender(hostageNameOrId)
     if hostageNameOrId == nil then
-        V_FrameWork.Log("V_TppHostage.SetLostHostageFromPlayer: hostageNameOrId is nil.")
+        V_FrameWork.Log("V_TppHostage.GetHostageGender: hostageNameOrId is nil.")
         return
     end
     if IsTypeString(hostageNameOrId) then
         hostageNameOrId = GetGameObjectId(hostageNameOrId)
     end
     if hostageNameOrId == NULL_ID then
-        V_FrameWork.Log("V_TppHostage.SetLostHostageFromPlayer: hostageId is NULL_ID.")
+        V_FrameWork.Log("V_TppHostage.GetHostageGender: hostageId is NULL_ID.")
         return
     end
-    if enable == nil then
-        enable = true
-    end
-    if type(enable) ~= "boolean" then
-        V_FrameWork.Log("V_TppHostage.SetLostHostageFromPlayer: enable is not a boolean.")
-        return
-    end
-    GameObject.SendCommand(hostageNameOrId, { id = "SetEscapeState", enable = enable })
 
-    if mvars.V_HostageList ~= nil then
-        for _, hostage in ipairs(mvars.V_HostageList) do
-            if hostage.gameObjectId == hostageNameOrId then
-                hostage.scenario = enable and "taken" or "gone"
-                pushEntry(hostage)
-                break
-            end
-        end
-    end
+    return SendCommand(hostageNameOrId, { id = "GetHostageGender" })
 end
 
 function this.IsHostageFemale(hostageNameOrId)
-    if hostageNameOrId == nil then
-        V_FrameWork.Log("V_TppHostage.IsHostageFemale: hostageNameOrId is nil.")
-        return
-    end
-    if IsTypeString(hostageNameOrId) then
-        hostageNameOrId = GetGameObjectId(hostageNameOrId)
-    end
-    if hostageNameOrId == NULL_ID then
-        V_FrameWork.Log("V_TppHostage.IsHostageFemale: hostageId is NULL_ID.")
-        return
-    end
-
-    local isFemale = SendCommand(hostageNameOrId, { id = "IsFemale" })
-
-    return isFemale
+    return this.GetHostageGender(hostageNameOrId) == 1
 end
 
 function this.IsHostageChild(hostageNameOrId)
-    if hostageNameOrId == nil then
-        V_FrameWork.Log("V_TppHostage.IsHostageChild: hostageNameOrId is nil.")
-        return
-    end
-    if IsTypeString(hostageNameOrId) then
-        hostageNameOrId = GetGameObjectId(hostageNameOrId)
-    end
-    if hostageNameOrId == NULL_ID then
-        V_FrameWork.Log("V_TppHostage.IsHostageChild: hostageId is NULL_ID.")
-        return
-    end
-
-    local isChild = SendCommand(hostageNameOrId, { id = "IsChild" })
-
-    return isChild
+    return this.GetHostageGender(hostageNameOrId) == 2
 end
 
 function this.SetCustomLostLabel(key, value)
@@ -201,16 +161,10 @@ function this.BuildHostageList()
             for i = 0, hostageCount - 1 do
                 local hostageGameObjectId = GetGameObjectIdByIndex(hostageObjectType, i)
                 if hostageGameObjectId ~= NULL_ID then
-                    local gender = 0  -- male
-                    if this.IsHostageChild(hostageGameObjectId) then
-                        gender = 2 --child
-                    elseif this.IsHostageFemale(hostageGameObjectId) then
-                        gender = 1 -- female
-                    end
+                    local gender = this.GetHostageGender(hostageGameObjectId) or 0
                     table.insert(mvars.V_HostageList, {
                         gameObjectId = hostageGameObjectId,
                         gender       = gender,
-                        scenario     = "gone",
                         customLabel  = lookupCustomLabel(hostageGameObjectId, gender, "gone"),
                     })
                 end
@@ -231,36 +185,9 @@ function this.AutoSetLostHostage()
 end
 
 
-function this.AutoSetLostHostageFromPlayer(enable)
-    if mvars.V_HostageList == nil then
-        this.BuildHostageList()
-    end
-    for _, hostage in ipairs(mvars.V_HostageList) do
-        GameObject.SendCommand(hostage.gameObjectId, { id = "SetEscapeState", enable = enable })
-        hostage.scenario = enable and "taken" or "gone"
-        pushEntry(hostage)
-    end
-end
 
 function this.Messages()
     return Tpp.StrCode32Table {
-        GameObject = {
-            {
-                msg = "ChangePhase",
-                func = function(gameObjectId, phaseName)
-                    local x,y,z = vars.playerPosX, vars.playerPosY, vars.playerPosZ
-                    local closestCp = InfMain.GetClosestCp{x,y,z}
-                    local cp = GameObject.GetGameObjectId(closestCp)
-                    if gameObjectId == cp then
-                        if phaseName >= TppGameObject.PHASE_CAUTION then
-                            this.AutoSetLostHostageFromPlayer(true)
-                        else
-                            this.AutoSetLostHostageFromPlayer(false)
-                        end
-                    end
-                end,
-            },
-        },
         UI = {
             {
                 msg = "QuestAreaAnnounceText",
@@ -287,7 +214,6 @@ function this.SetUpEnemy()
     this.ClearLostHostages()
     this.BuildHostageList()
     this.AutoSetLostHostage()
-    this.AutoSetLostHostageFromPlayer(false)
 end
 
 

@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include "../equip/DevelopArrayGrow.h"
 
 #include <HookUtils.h>
 
@@ -251,7 +252,11 @@ namespace outfit
                 showInDevelopMenu ? "" : " (hidden from R&D)");
 
             if (!showInDevelopMenu)
+            {
                 SetDevelopHidden(e.equipId);
+                equip::SilenceDevelopRowAnnounce(
+                    static_cast<std::int32_t>(e.developId));
+            }
 
             if (provisional)
                 g_HasProvisionalHeads.store(true, std::memory_order_release);
@@ -305,8 +310,8 @@ namespace outfit
         const std::uint64_t* faceFpkCodesPerPt,
         bool showInDevelopMenu)
     {
-        static_assert(kPlayerTypeMax == 4,
-                      "head registration log assumes 4 player types");
+        static_assert(kPlayerTypeMax >= 4,
+                      "head registration needs the vanilla player types");
 
         if (!name || !name[0])
         {
@@ -371,8 +376,8 @@ namespace outfit
             if (equipId != 0)
             {
                 LogDebug("[CustomHead] '%s' develop row not committed yet "
-                    "(developId=%d) - completed from %s so a boot that goes "
-                    "straight to a mission renders the worn head\n",
+                         "(developId=%d) - completed from %s so a boot straight "
+                         "into a mission still renders the worn head\n",
                     name, developId, provisionalSrc);
                 return equipId;
             }
@@ -380,9 +385,9 @@ namespace outfit
 
         StorePendingHeadUnlocked(name, faceIds, faceFv2CodesPerPt,
                                  faceFpkCodesPerPt, showInDevelopMenu);
-        LogDebug("[CustomHead] '%s' develop row not committed yet (developId=%d, "
-            "getIdx=0x%X) - DEFERRED; resolves order-independently when an "
-            "equip/develop menu opens\n",
+        LogDebug("[CustomHead] '%s' develop row not committed yet (developId=%d "
+                 "getIdx=0x%X) - DEFERRED; resolves when an equip or develop menu "
+                 "opens\n",
             name, developId, static_cast<unsigned>(rowIndex));
         return 0;
     }
@@ -505,9 +510,9 @@ namespace outfit
             if (rowTaken)
             {
                 provisionalLeft = true;
-                Log("[CustomHead] provisional '%s' cannot re-home: develop row "
-                    "%d is already another head's equipId - retried on the "
-                    "next menu build\n", e.name, row);
+                Log("[CustomHead] provisional '%s' cannot re-home: develop row %d "
+                    "already belongs to another head - retried on the next menu "
+                    "build\n", e.name, row);
                 continue;
             }
             const std::uint16_t oldId = e.equipId;
@@ -520,9 +525,9 @@ namespace outfit
             }
             PersistHeadRegistration(e);
             const int patched = RemapHeadOptionEquipId(oldId, e.equipId);
-            Log("[CustomHead] provisional '%s' re-homed: persisted equipId %u "
-                "no longer matches its develop row - now equipId=%u "
-                "(%d headOptions reference(s) patched)\n",
+            Log("[CustomHead] provisional '%s' re-homed: persisted equipId %u no "
+                "longer matches its develop row - now equipId=%u (%d headOptions "
+                "patched)\n",
                 e.name, static_cast<unsigned>(oldId),
                 static_cast<unsigned>(e.equipId), patched);
         }

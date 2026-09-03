@@ -30,26 +30,26 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>false</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>false</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
@@ -161,14 +161,23 @@
     <ClInclude Include="src\core\AddressSet_day3900.h" />
     <ClInclude Include="src\core\V_FrameWorkState.h" />
     <ClInclude Include="src\core\HookUtils.h" />
+    <ClInclude Include="src\core\HookArena.h" />
     <ClInclude Include="src\core\FeatureModule.h" />
     <ClInclude Include="src\core\BuiltInModules.h" />
     <ClInclude Include="src\core\MissionCodeGuard.h" />
     <ClInclude Include="src\core\MissionStateReset.h" />
+    <ClInclude Include="src\core\PlayerAlertPhase.h" />
+    <ClInclude Include="src\hooks\soldier\HostageGender.h" />
+    <ClInclude Include="src\hooks\player\PlayerAttachInDemo.h" />
     <ClInclude Include="src\hooks\soldier\NoticeControllerImpl_CheckSightNoticePlayer.h" />
     <ClInclude Include="src\hooks\player\CqcActionPluginImpl_StateHoldMove.h" />
     <ClInclude Include="src\hooks\player\PlayerSpaceQuery.h" />
     <ClInclude Include="src\hooks\player\FobPlayerCharacters.h" />
+    <ClInclude Include="src\hooks\player\QuietCqcPatches.h" />
+    <ClInclude Include="src\hooks\outfit\UniqueCharacterOwnSuit.h" />
+    <ClInclude Include="src\hooks\outfit\UniqueCharacterDefaultOutfit.h" />
+    <ClInclude Include="src\hooks\outfit\UniqueCharacterPartsTypePin.h" />
+    <ClInclude Include="src\hooks\outfit\UniqueCharacterSuitSlot.h" />
     <ClInclude Include="src\core\FoxHashes.h" />
     <ClInclude Include="src\core\FoxPath.h" />
     <ClInclude Include="src\core\FoxPathInternal.h" />
@@ -188,6 +197,7 @@
     <ClInclude Include="src\lua\PlayerFunctions.h" />
     <ClInclude Include="src\lua\V_FoxLib.h" />
     <ClInclude Include="src\lua\V_PickableLib.h" />
+    <ClInclude Include="src\lua\V_TppCollectionLib.h" />
     <ClInclude Include="src\lua\V_HelicopterLib.h" />
     <ClInclude Include="src\lua\V_TppMotherBaseManagementLib.h" />
     <ClInclude Include="src\lua\FoxFunctions.h" />
@@ -237,6 +247,7 @@
     <ClInclude Include="src\hooks\sound\CustomTapeOwnership.h" />
     <ClInclude Include="src\hooks\sound\SubtitlesEventMessage.h" />
     <ClInclude Include="src\hooks\sound\CustomRadioCassette.h" />
+    <ClInclude Include="src\hooks\sound\AkMemoryMgr_CreatePool.h" />
     <ClInclude Include="src\hooks\sound\CassetteTrackPaging.h" />
     <ClInclude Include="src\hooks\sound\Control_PostExternalEvent.h" />
     <ClInclude Include="src\hooks\sound\MbDvcCassetteTapeCallbackImpl_SetCurrentAlbum.h" />
@@ -256,8 +267,11 @@
     <ClInclude Include="src\hooks\outfit\ItemSelectorCallbackImpl_DecideActMissionPreparationSetEquipMode.h" />
     <ClInclude Include="src\hooks\outfit\ItemSelectorCallbackImpl_AddDevelopWeaponList.h" />
     <ClInclude Include="src\hooks\outfit\ItemSelectorCallbackImpl_AddListSuit.h" />
+    <ClInclude Include="src\hooks\outfit\EquipDevelopControllerImpl_GetItemNameMessageId.h" />
+    <ClInclude Include="src\hooks\outfit\MissionPreparationSystemImpl_GetPlayerNameFromPlayerTypeAndStaffId.h" />
     <ClInclude Include="src\hooks\outfit\MissionPreparationSystemImpl_IsEnableHeadOptionSuit.h" />
     <ClInclude Include="src\hooks\outfit\CamouflageControllerImpl_ExecSuitCorrect.h" />
+    <ClInclude Include="src\hooks\outfit\SkillAndItemParameterSystemImpl_GetSuitParam.h" />
     <ClInclude Include="src\hooks\outfit\CamoufParamInfoImpl_GetCamoufValue.h" />
     <ClInclude Include="src\hooks\equip\EquipDevelop_AddToEquipDevelopTable.h" />
     <ClInclude Include="src\hooks\equip\BulletLockOn.h" />
@@ -269,6 +283,7 @@
     <ClInclude Include="src\hooks\equip\GunBasicInject.h" />
     <ClInclude Include="src\hooks\equip\EquipPartParams.h" />
     <ClInclude Include="src\hooks\equip\EquipDevelop_SetEquipUndeveloped.h" />
+    <ClInclude Include="src\hooks\equip\EquipDevelopControllerImpl_SetEquipNew.h" />
     <ClInclude Include="src\hooks\equip\WeaponPartsDevelopControllerImpl_GetLangEnhanceInfoMessageIdArray.h" />
     <ClInclude Include="src\lua\V_TppEquipLib.h" />
     <ClInclude Include="src\lua\equip\RegisterConstantEquipId.h" />
@@ -302,6 +317,7 @@
     <ClInclude Include="src\hooks\heli\FieldTaxiMenu.h" />
     <ClInclude Include="src\hooks\heli\HeliSoundController.h" />
     <!-- Hooks: UI -->
+    <ClInclude Include="src\hooks\ui\DataBaseCallbackImpl_RefreshPrefabList.h" />
     <ClInclude Include="src\hooks\ui\EquipBgTexture.h" />
     <ClInclude Include="src\hooks\ui\MissionTelopBgTexture.h" />
     <ClInclude Include="src\hooks\ui\LoadingSplash.h" />
@@ -312,12 +328,13 @@
     <ClInclude Include="src\hooks\ui\ShowMissionIcon.h" />
     <ClInclude Include="src\hooks\ui\AnnounceLogHook.h" />
     <ClInclude Include="src\hooks\ui\ChangeLocationMenu.h" />
+    <ClInclude Include="src\hooks\ui\UniqueStaffRegistry.h" />
+    <ClInclude Include="src\hooks\ui\DataBaseNewFlag.h" />
     <ClInclude Include="src\hooks\ui\GetPhotoAdditionalTextLangId.h" />
-    <ClInclude Include="src\hooks\ui\EquipCrossSetEquipItemPatch.h" />
-    <ClInclude Include="src\hooks\ui\EquipCrossEvCall_IsItemNoUse.h" />
     <ClInclude Include="src\hooks\ui\BarrierEffectLoadPatch.h" />
     <ClInclude Include="src\hooks\ui\BarrierEffectSpawn.h" />
     <ClInclude Include="src\hooks\core\LuaErrorThrow.h" />
+    <ClInclude Include="src\hooks\core\ServerManager_BufferRelease.h" />
     <ClInclude Include="src\hooks\ui\SupportAttackCrashGuard.h" />
     <ClInclude Include="src\hooks\ui\Reticle_InitHandGunAsset.h" />
     <ClInclude Include="src\hooks\fox\gm\GameObjectSendCommand.h" />
@@ -325,6 +342,7 @@
     <ClInclude Include="src\hooks\bullet\Bullet3Impl_ActivateBulletAtEmptyWorkPatch.h" />
     <!-- Hooks: Pickable -->
     <ClInclude Include="src\hooks\pickable\TppPickableRuntime.h" />
+    <ClInclude Include="src\hooks\collection\TppCollectionRuntime.h" />
     <!-- Hooks: Sahelan -->
     <ClInclude Include="src\hooks\sahelan\RealizedSahelanFovaHook.h" />
     <ClInclude Include="src\hooks\sahelan\SetEyeLampColorHook.h" />
@@ -338,6 +356,7 @@
   </ItemGroup>
   <ItemGroup>
     <!-- Core -->
+    <ClCompile Include="src\core\HookArena.cpp" />
     <ClCompile Include="src\core\dllmain.cpp" />
     <ClCompile Include="src\core\pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
@@ -363,9 +382,16 @@
     <ClCompile Include="src\hooks\outfit\ItemSelectorCallbackImpl_DecideActMissionPreparationSetEquipMode.cpp" />
     <ClCompile Include="src\hooks\outfit\ItemSelectorCallbackImpl_AddDevelopWeaponList.cpp" />
     <ClCompile Include="src\hooks\outfit\ItemSelectorCallbackImpl_AddListSuit.cpp" />
+    <ClCompile Include="src\hooks\outfit\EquipDevelopControllerImpl_GetItemNameMessageId.cpp" />
+    <ClCompile Include="src\hooks\outfit\MissionPreparationSystemImpl_GetPlayerNameFromPlayerTypeAndStaffId.cpp" />
     <ClCompile Include="src\hooks\outfit\MissionPreparationSystemImpl_IsEnableHeadOptionSuit.cpp" />
     <ClCompile Include="src\hooks\outfit\CamouflageControllerImpl_ExecSuitCorrect.cpp" />
+    <ClCompile Include="src\hooks\outfit\SkillAndItemParameterSystemImpl_GetSuitParam.cpp" />
     <ClCompile Include="src\hooks\outfit\CamoufParamInfoImpl_GetCamoufValue.cpp" />
+    <ClCompile Include="src\hooks\equip\CustomBluePrint.cpp" />
+    <ClCompile Include="src\hooks\equip\DataBaseControllerImpl_AddDataBase.cpp" />
+    <ClCompile Include="src\hooks\ui\HeadMarkMarkerEvCall_SetIconSubType.cpp" />
+    <ClCompile Include="src\hooks\ui\MbDvcMapCallbackIconImpl_DispOnNewMarkerIcon.cpp" />
     <ClCompile Include="src\hooks\equip\DevelopArrayGrow.cpp" />
     <ClCompile Include="src\hooks\equip\UiEquipPreviewControllerImpl_ScrollNext.cpp" />
     <ClCompile Include="src\hooks\equip\EquipDevelop_AddToEquipDevelopTable.cpp" />
@@ -380,6 +406,7 @@
     <ClCompile Include="src\hooks\equip\EquipPartParams.cpp" />
     <ClCompile Include="src\hooks\equip\UiUtility_GetWeaponItemNameLangId.cpp" />
     <ClCompile Include="src\hooks\equip\EquipDevelop_SetEquipUndeveloped.cpp" />
+    <ClCompile Include="src\hooks\equip\EquipDevelopControllerImpl_SetEquipNew.cpp" />
     <ClCompile Include="src\hooks\equip\WeaponPartsDevelopControllerImpl_GetLangEnhanceInfoMessageIdArray.cpp" />
     <ClCompile Include="src\lua\V_TppEquipLib.cpp" />
     <ClCompile Include="src\lua\equip\RegisterConstantEquipId.cpp" />
@@ -412,10 +439,18 @@
     <ClCompile Include="src\core\MissionCodeGuard.cpp" />
     <ClCompile Include="src\core\DeployGuard.cpp" />
     <ClCompile Include="src\core\MissionStateReset.cpp" />
+    <ClCompile Include="src\core\PlayerAlertPhase.cpp" />
+    <ClCompile Include="src\hooks\soldier\HostageGender.cpp" />
+    <ClCompile Include="src\hooks\player\PlayerAttachInDemo.cpp" />
     <ClCompile Include="src\hooks\soldier\NoticeControllerImpl_CheckSightNoticePlayer.cpp" />
     <ClCompile Include="src\hooks\player\CqcActionPluginImpl_StateHoldMove.cpp" />
     <ClCompile Include="src\hooks\player\PlayerSpaceQuery.cpp" />
     <ClCompile Include="src\hooks\player\FobPlayerCharacters.cpp" />
+    <ClCompile Include="src\hooks\player\QuietCqcPatches.cpp" />
+    <ClCompile Include="src\hooks\outfit\UniqueCharacterOwnSuit.cpp" />
+    <ClCompile Include="src\hooks\outfit\UniqueCharacterDefaultOutfit.cpp" />
+    <ClCompile Include="src\hooks\outfit\UniqueCharacterPartsTypePin.cpp" />
+    <ClCompile Include="src\hooks\outfit\UniqueCharacterSuitSlot.cpp" />
     <ClCompile Include="src\core\FoxHashes.cpp" />
     <ClCompile Include="src\core\LuaBroadcaster.cpp" />
     <ClCompile Include="src\core\log.cpp" />
@@ -433,6 +468,7 @@
     <ClCompile Include="src\lua\V_PlayerLib.cpp" />
     <ClCompile Include="src\lua\V_FoxLib.cpp" />
     <ClCompile Include="src\lua\V_PickableLib.cpp" />
+    <ClCompile Include="src\lua\V_TppCollectionLib.cpp" />
     <ClCompile Include="src\lua\V_HelicopterLib.cpp" />
     <ClCompile Include="src\lua\V_TppMotherBaseManagementLib.cpp" />
     <!-- Hooks: Soldier -->
@@ -475,6 +511,7 @@
     <ClCompile Include="src\hooks\sound\CustomTapeOwnership.cpp" />
     <ClCompile Include="src\hooks\sound\SubtitlesEventMessage.cpp" />
     <ClCompile Include="src\hooks\sound\CustomRadioCassette.cpp" />
+    <ClCompile Include="src\hooks\sound\AkMemoryMgr_CreatePool.cpp" />
     <ClCompile Include="src\hooks\sound\CassetteTrackPaging.cpp" />
     <ClCompile Include="src\hooks\sound\Control_PostExternalEvent.cpp" />
     <ClCompile Include="src\hooks\sound\MbDvcCassetteTapeCallbackImpl_SetCurrentAlbum.cpp" />
@@ -486,6 +523,7 @@
     <ClCompile Include="src\hooks\heli\FieldTaxiMenu.cpp" />
     <ClCompile Include="src\hooks\heli\HeliSoundController.cpp" />
     <!-- Hooks: UI -->
+    <ClCompile Include="src\hooks\ui\DataBaseCallbackImpl_RefreshPrefabList.cpp" />
     <ClCompile Include="src\hooks\ui\EquipBgTexture.cpp" />
     <ClCompile Include="src\hooks\ui\MissionTelopBgTexture.cpp" />
     <ClCompile Include="src\hooks\ui\LoadingSplash.cpp" />
@@ -496,16 +534,18 @@
     <ClCompile Include="src\hooks\ui\ShowMissionIcon.cpp" />
     <ClCompile Include="src\hooks\ui\AnnounceLogHook.cpp" />
     <ClCompile Include="src\hooks\ui\ChangeLocationMenu.cpp" />
+    <ClCompile Include="src\hooks\ui\UniqueStaffRegistry.cpp" />
+    <ClCompile Include="src\hooks\ui\DataBaseNewFlag.cpp" />
     <ClCompile Include="src\hooks\ui\GetPhotoAdditionalTextLangId.cpp" />
-    <ClCompile Include="src\hooks\ui\EquipCrossSetEquipItemPatch.cpp" />
-    <ClCompile Include="src\hooks\ui\EquipCrossEvCall_IsItemNoUse.cpp" />
     <ClCompile Include="src\hooks\ui\BarrierEffectLoadPatch.cpp" />
     <ClCompile Include="src\hooks\ui\BarrierEffectSpawn.cpp" />
     <ClCompile Include="src\hooks\core\LuaErrorThrow.cpp" />
+    <ClCompile Include="src\hooks\core\ServerManager_BufferRelease.cpp" />
     <ClCompile Include="src\hooks\ui\SupportAttackCrashGuard.cpp" />
     <ClCompile Include="src\hooks\ui\Reticle_InitHandGunAsset.cpp" />
     <!-- Hooks: Pickable -->
     <ClCompile Include="src\hooks\pickable\TppPickableRuntime.cpp" />
+    <ClCompile Include="src\hooks\collection\TppCollectionRuntime.cpp" />
     <!-- Hooks: Sahelan -->
     <ClCompile Include="src\hooks\sahelan\RealizedSahelanFovaHook.cpp" />
     <ClCompile Include="src\hooks\sahelan\SetEyeLampColorHook.cpp" />

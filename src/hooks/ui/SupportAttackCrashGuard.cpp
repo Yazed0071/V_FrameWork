@@ -343,13 +343,13 @@ namespace
 
 bool Install_SupportAttackCrashGuard()
 {
-    g_Factory   = reinterpret_cast<FactoryFn>(gAddr.Dm_ComponentFactory);
-    g_BLFactory = reinterpret_cast<BackLinkFactoryFn>(gAddr.Dm_BackLinkPool);
-    g_Alloc     = reinterpret_cast<AllocFn>(gAddr.Dm_Alloc);
+    g_Factory   = reinterpret_cast<FactoryFn>(ResolveGameAddress(gAddr.Dm_ComponentFactory));
+    g_BLFactory = reinterpret_cast<BackLinkFactoryFn>(ResolveGameAddress(gAddr.Dm_BackLinkPool));
+    g_Alloc     = reinterpret_cast<AllocFn>(ResolveGameAddress(gAddr.Dm_Alloc));
 
-    void* fire = reinterpret_cast<void*>(gAddr.Dm_FireLoop);
-    void* cls  = reinterpret_cast<void*>(gAddr.Dm_Classify);
-    void* vfx  = reinterpret_cast<void*>(gAddr.Dm_VfxFactory);
+    void* fire = ResolveGameAddress(gAddr.Dm_FireLoop);
+    void* cls  = ResolveGameAddress(gAddr.Dm_Classify);
+    void* vfx  = ResolveGameAddress(gAddr.Dm_VfxFactory);
 
     if (!fire || !cls || !vfx || !g_Factory || !g_BLFactory || !g_Alloc)
     {
@@ -372,7 +372,7 @@ bool Install_SupportAttackCrashGuard()
     g_ClsAddr  = clsOk  ? cls  : nullptr;
     g_VfxAddr  = vfxOk  ? vfx  : nullptr;
 
-    void* oneShot = reinterpret_cast<void*>(gAddr.Dm_OneShot);
+    void* oneShot = ResolveGameAddress(gAddr.Dm_OneShot);
     bool dirGuardOk = false;
     if (oneShot)
     {

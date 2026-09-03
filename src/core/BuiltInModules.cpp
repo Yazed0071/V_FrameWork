@@ -9,7 +9,9 @@
 #include "AddressSet.h"
 #include "BuiltInModules.h"
 #include "../hooks/equip/EquipPartParams.h"
+#include "../hooks/core/ServerManager_BufferRelease.h"
 #include "../hooks/equip/PartIdWiden.h"
+#include "../hooks/collection/TppCollectionRuntime.h"
 #include "FeatureModule.h"
 #include "HookUtils.h"
 #include "log.h"
@@ -60,8 +62,8 @@ namespace
                 if (obj && !TeardownEntryLooksSane(obj))
                 {
                     LogDebug("[ExitGuard] EntityInfo teardown: entry %d holds a "
-                        "dead/corrupt object %p (vtable %p) - skipped instead "
-                        "of crashing (leaked engine entity)\n",
+                             "dead/corrupt object %p (vtable %p) - skipped instead "
+                             "of crashing\n",
                         idx, obj, *reinterpret_cast<void**>(obj));
                     values[idx] = nullptr;
                 }
@@ -157,9 +159,8 @@ namespace
             target, reinterpret_cast<void*>(&hkEntityInfoMapTeardown),
             reinterpret_cast<void**>(&g_OrigEntityInfoMapTeardown));
         g_EntityInfoMapTeardownAddr = ok ? target : nullptr;
-        Log("[ExitGuard] EntityInfo exit-teardown guard %s (target=%p; a "
-            "leaked/corrupt entity entry is skipped at quit instead of "
-            "crashing with RIP=0)\n",
+        Log("[ExitGuard] EntityInfo exit-teardown guard %s (target=%p; a corrupt "
+            "entity entry is skipped at quit instead of crashing with RIP=0)\n",
             ok ? "installed" : "FAILED", target);
         return ok;
     }
@@ -338,6 +339,12 @@ bool Uninstall_FieldTaxiMenu();
 bool Install_TimeCigaretteUi_Hook();
 bool Uninstall_TimeCigaretteUi_Hook();
 
+bool Install_HeadMarkMarkerEvCall_SetIconSubType_Patch();
+void Uninstall_HeadMarkMarkerEvCall_SetIconSubType_Patch();
+#include "DataBaseNewFlag.h"
+
+bool Install_DataBaseBluePrintList_Hook();
+void Uninstall_DataBaseBluePrintList_Hook();
 bool Install_HideBinocle_Hook();
 bool Uninstall_HideBinocle_Hook();
 
@@ -349,14 +356,8 @@ bool Uninstall_AnnounceLogHook();
 bool Install_TornadoDualPatch();
 void Uninstall_TornadoDualPatch();
 
-bool Install_EquipCrossSetEquipItemPatch();
-void Uninstall_EquipCrossSetEquipItemPatch();
-
 bool Install_IsWeaponNoUseInPlaceActionPatch();
 void Uninstall_IsWeaponNoUseInPlaceActionPatch();
-
-bool Install_IsItemNoUsePatch();
-void Uninstall_IsItemNoUsePatch();
 
 bool Install_BarrierEffectLoadPatch();
 void Uninstall_BarrierEffectLoadPatch();
@@ -376,8 +377,16 @@ bool Install_EnhanceLangIdUnlimited();
 bool Uninstall_EnhanceLangIdUnlimited();
 
 namespace SoldierAkObjIdMap { bool Install(); bool Uninstall(); }
+bool AkMemoryMgr_InstallPrepareEventPoolGrow();
+void AkMemoryMgr_UninstallPrepareEventPoolGrow();
 bool Install_TargetCqcStance_Hook();
 bool Uninstall_TargetCqcStance_Hook();
+bool Install_QuietCqcPatches();
+void Uninstall_QuietCqcPatches();
+bool Install_UniqueCharacterSuitSlot();
+void Uninstall_UniqueCharacterSuitSlot();
+bool Install_PlayerAttachInDemo_Hook();
+bool Uninstall_PlayerAttachInDemo_Hook();
 bool Install_CheckSightNoticePlayer_Hook();
 bool Uninstall_CheckSightNoticePlayer_Hook();
 bool Install_InterrogationVoiceEvent_Hook();
@@ -408,6 +417,12 @@ namespace outfit
     void Uninstall_OutfitMotionMtar_Hook();
     bool Install_OutfitAbilities_Hooks();
     void Uninstall_OutfitAbilities_Hooks();
+    bool Install_SuitParamUniqueCharacter_Hook();
+    void Uninstall_SuitParamUniqueCharacter_Hook();
+    bool Install_UniqueCharacterName_Hook();
+    void Uninstall_UniqueCharacterName_Hook();
+    bool Install_OwnSuitRowLabel_Hooks();
+    void Uninstall_OwnSuitRowLabel_Hooks();
 }
 namespace EquipDevelopAdd
 {
@@ -415,6 +430,7 @@ namespace EquipDevelopAdd
     bool Uninstall_TppMotherBaseManagement_EquipDevelopHooks();
 }
 void EquipDevelop_InstallDevelopSyncHooks();
+void EquipDevelop_ReleaseSetEquipNewGuard();
 namespace equip
 {
     bool Install_BulletLockOn_Hooks();
@@ -444,6 +460,8 @@ void Uninstall_MotionLoader_MagazineTypeHook();
 bool Install_MotionLoader_SightTypeHook();
 bool Install_UiUtility_GetWeaponItemNameLangIdHook();
 void Uninstall_MotionLoader_SightTypeHook();
+bool Install_UiController_UiSightTypeHook();
+void Uninstall_UiController_UiSightTypeHook();
 void Uninstall_UiUtility_GetWeaponItemNameLangIdHook();
 bool Install_GetAttackIdGuard();
 void Uninstall_GetAttackIdGuard();
@@ -467,6 +485,26 @@ void Uninstall_DamageParameter_Hook();
 
 namespace
 {
+    class PrepareEventPoolModule final : public IFeatureModule
+    {
+    public:
+        const char* GetName() const override
+        {
+            return "PrepareEventPool";
+        }
+
+        bool Install(HMODULE hGame) override
+        {
+            UNREFERENCED_PARAMETER(hGame);
+            return AkMemoryMgr_InstallPrepareEventPoolGrow();
+        }
+
+        void Uninstall() override
+        {
+            AkMemoryMgr_UninstallPrepareEventPoolGrow();
+        }
+    };
+
     class LuaBridgeModule final : public IFeatureModule
     {
     public:
@@ -1034,6 +1072,26 @@ namespace
             Uninstall_TppPickableHooks();
         }
     };
+
+    class TppCollectionModule final : public IFeatureModule
+    {
+    public:
+        const char* GetName() const override
+        {
+            return "TppCollection";
+        }
+
+        bool Install(HMODULE hGame) override
+        {
+            UNREFERENCED_PARAMETER(hGame);
+            return Install_TppCollectionHooks();
+        }
+
+        void Uninstall() override
+        {
+            Uninstall_TppCollectionHooks();
+        }
+    };
     class EquipIconFtexPathModule final : public IFeatureModule
     {
     public:
@@ -1189,6 +1247,67 @@ namespace
         void Uninstall() override
         {
             Uninstall_TargetCqcStance_Hook();
+        }
+    };
+
+    class QuietCqcPatchesModule final : public IFeatureModule
+    {
+    public:
+        const char* GetName() const override
+        {
+            return "QuietCqcPatches";
+        }
+
+        bool Install(HMODULE hGame) override
+        {
+            UNREFERENCED_PARAMETER(hGame);
+            return Install_QuietCqcPatches();
+        }
+
+        void Uninstall() override
+        {
+            Uninstall_QuietCqcPatches();
+        }
+    };
+
+
+    class UniqueCharacterSuitSlotModule final : public IFeatureModule
+    {
+    public:
+        const char* GetName() const override
+        {
+            return "UniqueCharacterSuitSlot";
+        }
+
+        bool Install(HMODULE hGame) override
+        {
+            UNREFERENCED_PARAMETER(hGame);
+            return Install_UniqueCharacterSuitSlot();
+        }
+
+        void Uninstall() override
+        {
+            Uninstall_UniqueCharacterSuitSlot();
+        }
+    };
+
+    class PlayerAttachInDemoModule final : public IFeatureModule
+    {
+    public:
+        const char* GetName() const override
+        {
+            return "PlayerAttachInDemo";
+        }
+
+        bool Install(HMODULE hGame) override
+        {
+            UNREFERENCED_PARAMETER(hGame);
+            return Install_PlayerAttachInDemo_Hook();
+        }
+
+        void Uninstall() override
+        {
+            Uninstall_PlayerAttachInDemo_Hook();
         }
     };
 
@@ -1459,6 +1578,64 @@ namespace
         void Uninstall() override { Uninstall_TimeCigaretteUi_Hook(); }
     };
 
+    class HeadMarkDyingColourModule final : public IFeatureModule
+    {
+    public:
+        const char* GetName() const override
+        {
+            return "HeadMarkDyingColour";
+        }
+
+        bool Install(HMODULE hGame) override
+        {
+            UNREFERENCED_PARAMETER(hGame);
+            return Install_HeadMarkMarkerEvCall_SetIconSubType_Patch();
+        }
+
+        void Uninstall() override
+        {
+            Uninstall_HeadMarkMarkerEvCall_SetIconSubType_Patch();
+        }
+    };
+
+    class DataBaseNewFlagModule final : public IFeatureModule
+    {
+    public:
+        const char* GetName() const override
+        {
+            return "DataBaseNewFlag";
+        }
+
+        bool Install(HMODULE hGame) override
+        {
+            return dataBaseNewFlag::Install(hGame);
+        }
+
+        void Uninstall() override
+        {
+        }
+    };
+
+    class DataBaseBluePrintListModule final : public IFeatureModule
+    {
+    public:
+        const char* GetName() const override
+        {
+            return "DataBaseBluePrintList";
+        }
+
+        bool Install(HMODULE hGame) override
+        {
+            UNREFERENCED_PARAMETER(hGame);
+            return Install_DataBaseBluePrintList_Hook();
+        }
+
+        void Uninstall() override
+        {
+            Uninstall_DataBaseBluePrintList_Hook();
+        }
+    };
+
     class HideBinocleModule final : public IFeatureModule
     {
     public:
@@ -1491,28 +1668,12 @@ namespace
         void Uninstall() override { Uninstall_TornadoDualPatch(); }
     };
 
-    class EquipCrossSetEquipItemModule final : public IFeatureModule
-    {
-    public:
-        const char* GetName() const override { return "EquipCrossSetEquipItem"; }
-        bool Install(HMODULE hGame) override { UNREFERENCED_PARAMETER(hGame); return Install_EquipCrossSetEquipItemPatch(); }
-        void Uninstall() override { Uninstall_EquipCrossSetEquipItemPatch(); }
-    };
-
     class IsWeaponNoUseInPlaceActionModule final : public IFeatureModule
     {
     public:
         const char* GetName() const override { return "IsWeaponNoUseInPlaceAction"; }
         bool Install(HMODULE hGame) override { UNREFERENCED_PARAMETER(hGame); return Install_IsWeaponNoUseInPlaceActionPatch(); }
         void Uninstall() override { Uninstall_IsWeaponNoUseInPlaceActionPatch(); }
-    };
-
-    class IsItemNoUseModule final : public IFeatureModule
-    {
-    public:
-        const char* GetName() const override { return "IsItemNoUse"; }
-        bool Install(HMODULE hGame) override { UNREFERENCED_PARAMETER(hGame); return Install_IsItemNoUsePatch(); }
-        void Uninstall() override { Uninstall_IsItemNoUsePatch(); }
     };
 
     class BarrierEffectLoadModule final : public IFeatureModule
@@ -1553,6 +1714,14 @@ namespace
         const char* GetName() const override { return "ExitTeardownGuard"; }
         bool Install(HMODULE hGame) override { UNREFERENCED_PARAMETER(hGame); return Install_ExitTeardownGuard(); }
         void Uninstall() override { Uninstall_ExitTeardownGuard(); }
+    };
+
+    class ServerManagerBufferReleaseModule final : public IFeatureModule
+    {
+    public:
+        const char* GetName() const override { return "ServerManagerBufferRelease"; }
+        bool Install(HMODULE hGame) override { UNREFERENCED_PARAMETER(hGame); return Install_ServerManagerBufferRelease(); }
+        void Uninstall() override { Uninstall_ServerManagerBufferRelease(); }
     };
 
     class ReticleAssetGuardModule final : public IFeatureModule
@@ -1609,6 +1778,7 @@ namespace
         void Uninstall() override
         {
             outfit::Uninstall_OutfitRuntimeParts_Hooks();
+            EquipDevelop_ReleaseSetEquipNewGuard();
             EquipDevelopAdd::Uninstall_TppMotherBaseManagement_EquipDevelopHooks();
             outfit::Uninstall_OutfitEquippedState_Hooks();
         }
@@ -1649,11 +1819,18 @@ namespace
             const bool value = outfit::Install_OutfitGetCamoufValue_Hook();
             const bool mtar  = outfit::Install_OutfitMotionMtar_Hook();
             const bool abil  = outfit::Install_OutfitAbilities_Hooks();
+            const bool sparm = outfit::Install_SuitParamUniqueCharacter_Hook();
+            const bool cname = outfit::Install_UniqueCharacterName_Hook();
+            const bool olbl = outfit::Install_OwnSuitRowLabel_Hooks();
             (void)head; (void)camo; (void)value; (void)mtar; (void)abil;
+            (void)sparm; (void)cname; (void)olbl;
             return true;
         }
         void Uninstall() override
         {
+            outfit::Uninstall_OwnSuitRowLabel_Hooks();
+            outfit::Uninstall_UniqueCharacterName_Hook();
+            outfit::Uninstall_SuitParamUniqueCharacter_Hook();
             outfit::Uninstall_OutfitAbilities_Hooks();
             outfit::Uninstall_OutfitMotionMtar_Hook();
             outfit::Uninstall_OutfitGetCamoufValue_Hook();
@@ -1708,6 +1885,7 @@ namespace
             ok = Install_MotionLoader_BarrelTypeHook() && ok;
             ok = Install_MotionLoader_MagazineTypeHook() && ok;
             ok = Install_MotionLoader_SightTypeHook() && ok;
+            ok = Install_UiController_UiSightTypeHook() && ok;
             Install_UiUtility_GetWeaponItemNameLangIdHook();
             ok = Install_GetAttackIdGuard() && ok;
             ok = Install_GunInfoGuard() && ok;
@@ -1732,6 +1910,7 @@ namespace
             Uninstall_MotionLoader_BarrelTypeHook();
             Uninstall_MotionLoader_MagazineTypeHook();
             Uninstall_MotionLoader_SightTypeHook();
+            Uninstall_UiController_UiSightTypeHook();
             Uninstall_UiUtility_GetWeaponItemNameLangIdHook();
             Uninstall_GetAttackIdGuard();
             Uninstall_GunInfoGuard();
@@ -1747,6 +1926,7 @@ namespace
 
 void RegisterBuiltInFeatureModules()
 {
+    static PrepareEventPoolModule s_PrepareEventPoolModule;
     static LuaBridgeModule s_LuaBridgeModule;
     static EquipBgTextureModule s_EquipBgTextureModule;
     static MissionTelopBgTextureModule s_MissionTelopBgTextureModule;
@@ -1787,6 +1967,9 @@ void RegisterBuiltInFeatureModules()
     static VoicePitchOverrideModule s_VoicePitchOverrideModule;
     static SoldierAkObjIdMapModule s_SoldierAkObjIdMapModule;
     static TargetCqcStanceModule s_TargetCqcStanceModule;
+    static QuietCqcPatchesModule s_QuietCqcPatchesModule;
+    static UniqueCharacterSuitSlotModule s_UniqueCharacterSuitSlotModule;
+    static PlayerAttachInDemoModule s_PlayerAttachInDemoModule;
     static SoldierIgnorePlayerModule s_SoldierIgnorePlayerModule;
     static InterrogationVoiceEventModule s_InterrogationVoiceEventModule;
     static SetEyeLampColorModule s_SetEyeLampColorModule;
@@ -1807,18 +1990,20 @@ void RegisterBuiltInFeatureModules()
     static AnimalNoticeModule s_AnimalNoticeModule;
     static FieldTaxiMenuModule s_FieldTaxiMenuModule;
     static TimeCigaretteUiModule s_TimeCigaretteUiModule;
+    static HeadMarkDyingColourModule s_HeadMarkDyingColourModule;
+    static DataBaseNewFlagModule s_DataBaseNewFlagModule;
+    static DataBaseBluePrintListModule s_DataBaseBluePrintListModule;
     static HideBinocleModule s_HideBinocleModule;
     static HeliSoundControllerModule s_HeliSoundControllerModule;
     static AnnounceLogModule s_AnnounceLogModule;
     static TornadoDualPatchModule s_TornadoDualPatchModule;
-    static EquipCrossSetEquipItemModule s_EquipCrossSetEquipItemModule;
     static IsWeaponNoUseInPlaceActionModule s_IsWeaponNoUseInPlaceActionModule;
-    static IsItemNoUseModule s_IsItemNoUseModule;
     static BarrierEffectLoadModule s_BarrierEffectLoadModule;
     static BarrierEffectSpawnModule s_BarrierEffectSpawnModule;
     static LuaErrorThrowModule s_LuaErrorThrowModule;
     static SupportAttackCrashGuardModule s_SupportAttackCrashGuardModule;
     static ExitTeardownGuardModule s_ExitTeardownGuardModule;
+    static ServerManagerBufferReleaseModule s_ServerManagerBufferReleaseModule;
     static ReticleAssetGuardModule s_ReticleAssetGuardModule;
     static EnhanceLangIdUnlimitedModule s_EnhanceLangIdUnlimitedModule;
     static DevelopArrayGrowModule s_DevelopArrayGrowModule;
@@ -1828,10 +2013,12 @@ void RegisterBuiltInFeatureModules()
     static TppEquipConstInjectModule s_TppEquipConstInjectModule;
     static EquipIdTableOverflowModule s_EquipIdTableOverflowModule;
     static GunBasicInjectModule s_GunBasicInjectModule;
+    static TppCollectionModule s_TppCollectionModule;
 
     static std::once_flag s_Once;
     std::call_once(s_Once, []()
         {
+            FeatureModuleRegistry::Instance().Register(&s_PrepareEventPoolModule);
             FeatureModuleRegistry::Instance().Register(&s_LuaBridgeModule);
             FeatureModuleRegistry::Instance().Register(&s_EquipBgTextureModule);
             FeatureModuleRegistry::Instance().Register(&s_MissionTelopBgTextureModule);
@@ -1871,6 +2058,9 @@ void RegisterBuiltInFeatureModules()
             FeatureModuleRegistry::Instance().Register(&s_MissionMenuHelpModule);
             FeatureModuleRegistry::Instance().Register(&s_SoldierAkObjIdMapModule);
             FeatureModuleRegistry::Instance().Register(&s_TargetCqcStanceModule);
+            FeatureModuleRegistry::Instance().Register(&s_QuietCqcPatchesModule);
+            FeatureModuleRegistry::Instance().Register(&s_UniqueCharacterSuitSlotModule);
+            FeatureModuleRegistry::Instance().Register(&s_PlayerAttachInDemoModule);
             FeatureModuleRegistry::Instance().Register(&s_SoldierIgnorePlayerModule);
             FeatureModuleRegistry::Instance().Register(&s_InterrogationVoiceEventModule);
             FeatureModuleRegistry::Instance().Register(&s_SoldierVoiceTypeQueryModule);
@@ -1892,16 +2082,18 @@ void RegisterBuiltInFeatureModules()
             FeatureModuleRegistry::Instance().Register(&s_AnimalNoticeModule);
             FeatureModuleRegistry::Instance().Register(&s_FieldTaxiMenuModule);
             FeatureModuleRegistry::Instance().Register(&s_TimeCigaretteUiModule);
+            FeatureModuleRegistry::Instance().Register(&s_HeadMarkDyingColourModule);
+            FeatureModuleRegistry::Instance().Register(&s_DataBaseBluePrintListModule);
+            FeatureModuleRegistry::Instance().Register(&s_DataBaseNewFlagModule);
             FeatureModuleRegistry::Instance().Register(&s_HideBinocleModule);
             FeatureModuleRegistry::Instance().Register(&s_HeliSoundControllerModule);
             FeatureModuleRegistry::Instance().Register(&s_AnnounceLogModule);
             FeatureModuleRegistry::Instance().Register(&s_TornadoDualPatchModule);
-            FeatureModuleRegistry::Instance().Register(&s_EquipCrossSetEquipItemModule);
             FeatureModuleRegistry::Instance().Register(&s_IsWeaponNoUseInPlaceActionModule);
-            FeatureModuleRegistry::Instance().Register(&s_IsItemNoUseModule);
             FeatureModuleRegistry::Instance().Register(&s_LuaErrorThrowModule);
             FeatureModuleRegistry::Instance().Register(&s_SupportAttackCrashGuardModule);
             FeatureModuleRegistry::Instance().Register(&s_ExitTeardownGuardModule);
+            FeatureModuleRegistry::Instance().Register(&s_ServerManagerBufferReleaseModule);
             FeatureModuleRegistry::Instance().Register(&s_ReticleAssetGuardModule);
             FeatureModuleRegistry::Instance().Register(&s_EnhanceLangIdUnlimitedModule);
             FeatureModuleRegistry::Instance().Register(&s_BarrierEffectLoadModule);
@@ -1913,5 +2105,6 @@ void RegisterBuiltInFeatureModules()
             FeatureModuleRegistry::Instance().Register(&s_TppEquipConstInjectModule);
             FeatureModuleRegistry::Instance().Register(&s_EquipIdTableOverflowModule);
             FeatureModuleRegistry::Instance().Register(&s_GunBasicInjectModule);
+            FeatureModuleRegistry::Instance().Register(&s_TppCollectionModule);
         });
 }

@@ -55,7 +55,6 @@ int __cdecl l_SetMissionTelopSplashTexturePath(lua_State* L);
 int __cdecl l_UnsetMissionTelopSplashTexturePath(lua_State* L);
 
 int __cdecl l_SetMissionAcceptWarning(lua_State* L);
-int __cdecl l_ClearMissionAcceptWarning(lua_State* L);
 
 int __cdecl l_SetMissionMenuHelp(lua_State* L);
 int __cdecl l_ClearMissionMenuHelp(lua_State* L);

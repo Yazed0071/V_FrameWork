@@ -12,6 +12,9 @@ void Remove_VIPSleepFaintImportantGameObjectId(std::uint32_t gameObjectId);
 void Clear_VIPSleepFaintImportantGameObjectIds();
 
 
+bool IsVIPSleepFaintImportantSoldierIndex(std::uint16_t soldierIndex, bool* outIsOfficer);
+
+
 bool Install_VIPSleepFaint_Hook();
 
 

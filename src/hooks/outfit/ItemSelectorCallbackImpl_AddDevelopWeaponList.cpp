@@ -77,11 +77,9 @@ namespace
             {
                 static std::atomic<int> s_tabProbe[64]{};
                 if (s_tabProbe[tab & 63].fetch_add(1) < 48)
-                    LogDebug("[DevelopTabProbe] flow=%u rec[0x3E]=%u while building tab=%u "
-                        "-> %s. rec[0x3E] is the ONLY thing this list filters on; if it "
-                        "does not equal the equipDevelopTypeID the Lua declared for this "
-                        "row, the row is filed under that other category and renders "
-                        "there instead\n",
+                    LogDebug("[DevelopTabProbe] flow=%u rec[0x3E]=%u while building "
+                             "tab=%u -> %s (rec[0x3E] is the only filter; a "
+                             "mismatch files the row under that other category)\n",
                         row, static_cast<unsigned>(rec[0x3E]), tab,
                         rec[0x3E] == static_cast<std::uint8_t>(tab) ? "KEPT" : "skipped");
             }
@@ -101,8 +99,8 @@ namespace
                 static std::atomic<int> s_capLogged{ 0 };
                 if (s_capLogged.fetch_add(1) < 4)
                     LogDebug("[WeaponListRoots] tab %u has more than %u base "
-                        "develop rows - the extended list path holds %u, "
-                        "rows past that will not list\n",
+                             "develop rows - the extended path holds %u, rows past "
+                             "that will not list\n",
                         tab, kRootCap, kRootCap);
                 break;
             }
@@ -186,9 +184,8 @@ namespace
                 {
                     if (dv)
                         LogDebug("[WeaponListPick] tab %u root=%u VAR flow=%u eq=%u "
-                            "parent=%u SKIPPED rowGate=0 - the variant is not "
-                            "listed, so picking its R&D row resolves to no "
-                            "equip\n",
+                                 "parent=%u SKIPPED rowGate=0 - unlisted, so "
+                                 "picking its R&D row resolves to no equip\n",
                             tab, flow, vflow, recEq(vflow), recParent(vflow));
                     continue;
                 }
@@ -208,9 +205,9 @@ namespace
                 {
                     if (dv)
                         LogDebug("[WeaponListPick] tab %u root=%u VAR flow=%u eq=%u "
-                            "parent=%u row=%u SKIPPED supplyIdx=%u >= 15 - the "
-                            "row renders in R&D but is never added to the "
-                            "selector, so picking it equips nothing\n",
+                                 "parent=%u row=%u SKIPPED supplyIdx=%u >= 15 - "
+                                 "renders in R&D but never reaches the selector, so "
+                                 "picking it equips nothing\n",
                             tab, flow, vflow, recEq(vflow), recParent(vflow),
                             row, static_cast<unsigned>(vi));
                     continue;
@@ -261,17 +258,16 @@ namespace
                     {
                         if (n > kNativeRootCap)
                             LogDebug("[WeaponListRoots] tab %u rebuilt by the "
-                                "extended path (handled): its %u root rows "
-                                "overflow the native 20-entry base-row buffer, "
-                                "which would otherwise render the whole "
-                                "category empty in the prep/supply list\n",
+                                     "extended path: its %u root rows overflow the "
+                                     "native 20-entry base-row buffer, which would "
+                                     "render the category empty\n",
                                 tab, static_cast<unsigned>(ours));
                         else
                             LogDebug("[WeaponListRoots] tab %u rebuilt by the "
-                                "extended path (handled): the native root scan "
-                                "sees only %u of %u base rows, because "
-                                "IsEquipVisile refuses custom rows whose "
-                                "equipId lies outside the vanilla item range\n",
+                                     "extended path: the native root scan sees only "
+                                     "%u of %u base rows, because IsEquipVisile "
+                                     "refuses custom rows outside the vanilla item "
+                                     "range\n",
                                 tab, static_cast<unsigned>(n), ours);
                     }
                     r = BuildOverCapList(panel, tab, startRow, curItems,
@@ -281,9 +277,8 @@ namespace
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            LogDebug("[WeaponListRoots] exception rebuilding tab %u - falling "
-                "back to the native build (the tab lists empty when its "
-                "base-row count exceeds 20)\n", tab);
+            LogDebug("[WeaponListRoots] exception rebuilding tab %u - falling back "
+                     "to the native build (the tab lists empty past 20 base rows)\n", tab);
             r = kFallback;
         }
         if (r != kFallback)
@@ -301,9 +296,9 @@ namespace outfit
         void* target = ResolveGameAddress(gAddr.ItemSelector_AddDevelopWeaponList);
         if (!target)
         {
-            LogDebug("[WeaponListRoots] target unresolved; module disabled (a "
-                "prep/supply weapon tab with more than 20 base develop rows "
-                "lists EMPTY on this build)\n");
+            LogDebug("[WeaponListRoots] target unresolved; module disabled - a "
+                     "prep/supply weapon tab with more than 20 base rows lists "
+                     "EMPTY on this build\n");
             return false;
         }
 
@@ -313,9 +308,8 @@ namespace outfit
             reinterpret_cast<void**>(&g_Orig));
 
         if (!g_Installed)
-            Log("[WeaponListRoots] hook install FAILED (target=%p); a "
-                "prep/supply weapon tab with more than 20 base develop rows "
-                "lists EMPTY\n", target);
+            Log("[WeaponListRoots] hook install FAILED (target=%p) - a prep/supply "
+                "weapon tab with more than 20 base rows lists EMPTY\n", target);
 
         return g_Installed;
     }

@@ -61,12 +61,11 @@ namespace
 
             static std::atomic<int> s_staleLogged{ 0 };
             if (s_staleLogged.fetch_add(1) < 8)
-                LogDebug("[EquipPreview] the preview controller was holding a stale "
-                    "develop-controller pointer (%p -> %p) - the develop record "
-                    "block was relocated after the controller cached it, so "
-                    "every cursor-move preview refresh resolved its develop row "
-                    "to equip id 0 and loaded nothing. Repointed to the live "
-                    "block\n",
+                LogDebug("[EquipPreview] the preview controller held a stale "
+                         "develop-controller pointer (%p -> %p) - the record block "
+                         "was relocated after it cached one, so every cursor-move "
+                         "preview resolved to equip id 0; repointed to the live "
+                         "block\n",
                     stale, live);
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
@@ -114,11 +113,10 @@ namespace equip
             ResolveGameAddress(gAddr.UiEquipPreviewController_ScrollPrev);
         if (!nextTarget || !prevTarget)
         {
-            LogDebug("[EquipPreview] ScrollNext/ScrollPrev unresolved on this build; "
-                "the preview controller keeps the develop-controller pointer it "
-                "cached before DevelopArrayGrow migrated the block, so every "
-                "cursor-move preview resolves to equip id 0 and only the rows "
-                "loaded at menu-open will render\n");
+            LogDebug("[EquipPreview] ScrollNext/ScrollPrev unresolved on this build "
+                     "- the preview controller keeps its pre-migration "
+                     "develop-controller pointer, so cursor-move previews resolve "
+                     "to equip id 0 and only menu-open rows render\n");
             return false;
         }
 
@@ -142,10 +140,9 @@ namespace equip
                 startTarget, reinterpret_cast<void*>(&hkStartEquipPreviewImpl),
                 reinterpret_cast<void**>(&g_OrigStart));
             if (!g_StartInstalled)
-                Log("[EquipPreview] StartEquipPreviewImpl hook install FAILED "
-                    "(target=%p); the stale develop-controller pointer is only "
-                    "healed once the first cursor move happens, so a tab "
-                    "rebuild before that reloads nothing\n", startTarget);
+                Log("[EquipPreview] StartEquipPreviewImpl hook FAILED (target=%p) - "
+                    "the stale develop-controller pointer only heals on the first "
+                    "cursor move, so a tab rebuild before that reloads nothing\n", startTarget);
         }
 
         g_ScrollInstalled = a && b;

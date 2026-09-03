@@ -928,13 +928,11 @@ namespace
                 int& n = s_Cnt[pre.equipId];
                 ++n;
                 if (n <= 6)
-                    LogDebug("[WeaponKey] DoFire eq=%u obj=%p slot=%u hw=%u flags8A=0x%04X "
-                        "ammo=%u state %u/%u -> %u/%u rate=%.4f "
-                        "|| LIVE gunInfo(work) fireRate(+0x68)=%u trigger(+0x88 bits10-12)=%u "
-                        "shotType(+0x7e)=%u [+0x88 word=0x%08X] "
-                        "(this is the gunInfo the shot ITSELF reads at trigger time - if trigger "
-                        "is 0 here but 3 in the rowbytes build dump, the live per-hw slot never "
-                        "got the custom receiver's fire-mode)\n",
+                    LogDebug("[WeaponKey] DoFire eq=%u obj=%p slot=%u hw=%u "
+                             "flags8A=0x%04X ammo=%u state %u/%u -> %u/%u rate=%.4f "
+                             "|| live gunInfo fireRate(+0x68)=%u trigger(+0x88)=%u "
+                             "shotType(+0x7e)=%u [+0x88=0x%08X] - this is the "
+                             "gunInfo the shot itself reads at trigger time\n",
                         pre.equipId, self, p3, pre.hw, pre.flags8a, pre.ammo,
                         pre.st0, pre.st1, post.st0, post.st1, post.rate,
                         pre.liveRate, pre.liveTrig, pre.liveShot, pre.liveTrigWord);
@@ -1385,9 +1383,9 @@ namespace equip
     {
         if (bulletId <= 0 || bulletId > 255)
         {
-            LogDebug("[BulletLockOn] bulletId=%d rejected: the held-weapon bullet "
-                "id the lock query reads is a single byte, lockOn bullets "
-                "must use ids 1-255.\n", bulletId);
+            LogDebug("[BulletLockOn] bulletId=%d rejected: the lock query reads the "
+                     "held-weapon bullet id as one byte, so lockOn bullets must use "
+                     "ids 1-255\n", bulletId);
             return;
         }
         LockOnSpec spec{};
@@ -1439,9 +1437,9 @@ namespace equip
         {
             g_ProviderHookTried = true;
             if (!EnsureProviderVtableHook())
-                LogDebug("[BulletLockOn] lock provider not yet hookable "
-                    "(EquipParameterTablesImpl vtable not ready) - will retry "
-                    "on next registration.\n");
+                LogDebug("[BulletLockOn] lock provider not hookable yet "
+                         "(EquipParameterTablesImpl vtable not ready) - retrying on "
+                         "the next registration\n");
         }
     }
 

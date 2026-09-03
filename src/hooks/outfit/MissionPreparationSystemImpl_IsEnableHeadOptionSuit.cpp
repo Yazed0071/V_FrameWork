@@ -3,6 +3,8 @@
 #include "MissionPreparationSystemImpl_IsEnableHeadOptionSuit.h"
 #include "OutfitRegistry.h"
 #include "CustomHeadRegistry.h"
+#include "UniqueCharacterPartsTypePin.h"
+#include "UniqueCharacterDefaultOutfit.h"
 
 #include <atomic>
 #include <cstdint>
@@ -245,9 +247,9 @@ namespace
     }
 
     constexpr std::size_t kVtblSlot_PrepIsFobSortie     = 0x4F0 / 8;
-    constexpr std::size_t kVtblSlot_PrepGetWeapon       = 0x180 / 8;
-    constexpr std::size_t kVtblSlot_PrepGetItem         = 0x1C8 / 8;
-    constexpr std::size_t kVtblSlot_PrepGetSupport      = 0x1D8 / 8;
+    constexpr std::size_t kVtblSlot_LoadoutGetWeaponEquipId  = 0x180 / 8;
+    constexpr std::size_t kVtblSlot_LoadoutGetSupportEquipId = 0x1C8 / 8;
+    constexpr std::size_t kVtblSlot_LoadoutGetItemEquipId    = 0x1D8 / 8;
     constexpr std::size_t kVtblSlot_DevIdxFromEquipId   = 0xF0 / 8;
     constexpr std::size_t kVtblSlot_DevIsFobAvailable   = 0x478 / 8;
     constexpr std::size_t kCallback_PrepSystemOffset    = 0x48;
@@ -344,9 +346,9 @@ namespace
 
             struct SlotRange { std::size_t slot; std::uint8_t count; };
             const SlotRange ranges[] = {
-                { kVtblSlot_PrepGetWeapon,  3 },
-                { kVtblSlot_PrepGetItem,    8 },
-                { kVtblSlot_PrepGetSupport, 8 },
+                { kVtblSlot_LoadoutGetWeaponEquipId,  3 },
+                { kVtblSlot_LoadoutGetSupportEquipId, 8 },
+                { kVtblSlot_LoadoutGetItemEquipId,    8 },
             };
 
             struct ScanEntry
@@ -381,7 +383,7 @@ namespace
                     const bool tainted = !managed
                         && EquipParam_IsEquipIdFobTainted(
                                equipId,
-                               (r.slot == kVtblSlot_PrepGetWeapon) ? 1 : 0);
+                               (r.slot == kVtblSlot_LoadoutGetWeaponEquipId) ? 1 : 0);
                     const bool fobOk = !tainted
                         && (!managed || fobBit(ctrl, idx) != 0);
                     if (entryCount < 19)
@@ -430,9 +432,8 @@ namespace
                 {
                     if (entries[bannedAt].tainted)
                         LogDebug("[FobGuard] FOB deploy blocked: vanilla equipId=%u "
-                            "uses vanilla parts or damage rows modified by a "
-                            "module - unequip it (or remove the mod's vanilla "
-                            "edits) to deploy\n",
+                                 "uses parts or damage rows a module modified - "
+                                 "unequip it to deploy\n",
                             static_cast<unsigned>(entries[bannedAt].equipId));
                     else
                         LogDebug("[OutfitHeadOption] FOB deploy blocked: managed "
@@ -459,6 +460,9 @@ namespace
 
         const std::uint8_t pt     = outfit::ReadLivePartsType();
         const std::uint8_t livePT = outfit::ReadLivePlayerType();
+
+        if (uniquecharpin::IsOwnSuitPartsType(livePT, pt))
+            return 0;
 
         if (pt >= outfit::kCustomPartsTypeStart && pt <= outfit::kCustomPartsTypeEnd)
         {
@@ -487,6 +491,9 @@ namespace
 
         const std::uint8_t pt     = outfit::ReadLivePartsType();
         const std::uint8_t livePT = outfit::ReadLivePlayerType();
+
+        if (uniquecharpin::IsOwnSuitPartsType(livePT, pt))
+            return 0;
 
         if (pt >= outfit::kCustomPartsTypeStart && pt <= outfit::kCustomPartsTypeEnd)
         {
@@ -547,6 +554,44 @@ namespace
                     return 0;
                 }
                 const std::uint8_t wornPt = outfit::ReadLivePartsType();
+                std::uint8_t defOwnerPt = 0;
+                const bool wornIsOwnDefault =
+                    uniquedefaultoutfit::IsDefaultOutfitPartsType(
+                        wornPt, &defOwnerPt)
+                    && outfit::ReadLivePlayerType() == defOwnerPt;
+                if (wornIsOwnDefault)
+                {
+                    static std::atomic<std::uint8_t> s_lastAllowedPt{ 0 };
+                    if (s_lastAllowedPt.exchange(
+                            wornPt, std::memory_order_relaxed) != wornPt)
+                        Log("[FobGuard] player type %u wears their own "
+                            "default-outfit row (partsType=0x%02X), which declares "
+                            "the character's stock parts and fpk and whose "
+                            "abilities are dropped in FOB like every other edit - "
+                            "allowed online; every other custom outfit is still "
+                            "refused\n",
+                            static_cast<unsigned>(defOwnerPt),
+                            static_cast<unsigned>(wornPt));
+                    g_FobBlockVfwOnly.store(false, std::memory_order_relaxed);
+                    return 1;
+                }
+                if (!wornIsOwnDefault
+                    && wornPt >= outfit::kCustomPartsTypeStart
+                    && wornPt <= outfit::kCustomPartsTypeEnd)
+                {
+                    static std::atomic<std::uint8_t> s_lastBlockedPt{ 0 };
+                    if (s_lastBlockedPt.exchange(
+                            wornPt, std::memory_order_relaxed) != wornPt)
+                        Log("[FobGuard] FOB deploy blocked: a custom outfit "
+                            "is worn (partsType=0x%02X) - custom outfits are "
+                            "not available online, switch to a vanilla suit "
+                            "to deploy\n",
+                            static_cast<unsigned>(wornPt));
+                    g_FobBlockVfwOnly.store(
+                        g_OrigIsEnableCurrentSuit(self) != 0,
+                        std::memory_order_relaxed);
+                    return 0;
+                }
                 if (wornPt < outfit::kCustomPartsTypeStart
                     && outfit::GetActiveVariant(wornPt) != 0)
                 {

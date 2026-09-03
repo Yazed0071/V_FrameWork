@@ -3,7 +3,9 @@
 #include <cstdint>
 
 
-void Add_LostHostageTrap(std::uint32_t gameObjectId, int hostageType, std::uint32_t customLostLabel = 0);
+void Add_LostHostageTrap(std::uint32_t gameObjectId, int hostageType,
+                         std::uint32_t customLostLabel = 0,
+                         std::uint32_t customLostLabelTaken = 0);
 
 
 void Remove_LostHostageTrap(std::uint32_t gameObjectId);
@@ -12,7 +14,6 @@ void Remove_LostHostageTrap(std::uint32_t gameObjectId);
 void Clear_LostHostagesTrap();
 
 
-void PlayerTookHostage(std::uint32_t gameObjectId, bool playerTookHostage);
 
 
 bool Install_LostHostage_Hooks();

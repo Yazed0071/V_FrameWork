@@ -183,9 +183,9 @@ namespace
         if (!CreateAndEnableHook(fn, reinterpret_cast<void*>(&hk_InputFlags),
                                  reinterpret_cast<void**>(&g_OrigInput)))
         {
-            Log("[TargetCqcStance] ERROR: the CQC hold input-flag reader at %p could not be hooked - "
-                "V_Player.RequestToSetTargetCqcStance can still park the desired-stance flag, but the "
-                "hold keeps whatever stance the player pressed.\n", fn);
+            Log("[TargetCqcStance] ERROR: the CQC hold input-flag reader at %p "
+                "could not be hooked - the desired-stance flag is still parked, but "
+                "the hold keeps the pressed stance\n", fn);
             return;
         }
 
@@ -271,9 +271,9 @@ bool Request_PlayerTargetStance(lua_State* L, int stance)
     const std::uintptr_t addr = Addr_RequestToSetTargetStance();
     if (addr == 0)
     {
-        Log("[TargetCqcStance] ERROR: Player::RequestToSetTargetStance is unmapped for this build - "
-            "V_Player.RequestToSetTargetCqcStance still works during a CQC hold, but it cannot change "
-            "the stance while the player is aiming or moving normally.\n");
+        Log("[TargetCqcStance] ERROR: Player::RequestToSetTargetStance is unmapped "
+            "for this build - the CQC-hold path still works, but stance cannot "
+            "change while aiming or moving normally\n");
         return false;
     }
 
@@ -290,8 +290,8 @@ bool Request_PlayerTargetStance(lua_State* L, int stance)
 
     if (!ok)
     {
-        Log("[TargetCqcStance] ERROR: Player::RequestToSetTargetStance at %p faulted - the stance "
-            "request outside a CQC hold was dropped; the player keeps the stance he is in.\n", target);
+        Log("[TargetCqcStance] ERROR: Player::RequestToSetTargetStance at %p "
+            "faulted - the request outside a CQC hold was dropped\n", target);
         return false;
     }
 
@@ -320,9 +320,9 @@ bool Install_TargetCqcStance_Hook()
     const std::uintptr_t addr = Addr_StateHoldMove();
     if (!addr)
     {
-        Log("[TargetCqcStance] ERROR: CqcActionPluginImpl::StateHoldMove address is missing for this "
-            "build - V_Player.RequestToSetTargetCqcStance will be accepted but the CQC hold keeps its "
-            "vanilla stance.\n");
+        Log("[TargetCqcStance] ERROR: CqcActionPluginImpl::StateHoldMove is missing "
+            "for this build - the request is accepted but the CQC hold keeps its "
+            "vanilla stance\n");
         return true;
     }
 
@@ -340,10 +340,9 @@ bool Install_TargetCqcStance_Hook()
     const std::uintptr_t gunAddr = Addr_StateGunHoldMove();
     if (!gunAddr)
     {
-        Log("[TargetCqcStance] ERROR: CqcActionPluginImpl::StateGunHoldMove address is missing for "
-            "this build - V_Player.RequestToSetTargetCqcStance works during a plain CQC hold but does "
-            "nothing while the player aims a gun during that hold, because the aiming hold runs a "
-            "different state handler.\n");
+        Log("[TargetCqcStance] ERROR: CqcActionPluginImpl::StateGunHoldMove is "
+            "missing for this build - the plain CQC hold works, but aiming a gun "
+            "during the hold runs a different state handler and is unaffected\n");
         return true;
     }
 
@@ -351,9 +350,9 @@ bool Install_TargetCqcStance_Hook()
     if (!gunTarget || !CreateAndEnableHook(gunTarget, reinterpret_cast<void*>(&hk_StateGunHoldMove),
                                            reinterpret_cast<void**>(&g_OrigGunState)))
     {
-        Log("[TargetCqcStance] ERROR: CqcActionPluginImpl::StateGunHoldMove hook at %p failed - "
-            "V_Player.RequestToSetTargetCqcStance is ignored while the player aims a gun during a CQC "
-            "hold; the plain hold still works.\n", gunTarget);
+        Log("[TargetCqcStance] ERROR: CqcActionPluginImpl::StateGunHoldMove hook at "
+            "%p failed - the request is ignored while aiming a gun during a CQC "
+            "hold; the plain hold still works\n", gunTarget);
         return true;
     }
 

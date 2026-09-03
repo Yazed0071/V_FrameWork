@@ -1,11 +1,14 @@
 #include "pch.h"
 
 #include <Windows.h>
+#include <atomic>
 #include <cstdint>
 
 #include "HookUtils.h"
 #include "log.h"
 #include "VIPSoundRecoveryHook.h"
+#include "VIPSleepFaintHook.h"
+#include "VIPHoldupHook.h"
 #include "MissionCodeGuard.h"
 #include "AddressSet.h"
 
@@ -30,6 +33,9 @@ namespace
 
 
     static State_SoundRecovery_t g_OrigState_SoundRecovery = nullptr;
+
+
+    static std::atomic<unsigned> g_UnresolvedTargetLogs{0};
 }
 
 
@@ -47,6 +53,37 @@ static bool SafeReadByte(std::uintptr_t addr, std::uint8_t& outValue)
     {
         return false;
     }
+}
+
+
+static bool SafeReadWord(std::uintptr_t addr, std::uint16_t& outValue)
+{
+    if (!addr)
+        return false;
+
+    __try
+    {
+        outValue = *reinterpret_cast<const std::uint16_t*>(addr);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+
+static std::uint16_t NormalizeSoldierIndexFromGameObjectId(std::uint32_t gameObjectId)
+{
+    const std::uint16_t raw = static_cast<std::uint16_t>(gameObjectId);
+
+    if (raw == 0xFFFFu)
+        return 0xFFFFu;
+
+    if ((raw & 0xFE00u) != 0x0400u)
+        return 0xFFFFu;
+
+    return static_cast<std::uint16_t>(raw & 0x01FFu);
 }
 
 
@@ -157,6 +194,40 @@ static void DispatchNoticeReaction(void* noticeSelf, std::uint32_t actorId, std:
 }
 
 
+static bool TryResolveDownedSoldierIndex(std::uintptr_t entry, std::uint16_t& outSoldierIndex)
+{
+    outSoldierIndex = 0xFFFFu;
+
+    if (!entry)
+        return false;
+
+    std::uint16_t downedGameObjectId = 0xFFFFu;
+    if (!SafeReadWord(entry + 0x52ull, downedGameObjectId))
+        return false;
+
+    const std::uint16_t index = NormalizeSoldierIndexFromGameObjectId(downedGameObjectId);
+    if (index == 0xFFFFu)
+        return false;
+
+    outSoldierIndex = index;
+    return true;
+}
+
+
+static bool IsRegisteredImportantSoldier(std::uint16_t soldierIndex)
+{
+    if (soldierIndex == 0xFFFFu)
+        return false;
+
+    bool isOfficer = false;
+
+    if (IsVIPSleepFaintImportantSoldierIndex(soldierIndex, &isOfficer))
+        return true;
+
+    return IsVIPHoldupImportantSoldierIndex(soldierIndex, &isOfficer);
+}
+
+
 static void __fastcall hkState_SoundRecovery(
     void* self,
     std::uint32_t actorId,
@@ -178,18 +249,39 @@ static void __fastcall hkState_SoundRecovery(
                 std::uint8_t b57 = 0;
                 if (SafeReadByte(entry + 0x57ull, b57))
                 {
-                    const std::uint32_t replacementHash =
-                        (b57 == 0x0Au)
-                            ? HASH_HOLDUP_RECOVERY_VIP
-                            : HASH_SLEEP_WAKE_OFFICER;
+                    std::uint16_t soldierIndex = 0xFFFFu;
+                    const bool resolved = TryResolveDownedSoldierIndex(entry, soldierIndex);
 
-                    DispatchNoticeReaction(self, actorId, replacementHash);
-                    return;
+                    if (!resolved && g_UnresolvedTargetLogs.fetch_add(1u) < 8u)
+                        Log("[SoundRecovery] actor=%u: the downed soldier could not be identified "
+                            "from the notice record, so no VIP line is substituted and the vanilla "
+                            "line plays\n",
+                            actorId);
+
+                    if (resolved && IsRegisteredImportantSoldier(soldierIndex))
+                    {
+                        const std::uint32_t replacementHash =
+                            (b57 == 0x0Au)
+                                ? HASH_HOLDUP_RECOVERY_VIP
+                                : HASH_SLEEP_WAKE_OFFICER;
+
+                        DispatchNoticeReaction(self, actorId, replacementHash);
+                        return;
+                    }
+                }
+                else if (g_UnresolvedTargetLogs.fetch_add(1u) < 8u)
+                {
+                    Log("[SoundRecovery] actor=%u voice-notice: notice-record byte read failed, "
+                        "so no VIP line is substituted and the vanilla line plays\n",
+                        actorId);
                 }
             }
-
-            Log("[SoundRecovery] actor=%u voice-notice: entry/byte read failed, vanilla fallback\n",
-                actorId);
+            else if (g_UnresolvedTargetLogs.fetch_add(1u) < 8u)
+            {
+                Log("[SoundRecovery] actor=%u voice-notice: notice record not reachable, "
+                    "so no VIP line is substituted and the vanilla line plays\n",
+                    actorId);
+            }
         }
     }
 

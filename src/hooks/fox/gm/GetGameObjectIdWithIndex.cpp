@@ -18,6 +18,7 @@ extern "C" {
 namespace
 {
     static constexpr std::uint32_t kInvalidGameObjectId = 0xFFFFu;
+    static constexpr std::uint64_t kStringIdMask = 0x0000FFFFFFFFFFFFull;
 
     struct NativeGameObjectId
     {
@@ -26,8 +27,13 @@ namespace
 
     using GetGameObjectIdWithIndex_t =
         void(__fastcall*)(NativeGameObjectId* out,
-            std::uint32_t typeArg,
+            std::uint64_t typeNameId,
             std::uint32_t index);
+
+    using GetGameObjectIdWithName_t =
+        void(__fastcall*)(NativeGameObjectId* out,
+            std::uint64_t typeNameId,
+            std::uint64_t instanceNameId);
 
     static GetGameObjectIdWithIndex_t g_GetGameObjectIdWithIndex = nullptr;
 
@@ -121,9 +127,9 @@ namespace
                 if (!s_logged)
                 {
                     s_logged = true;
-                    LogDebug("[GetGameObjectIdWithIndex] by-name resolve skipped (type=%s name=%s): "
-                        "the running Lua frame is too tight to push safely; the step machine "
-                        "retries next frame. Skipping prevents a Lua stack-overflow crash.\n",
+                    LogDebug("[GetGameObjectIdWithIndex] by-name resolve skipped "
+                             "(type=%s name=%s): the Lua frame is too tight to push "
+                             "safely; the step machine retries next frame\n",
                         typeName, instanceName);
                 }
                 return false;
@@ -181,9 +187,9 @@ namespace
             if (!logged)
             {
                 logged = true;
-                LogDebug("[GetGameObjectIdWithIndex] re-entrant by-name resolve REFUSED "
-                    "(type=%s name=%s) - the call arrived from inside our own "
-                    "lua_pcall; that recursion is what wedged the main thread\n",
+                LogDebug("[GetGameObjectIdWithIndex] re-entrant by-name resolve "
+                         "REFUSED (type=%s name=%s) - it arrived from inside our "
+                         "own lua_pcall, which is what wedged the main thread\n",
                     typeName, instanceName);
             }
             return false;
@@ -193,14 +199,56 @@ namespace
                                              gameObjectIdOut);
     }
 
-    static bool TryNativeWithStrCode32(const char* typeName,
+    static bool TryNativeByName(const char* typeName,
+        const char* instanceName,
+        std::uint32_t& gameObjectIdOut,
+        bool& nativeAnswered)
+    {
+        nativeAnswered = false;
+
+        if (!gAddr.GameObject_GetGameObjectIdWithName)
+            return false;
+
+        auto fn = reinterpret_cast<GetGameObjectIdWithName_t>(
+            ResolveGameAddress(gAddr.GameObject_GetGameObjectIdWithName));
+        if (!fn)
+            return false;
+
+        const std::uint64_t typeNameId =
+            FoxHashes::StrCode64(typeName) & kStringIdMask;
+        const std::uint64_t instanceNameId =
+            FoxHashes::StrCode64(instanceName) & kStringIdMask;
+        NativeGameObjectId result{};
+
+        __try
+        {
+            fn(&result, typeNameId, instanceNameId);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            LogDebug("[GetGameObjectIdWithIndex] SEH in native by-name resolve "
+                     "type=%s name=%s - falling back to Lua\n",
+                typeName, instanceName);
+            return false;
+        }
+
+        nativeAnswered = true;
+
+        if (result.value == kInvalidGameObjectId)
+            return false;
+
+        gameObjectIdOut = static_cast<std::uint32_t>(result.value);
+        return true;
+    }
+
+    static bool TryNativeWithTypeNameId(const char* typeName,
         std::uint32_t index,
         std::uint32_t& gameObjectIdOut)
     {
         if (!g_GetGameObjectIdWithIndex)
             return false;
 
-        const std::uint32_t typeNameId = FoxHashes::StrCode32(typeName);
+        const std::uint64_t typeNameId = FoxHashes::StrCode64(typeName) & kStringIdMask;
         NativeGameObjectId result{};
 
         __try
@@ -282,7 +330,7 @@ bool GetGameObjectIdWithIndex(const char* typeName,
     if (!g_GetGameObjectIdWithIndex)
         Install_GetGameObjectIdWithIndex();
 
-    if (TryNativeWithStrCode32(typeName, index, gameObjectIdOut))
+    if (TryNativeWithTypeNameId(typeName, index, gameObjectIdOut))
         return true;
 
     LogDebug("[GetGameObjectIdWithIndex] unmapped type=%s index=%u (add it to TppGameObjectType)\n",
@@ -314,6 +362,13 @@ bool GetGameObjectIdByName(const char* typeName,
     gameObjectIdOut = kInvalidGameObjectId;
 
     if (!typeName || !typeName[0] || !instanceName || !instanceName[0])
+        return false;
+
+    bool nativeAnswered = false;
+    if (TryNativeByName(typeName, instanceName, gameObjectIdOut, nativeAnswered))
+        return true;
+
+    if (nativeAnswered)
         return false;
 
     return TryResolveByNameViaLua(typeName, instanceName, gameObjectIdOut);

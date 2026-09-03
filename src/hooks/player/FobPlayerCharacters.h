@@ -10,6 +10,7 @@ namespace fobchars
 
     void NoteLoadoutPlayerType(std::uint8_t playerType, std::uint32_t flags);
     void ReassertSelectedCharacter();
+    std::uint8_t GetSelectedPlayerType();
 }
 
 bool Install_FobPlayerCharacters_Patches();

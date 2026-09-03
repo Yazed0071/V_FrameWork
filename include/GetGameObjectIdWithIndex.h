@@ -5,6 +5,7 @@
 namespace TppGameObjectType
 {
     static constexpr std::uint16_t kUnknown  = 0xFFFF;
+    static constexpr std::uint16_t kCommandPost = 1;
     static constexpr std::uint16_t kSoldier2 = 2;
 }
 

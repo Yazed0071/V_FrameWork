@@ -2,7 +2,7 @@ local this = {}
 
 this.registerIvars={
 	"V_FrameWork_Welcome_Message",
-	"V_FrameWork_Version_1_4_Message",
+	"V_FrameWork_Version_1_4_6_Message",
 }
 
 this.V_FrameWork_Welcome_Message={
@@ -11,7 +11,7 @@ this.V_FrameWork_Welcome_Message={
 	range={min=0,max=1,},
 }
 
-this.V_FrameWork_Version_1_4_Message={
+this.V_FrameWork_Version_1_4_6_Message={
 	save=IvarProc.CATEGORY_EXTERNAL,
 	default=0,
 	range={min=0,max=1,},
@@ -31,9 +31,9 @@ function this.Messages()
                             Ivars.V_FrameWork_Welcome_Message:Set(1)
                             V_TppUiCommand.ShowMbDvcAnnouncePopupRewardLangId("MbDvcPopup_Title_FirstTimeInstall",  "MbDvcPopup_Text_FirstTimeInstall")
                         end
-                        if Ivars.V_FrameWork_Version_1_4_Message:Get() == 0 then
-                            Ivars.V_FrameWork_Version_1_4_Message:Set(1)
-                            V_TppUiCommand.ShowMbDvcAnnouncePopupReportLangId("MbDvcPopup_Title_V_FrameWork_Version_1_4_Message",  "MbDvcPopup_Text_V_FrameWork_Version_1_4_Message")
+                        if Ivars.V_FrameWork_Version_1_4_6_Message:Get() == 0 then
+                            Ivars.V_FrameWork_Version_1_4_6_Message:Set(1)
+                            V_TppUiCommand.ShowMbDvcAnnouncePopupReportLangId("MbDvcPopup_Title_V_FrameWork_Version_1_4_6_Message",  "MbDvcPopup_Text_V_FrameWork_Version_1_4_6_Message")
                         end
                     end
 				end

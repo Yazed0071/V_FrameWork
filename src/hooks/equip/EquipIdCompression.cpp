@@ -40,21 +40,29 @@ namespace EquipIdCompression
 
     std::int32_t FindLowestFreeExtendedEquipId()
     {
+        return FindLowestFreeExtendedEquipId(ExtendedReservedFn{});
+    }
+
+    std::int32_t FindLowestFreeExtendedEquipId(
+        const ExtendedReservedFn& isReservedElsewhere)
+    {
         std::lock_guard<std::mutex> lock(g_ExtendedMutex);
         for (std::int32_t id = kExtendedAllocFirst; id <= kExtendedEquipIdLast; ++id)
-            if (!g_ExtendedUsed.test(static_cast<std::size_t>(id)))
-            {
-                g_ExtendedUsed.set(static_cast<std::size_t>(id));
-                return id;
-            }
+        {
+            if (g_ExtendedUsed.test(static_cast<std::size_t>(id)))
+                continue;
+            if (isReservedElsewhere && isReservedElsewhere(id))
+                continue;
+            g_ExtendedUsed.set(static_cast<std::size_t>(id));
+            return id;
+        }
         static std::atomic<int> s_exhaustedLogged{ 0 };
         if (s_exhaustedLogged.fetch_add(1) < 2)
-            Log("[EquipIdCompression] ERROR: the extended equipId range 0x%X-0x%X is "
-                "exhausted (%d ids). Allocation starts at 0x%X so the engine's inline "
-                "fold maps it to rows 0x%X and up - past every vanilla row and past "
-                "the chimera band, which the fold aliases several vanilla equipIds "
-                "onto. Items past this point get no equipId and will not appear in "
-                "any menu.\n",
+            Log("[EquipIdCompression] ERROR: the extended equipId range 0x%X-0x%X "
+                "is exhausted (%d ids). Allocation starts at 0x%X so the engine's "
+                "inline fold maps it to rows 0x%X and up, clear of vanilla and the "
+                "chimera band. Items past this get no equipId and appear in no "
+                "menu\n",
                 kExtendedAllocFirst, kExtendedEquipIdLast,
                 kExtendedEquipIdLast - kExtendedAllocFirst + 1,
                 kExtendedAllocFirst, kExtendedFoldedFirst);
@@ -117,8 +125,8 @@ namespace EquipIdCompression
         if (!tableBase)
         {
             LogDebug("[EquipIdCompression] SyncFromNativeTable: "
-                "gAddr.EquipIdTable_InfoList not resolved; cannot scan vanilla "
-                "occupancy. Custom equipIds may collide with vanilla.\n");
+                     "EquipIdTable_InfoList unresolved - vanilla occupancy "
+                     "unscanned, custom equipIds may collide\n");
             return 0;
         }
 
@@ -128,9 +136,9 @@ namespace EquipIdCompression
 
         if (!readOk)
         {
-            LogDebug("[EquipIdCompression] SyncFromNativeTable: SEH while reading "
-                "native table at 0x%p - address may be wrong or page "
-                "unmapped. Skipping scan.\n", tableBase);
+            LogDebug("[EquipIdCompression] SyncFromNativeTable: SEH reading the "
+                     "native table at 0x%p - wrong address or unmapped page; scan "
+                     "skipped\n", tableBase);
             return 0;
         }
 

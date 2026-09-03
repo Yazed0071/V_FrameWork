@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <Windows.h>
 #include <cstdint>
@@ -263,11 +263,7 @@ namespace AddressSetRuntime
         uintptr_t Dm_BackLinkPool     = 0;
         uintptr_t Dm_OneShot          = 0;
 
-        uintptr_t EquipCrossEvCall_IsItemNoUse = 0;
         uintptr_t AttackActionImpl_IsWeaponNoUseInPlaceAction = 0;
-        uintptr_t EquipCrossSetEquipItem_Site1 = 0;
-        uintptr_t EquipCrossSetEquipItem_Site2 = 0;
-        uintptr_t EquipCrossSetEquipItem_Site3 = 0;
 
         uintptr_t TppMotherBaseManagement_RegCstDev = 0;
         uintptr_t TppMotherBaseManagement_RegFlwDev = 0;
@@ -476,6 +472,68 @@ namespace AddressSetRuntime
         uintptr_t TppPickable_ItemWindowBoundSite = 0;
         uintptr_t UiUtility_GetWeaponItemNameLangId = 0;
         uintptr_t SoundPlayerAnimEvent_StepNoiseQuietCmp = 0;
+        uintptr_t CollectionLocatorArray_SetUpLinearAccessor = 0;
+        uintptr_t CollectionSystemImpl_PickUp = 0;
+        uintptr_t CollectionSystemImpl_RepopCountOperation = 0;
+        uintptr_t CollectionSystemImpl_GetCollectionInfo = 0;
+        uintptr_t Collection_GetModelFilePath = 0;
+        uintptr_t Collection_GetCatchEffectColorAndScale = 0;
+        uintptr_t Collection_GetGroundEffectSize = 0;
+        uintptr_t PickUpActionPluginImpl_DoPickUpCollection = 0;
+        uintptr_t GetCollectionIconFtexPath = 0;
+        uintptr_t GetCollectionNameText = 0;
+        uintptr_t UixUtility_GetUixUtility = 0;
+        uintptr_t Collection_GetModelFilePathRoot = 0;
+        uintptr_t Collection_GetFovaFilePath = 0;
+        uintptr_t Collection_IsHerbByType = 0;
+        uintptr_t Collection_IsMaterialByType = 0;
+        uintptr_t Collection_IsDiamondByType = 0;
+        uintptr_t MbmImpl_IsGotDataBase = 0;
+        uintptr_t MbmImpl_AddTempDataBase = 0;
+        uintptr_t AttackAction_UpdateSecondWeaponMatrix = 0;
+        uintptr_t QuietChokeHold = 0;
+        uintptr_t QuietInterrogate = 0;
+        uintptr_t QuietInterrogateBypass = 0;
+        uintptr_t QuietHoldupInterrogate = 0;
+        uintptr_t CharaSlotSelectionNumGate = 0;
+        uintptr_t CharaSlotSelectionNum = 0;
+        uintptr_t UiMbmDataBase_RefreshPrefabList = 0;
+        uintptr_t UiMbmDataBase_RefreshDataBaseNameText = 0;
+        uintptr_t UiMbmDataBase_RefreshDataBaseIcon = 0;
+        uintptr_t UiMbmDataBase_GetDataBaseInfoText = 0;
+        uintptr_t UiMbmDataBase_RefreshInfoLayout = 0;
+        uintptr_t UiMbmDataBase_RefreshImageRecord = 0;
+        uintptr_t UiMbmDataBase_RefreshCollectionRate = 0;
+        uintptr_t SkillAndItemParameterSystem_GetSuitParam = 0;
+        uintptr_t MbDvcMapCallbackIconImpl_DispOnNewMarkerIcon = 0;
+        uintptr_t MbDvcMapCallbackIconImpl_DispOnImportantIcon = 0;
+        uintptr_t MbDvcMapCallbackIconImpl_DispOnGoalIcon = 0;
+        uintptr_t MbDvcMapCallbackIconImpl_DispOnGeneralIcon = 0;
+        uintptr_t MbDvcMapCallbackIconImpl_DispOnTargetMarkerIcon = 0;
+        uintptr_t MbDvcMapCallbackIconImpl_DispOnAreaIcon = 0;
+        uintptr_t MbDvcMapCallbackIconImpl_GetIconDisplayParam = 0;
+        uintptr_t PlayerInfo_GetLocalPartsType = 0;
+        uintptr_t PlayerInfo_CheckStatusBit = 0;
+        uintptr_t UpdatePartsStatus_QuietCamoStrip = 0;
+        uintptr_t MissionPrepSystem_GetPlayerNameFromPlayerTypeAndStaffId = 0;
+        uintptr_t Player2BlockController_ApplyQuietSuitShaderParams = 0;
+        uintptr_t UiControllerImpl_GetUiSightTypeBySightId = 0;
+        uintptr_t SightCommonFactory_CreateWindow = 0;
+        uintptr_t SightCommonFactory_DeleteWindow = 0;
+        uintptr_t UiMbmDataBase_RefreshNewIcon = 0;
+        uintptr_t UiMbmDataBase_SetPutCursorFlag = 0;
+        uintptr_t UiMbmDataBase_OnStop = 0;
+        uintptr_t MbmImpl_CalcDocumentationUnreadCount = 0;
+        uintptr_t MbmImpl_CalcEncyclopediaUnreadCount = 0;
+        uintptr_t Net_ServerManagerBufferRelease = 0;
+        uintptr_t NoticeControllerImpl_CheckSightNoticePlayer = 0;
+        uintptr_t DemoPlayback_OnPlayingAfterUpdateStream = 0;
+        uintptr_t DemoPlayback_DoFinish = 0;
+        uintptr_t DemoPlayback_DoInterrupt = 0;
+        uintptr_t UpdateMusicPlayer = 0;
+        uintptr_t GameObject_GetGameObjectIdWithName = 0;
+        uintptr_t Vehicle_GetConnectPointWorldMatrix = 0;
+        uintptr_t Player_SequentialDemoActionExecute = 0;
     };
 
     inline GameBuild& GetGameBuild()

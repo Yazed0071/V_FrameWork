@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "CqcActionPluginImpl_StateHoldMove.h"
 #include "PlayerSpaceQuery.h"
+#include "QuietCqcPatches.h"
 extern "C" {
     #include "lua.h"
     #include "lauxlib.h"
@@ -35,6 +36,7 @@ extern "C" {
 #include "../core/LuaBroadcaster.h"
 #include "StepRadioDiscovery.h"
 #include "ActionCoreImpl_UpdateOptCamo.h"
+#include "HeadMarkMarkerEvCall_SetIconSubType.h"
 #include "MbDvcCassetteTapeCallbackImpl_PlayOrPauseSelectedTrack.h"
 #include "CassetteWalkmanEvents.h"
 #include "SoundMusicPlayer_SetupMusicInfos.h"
@@ -47,6 +49,7 @@ extern "C" {
 #include "AddressSet.h"
 #include "LuaApi.h"
 #include "OutfitLuaBindings.h"
+#include "OutfitRegistry.h"
 #include "V_TppEquipLib.h"
 #include "utility_GetIconFtexPath.h"
 #include "PlayerVoiceFpkHook.h"
@@ -78,9 +81,12 @@ extern "C" {
 #include "V_TppSahelanLib.h"
 #include "SahelanFunctions.h"
 #include "V_PlayerLib.h"
+#include "../hooks/outfit/UniqueCharacterDefaultOutfit.h"
 #include "PlayerFunctions.h"
+#include "../hooks/player/PlayerAttachInDemo.h"
 #include "V_FoxLib.h"
 #include "V_PickableLib.h"
+#include "V_TppCollectionLib.h"
 #include "V_HelicopterLib.h"
 #include "V_TppMotherBaseManagementLib.h"
 #include "FoxFunctions.h"
@@ -96,6 +102,7 @@ namespace
     static std::mutex g_RegisteredLuaStatesMutex;
     static bool g_SetLuaFunctionsHookInstalled = false;
     static DWORD g_LuaOwnerThreadId = 0;
+    static lua_State* g_LiveLuaState = nullptr;
 
     using lua_pcall_native_t = int(__fastcall*)(lua_State*, int, int, int);
     static lua_pcall_native_t g_OrigLuaPcallPump = nullptr;
@@ -123,14 +130,33 @@ static void TrackLuaState(lua_State* L)
 {
     std::lock_guard<std::mutex> lock(g_RegisteredLuaStatesMutex);
     g_RegisteredLuaStates.insert(L);
+    g_LiveLuaState = L;
     g_LuaOwnerThreadId = GetCurrentThreadId();
+}
+
+void V_FrameWork_NoteLiveLuaState(lua_State* L)
+{
+    if (!L)
+        return;
+    std::lock_guard<std::mutex> lock(g_RegisteredLuaStatesMutex);
+    g_LiveLuaState = L;
 }
 
 lua_State* V_FrameWork_AnyLuaState()
 {
     std::lock_guard<std::mutex> lock(g_RegisteredLuaStatesMutex);
-    if (g_RegisteredLuaStates.empty()) return nullptr;
-    return *g_RegisteredLuaStates.begin();
+    if (g_LiveLuaState)
+        return g_LiveLuaState;
+
+    static bool s_said = false;
+    if (!s_said && !g_RegisteredLuaStates.empty())
+    {
+        s_said = true;
+        Log("[LuaState] no live Lua state has been seen yet, so this call is skipped - "
+            "the states registered so far are only known to have existed, not to still "
+            "be open, and calling into a closed one corrupts the heap\n");
+    }
+    return nullptr;
 }
 
 unsigned long V_FrameWork_LuaOwnerThreadId()
@@ -144,6 +170,7 @@ static void ClearTrackedLuaStates()
 {
     std::lock_guard<std::mutex> lock(g_RegisteredLuaStatesMutex);
     g_RegisteredLuaStates.clear();
+    g_LiveLuaState = nullptr;
 }
 
 
@@ -551,6 +578,19 @@ int __cdecl l_RequestToSetTargetCqcStance(lua_State* L)
 }
 
 
+int __cdecl l_SetQuietHoldCqc(lua_State* L)
+{
+    PushLuaBool(L, ::QuietCqc_SetHoldCqc(GetLuaBool(L, 1)));
+    return 1;
+}
+
+int __cdecl l_SetQuietInterrogate(lua_State* L)
+{
+    PushLuaBool(L, ::QuietCqc_SetInterrogate(GetLuaBool(L, 1)));
+    return 1;
+}
+
+
 static bool ReadPlayerTransformFromVars(lua_State* L, float* posX, float* posY, float* posZ,
                                         float* rotY)
 {
@@ -584,6 +624,65 @@ static bool ReadPlayerTransformFromVars(lua_State* L, float* posX, float* posY, 
     return ok;
 }
 
+int __cdecl l_RequestToAttachInDemo(lua_State* L)
+{
+    if (LuaType(L, 1) != LUA_TTABLE)
+    {
+        LogDebug("[AttachInDemo] RequestToAttachInDemo: argument #1 must be a table "
+                 "{ ownerId=, connectPoint=, unattachOnSleep= }\n");
+        PushLuaBool(L, false);
+        return 1;
+    }
+
+    const char*   ownerId       = nullptr;
+    std::uint32_t ownerObjectId = 0;
+    bool          ownerIsId     = false;
+    LuaGetField(L, 1, "ownerId");
+    if (LuaType(L, -1) == LUA_TNUMBER)
+    {
+        ownerObjectId = static_cast<std::uint32_t>(GetLuaNumber(L, -1));
+        ownerIsId     = true;
+    }
+    else if (LuaIsString(L, -1))
+    {
+        ownerId = GetLuaString(L, -1);
+    }
+    LuaPop(L, 1);
+
+    const char* connectPoint = nullptr;
+    LuaGetField(L, 1, "connectPoint");
+    if (LuaIsString(L, -1))
+        connectPoint = GetLuaString(L, -1);
+    LuaPop(L, 1);
+
+    bool unattachOnSleep = false;
+    LuaGetField(L, 1, "unattachOnSleep");
+    if (LuaType(L, -1) == LUA_TBOOLEAN)
+        unattachOnSleep = GetLuaBool(L, -1);
+    LuaPop(L, 1);
+
+    if ((!ownerId && !ownerIsId) || !connectPoint)
+    {
+        LogDebug("[AttachInDemo] RequestToAttachInDemo: connectPoint is required, and ownerId "
+                 "must be a locator name or a game object id - nothing was attached\n");
+        PushLuaBool(L, false);
+        return 1;
+    }
+
+    if (ownerIsId)
+        PushLuaBool(L, ::RequestToAttachInDemoById(ownerObjectId, connectPoint, unattachOnSleep));
+    else
+        PushLuaBool(L, ::RequestToAttachInDemo(ownerId, connectPoint, unattachOnSleep));
+    return 1;
+}
+
+int __cdecl l_ClearAttachInDemo(lua_State* L)
+{
+    UNREFERENCED_PARAMETER(L);
+    ::ClearAttachInDemo();
+    return 0;
+}
+
 int __cdecl l_IsThereEnoughSpaceAroundPlayer(lua_State* L)
 {
     const float minX = GetLuaNumber(L, 1);
@@ -603,9 +702,9 @@ int __cdecl l_IsThereEnoughSpaceAroundPlayer(lua_State* L)
         if (s_lastTick == 0 || now - s_lastTick >= 5000)
         {
             s_lastTick = now;
-            Log("[PlayerSpace] ERROR: vars.playerPosX/Y/Z or vars.playerRotY could not be read, so "
-                "V_Player.IsThereEnoughSpaceAroundPlayer has no player transform to test around and "
-                "answers 'not enough space'.\n");
+            Log("[PlayerSpace] ERROR: vars.playerPosX/Y/Z or playerRotY unreadable, "
+                "so V_Player.IsThereEnoughSpaceAroundPlayer has no transform to "
+                "test and answers 'no space'\n");
         }
         PushLuaBool(L, false);
         return 1;
@@ -1903,11 +2002,13 @@ static void RegisterAllUiLuaLibraries(lua_State* L)
         Register_V_TppMbDevConstants(L);
         Register_V_PlayerCqcStanceConstants(L);
         Register_V_TppCallSignConstants(L);
+        Register_V_TppDataBaseConstants(L);
         Register_V_TppCassetteLibrary(L);
         Register_V_TppSahelanLibrary(L);
         Register_V_TppPlayerLibrary(L);
         Register_V_FoxLibrary(L);
         Register_V_PickableLibrary(L);
+        Register_V_TppCollectionLibrary(L);
         Register_V_HelicopterLibrary(L);
         Register_V_TppMotherBaseManagementLibrary(L);
         Register_V_TppEquipLibrary(L);
@@ -1943,11 +2044,13 @@ extern "C" __declspec(dllexport) int __cdecl luaopen_V_FrameWork(lua_State* L)
     Register_V_TppMbDevConstants(L);
     Register_V_PlayerCqcStanceConstants(L);
     Register_V_TppCallSignConstants(L);
+    Register_V_TppDataBaseConstants(L);
     Register_V_TppCassetteLibrary(L);
     Register_V_TppSahelanLibrary(L);
     Register_V_TppPlayerLibrary(L);
     Register_V_FoxLibrary(L);
     Register_V_PickableLibrary(L);
+    Register_V_TppCollectionLibrary(L);
     Register_V_HelicopterLibrary(L);
     Register_V_TppMotherBaseManagementLibrary(L);
     Register_V_TppEquipLibrary(L);
@@ -1963,11 +2066,13 @@ extern "C" __declspec(dllexport) int __cdecl luaopen_V_FrameWork(lua_State* L)
 static int __fastcall hkLuaPcallPump(lua_State* L, int nargs, int nresults,
                                      int errfunc)
 {
+    V_FrameWork_NoteLiveLuaState(L);
     V_FrameWork::EnterLuaPcall();
     const int r = g_OrigLuaPcallPump
         ? g_OrigLuaPcallPump(L, nargs, nresults, errfunc)
         : 0;
     V_FrameWork::ExitLuaPcall();
+    uniquedefaultoutfit::EnsureRegistered(L);
     return r;
 }
 
@@ -2006,7 +2111,6 @@ static void Uninstall_LuaPcallPump_Hook()
 
 
 bool Set_MissionDeployWarning(std::uint16_t missionCode, const char* langId, const char* colorName);
-void Clear_MissionDeployWarning(std::uint16_t missionCode);
 
 int __cdecl l_SetMissionAcceptWarning(lua_State* L)
 {
@@ -2020,14 +2124,6 @@ int __cdecl l_SetMissionAcceptWarning(lua_State* L)
 
     PushLuaBool(L, ok);
     return 1;
-}
-
-int __cdecl l_ClearMissionAcceptWarning(lua_State* L)
-{
-    const int code = GetLuaInt(L, 1);
-    if (code > 0 && code <= 0xFFFF)
-        Clear_MissionDeployWarning(static_cast<std::uint16_t>(code));
-    return 0;
 }
 
 

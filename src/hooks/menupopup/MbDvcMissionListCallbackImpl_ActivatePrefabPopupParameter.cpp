@@ -268,10 +268,10 @@ bool Set_MissionDeployWarning(std::uint16_t missionCode, const char* langId, con
     return true;
 }
 
-void Clear_MissionDeployWarning(std::uint16_t missionCode)
+void Clear_AllMissionDeployWarnings()
 {
     std::lock_guard<std::mutex> lk(g_ovMutex);
-    g_overrides.erase(missionCode);
+    g_overrides.clear();
 }
 
 bool Install_MissionDeployWarning_Hook()

@@ -47,6 +47,10 @@ namespace
 
     static std::mutex g_UpdateOptCamoMutex;
     static std::unordered_map<std::uint32_t, OptCamoForceMode> g_MappedIndexModes;
+
+    static std::uint64_t g_SoldierActorMap   = 0;
+    static std::uint64_t g_SoldierStatusBase  = 0;
+    static std::uint32_t g_SoldierStatusCount = 0;
 }
 
 
@@ -167,6 +171,9 @@ static bool ResolveOptCamoFlagsField(
         }
 
         outFlagsPtr = reinterpret_cast<std::uint32_t*>(configEntry + 0x10ull);
+        g_SoldierActorMap    = mapTable;
+        g_SoldierStatusBase  = configBase;
+        g_SoldierStatusCount = configCount;
         outStatus = ResolveOptCamoStatus::Ok;
         return true;
     }
@@ -331,4 +338,19 @@ void Clear_UpdateOptCamoMappedIndexOverrides()
 {
     std::lock_guard<std::mutex> lock(g_UpdateOptCamoMutex);
     g_MappedIndexModes.clear();
+}
+
+
+bool GetSoldierStatusArray(std::uint64_t& outBase, std::uint32_t& outCount)
+{
+    outBase  = g_SoldierStatusBase;
+    outCount = g_SoldierStatusCount;
+    return outBase != 0 && outCount != 0;
+}
+
+
+bool GetSoldierActorMap(std::uint64_t& outMapTable)
+{
+    outMapTable = g_SoldierActorMap;
+    return outMapTable != 0;
 }

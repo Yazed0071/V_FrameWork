@@ -16,8 +16,8 @@ namespace
     std::mutex                                    g_Mutex;
     outfit::shadow::Slot                          g_Slots[outfit::shadow::kMaxSlots] = {};
 
-    std::uint8_t                                  g_ArmTier[outfit::shadow::kPlayerTypeMax]      = {0,0,0,0};
-    bool                                          g_ArmTierCaptured[outfit::shadow::kPlayerTypeMax] = {false,false,false,false};
+    std::uint8_t                                  g_ArmTier[outfit::shadow::kPlayerTypeMax]      = {};
+    bool                                          g_ArmTierCaptured[outfit::shadow::kPlayerTypeMax] = {};
 
     thread_local std::size_t                      tl_CurrentSlot = SIZE_MAX;
 }
@@ -26,11 +26,23 @@ namespace outfit::shadow
 {
     void Set(std::size_t slot, const Slot& s)
     {
-        if (slot >= kMaxSlots) return;
+        if (slot >= kMaxSlots)
+        {
+            static std::atomic<int> s_oobSet{ 0 };
+            if (s_oobSet.fetch_add(1, std::memory_order_relaxed) < 8)
+                Log("[ShadowState] parts slot %zu is past the %zu-slot mirror, so "
+                    "this outfit write is lost and that slot keeps serving whatever "
+                    "its shadow last held - the parts pipeline has more slots than "
+                    "the mirror was sized for\n",
+                    slot, kMaxSlots);
+            return;
+        }
+        bool changed = false;
+        {
         std::lock_guard<std::mutex> lock(g_Mutex);
 
         const Slot& prev = g_Slots[slot];
-        const bool changed =
+        changed =
                !prev.used
             ||  prev.realPartsType  != s.realPartsType
             ||  prev.realCamoType   != s.realCamoType
@@ -41,6 +53,7 @@ namespace outfit::shadow
 
         g_Slots[slot] = s;
         g_Slots[slot].used = true;
+        }
 
         if (changed)
         {
@@ -61,7 +74,16 @@ namespace outfit::shadow
 
     void Clear(std::size_t slot)
     {
-        if (slot >= kMaxSlots) return;
+        if (slot >= kMaxSlots)
+        {
+            static std::atomic<int> s_oobClear{ 0 };
+            if (s_oobClear.fetch_add(1, std::memory_order_relaxed) < 8)
+                Log("[ShadowState] parts slot %zu is past the %zu-slot mirror, so "
+                    "this drop is lost and a dead outfit may still be substituted "
+                    "for that slot\n",
+                    slot, kMaxSlots);
+            return;
+        }
         std::lock_guard<std::mutex> lock(g_Mutex);
         if (g_Slots[slot].used)
         {

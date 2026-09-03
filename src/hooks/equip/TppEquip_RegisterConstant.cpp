@@ -7,6 +7,7 @@
 #include "HookUtils.h"
 #include "log.h"
 #include "TppEquipConstRegistry.h"
+#include "CustomBluePrint.h"
 
 extern "C" {
 #include "lua.h"
@@ -26,6 +27,7 @@ namespace
         {
             TppEquipConst_InjectAll(L);
             TppDamageConst_InjectAll(L);
+            bluePrint::InjectConstants(L);
         }
     }
 }

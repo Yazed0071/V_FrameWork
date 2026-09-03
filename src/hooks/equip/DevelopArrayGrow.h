@@ -31,6 +31,11 @@ namespace equip
 
     std::size_t DevFlagsPtrOffsetBase20();
 
+    void SilenceDevelopRowAnnounce(std::int32_t developId);
+
+    void AssertDevelopRowAnnounced(std::int32_t developId,
+                                   std::int32_t flowIndex);
+
     void InvalidateDevelopVisibilityCache();
     void InvalidateDevelopLookupIndex();
     void DevelopLookupTakeCounters(unsigned long long& calls,
@@ -61,6 +66,10 @@ namespace equip
 
     bool DevFlagsTryReadByte(void* controller, std::uint32_t index,
                              std::uint8_t& out);
+
+    std::uint32_t FirstCustomFlowIndex();
+
+    bool TryReadRowDevelopId(std::uint32_t index, std::uint32_t& out);
 
     void EnsureDevelopBlockArmed(void* base20);
 

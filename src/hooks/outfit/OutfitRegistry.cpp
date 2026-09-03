@@ -19,6 +19,7 @@
 #include "log.h"
 #include <HookUtils.h>
 #include "../../core/V_FrameWorkState.h"
+#include "UniqueCharacterDefaultOutfit.h"
 
 namespace
 {
@@ -38,10 +39,11 @@ namespace
     static GetQuarkSystemTable_t                 g_GetQuarkSystemTable = nullptr;
 
 
-    static std::uint8_t g_ActiveVariant[256] = {};
+    static std::atomic<std::uint8_t> g_ActiveVariant[256] = {};
 
 
     static std::uint16_t g_PendingDevelopId            = 0;
+    static std::uint32_t g_PendingDevelopIdStamp       = 0;
     static std::uint16_t g_PendingHeadOptionEquipId    = 0;
     static std::uint8_t  g_WornCustomHeadSlot          = 0;
     static bool          g_SupplyDropClickLatch        = false;
@@ -78,6 +80,14 @@ namespace
         bool          suitHeadOverride[kPlayerTypeMax] = {};
         bool          suitHeadEnable[kPlayerTypeMax]   = {};
         std::uint8_t  suitHeadCamo[kPlayerTypeMax]     = {};
+        bool          suitAbilityOverride[kPlayerTypeMax]  = {};
+        std::uint8_t  suitAbilityCamo[kPlayerTypeMax]      = {};
+        bool          suitAbilitySilent[kPlayerTypeMax]    = {};
+        std::uint8_t  suitAbilityDefense[kPlayerTypeMax]   = {};
+        std::uint8_t  suitAbilityRegen[kPlayerTypeMax]     = {};
+        std::uint32_t suitAbilityRattle[kPlayerTypeMax]    = {};
+        std::uint32_t suitAbilityDamageSe[kPlayerTypeMax]  = {};
+        std::uint8_t  suitAbilityParamKind[kPlayerTypeMax] = {};
     };
     static std::deque<VanillaSuitExtension> g_VanillaExts;
 
@@ -294,8 +304,8 @@ namespace
     {
         if (IsCustomSelector(hint) && !IsAllocatableSelector(hint))
             LogDebug("[OutfitRegistry] selector hint 0x%02X is inside the vanilla "
-                "event-camo band 0x83-0x88 (legacy allocation) - migrating to "
-                "a clean selector\n", hint);
+                     "event-camo band 0x83-0x88 (legacy) - migrating to a clean "
+                     "selector\n", hint);
 
         if (IsAllocatableSelector(hint) && !IsSelectorTaken_NoLock(hint)
             && !IsSelectorReservedForOther_NoLock(hint, keyHash)
@@ -378,6 +388,9 @@ namespace
         return s_menuStampLogged.insert(keyHash).second;
     }
 
+    static void PublishSuitParamDonors_NoLock(const OutfitEntry& e);
+    static void ClearSuitParamDonors_NoLock(const OutfitEntry& e);
+
     static bool BindOutfit_NoLock(OutfitEntry& e, bool allowEvict,
                                   const char* reason, bool requireHintExact = false)
     {
@@ -416,9 +429,8 @@ namespace
         {
             if (ShouldLogBindRefusal_NoLock(e.keyHash, reason))
                 LogDebug("[OutfitRegistry] BIND REFUSED key=%s reason=%s: partsType "
-                    "pool exhausted (%d live) - unequip or clear loadout slots "
-                    "to free live bytes (menu-stamp refusals log once per "
-                    "key)\n", e.key, reason ? reason : "?",
+                         "pool exhausted (%d live) - unequip or clear loadout slots "
+                         "to free live bytes\n", e.key, reason ? reason : "?",
                     kCustomPartsTypeEnd - kCustomPartsTypeStart + 1);
             return false;
         }
@@ -468,6 +480,7 @@ namespace
             const std::uint8_t hint = e.variantSelectorHints[vi];
             if (IsAllocatableSelector(hint) && !IsSelectorTaken_NoLock(hint)
                 && !usedEarlier(hint)
+                && !IsVirtualIdTaken_NoLock(hint)
                 && !IsSelectorReservedForOther_NoLock(hint, e.keyHash))
                 alloc = hint;
             if (alloc == 0xFF)
@@ -479,6 +492,7 @@ namespace
                     if (!IsAllocatableSelector(c)) continue;
                     if (IsSelectorTaken_NoLock(c)) continue;
                     if (usedEarlier(c)) continue;
+                    if (IsVirtualIdTaken_NoLock(c)) continue;
                     if (IsSelectorReservedForOther_NoLock(c, e.keyHash)) continue;
                     alloc = c; break;
                 }
@@ -492,6 +506,7 @@ namespace
                     if (!IsAllocatableSelector(c)) continue;
                     if (IsSelectorTaken_NoLock(c)) continue;
                     if (usedEarlier(c)) continue;
+                    if (IsVirtualIdTaken_NoLock(c)) continue;
                     LogDebug("[OutfitRegistry] selector pool exhausted - variant %u "
                         "consumes reserved value 0x%02X from an absent key\n",
                         static_cast<unsigned>(vi), c);
@@ -537,6 +552,7 @@ namespace
 
         e.bound = true;
         e.lastBindTouch = GetTickCount64();
+        PublishSuitParamDonors_NoLock(e);
         g_ActiveVariant[e.partsType] = e.defaultVariant;
         V_FrameWorkState::SetPersistedOutfitIds(e.key, e.partsType,
                                                 e.selectorCode);
@@ -552,10 +568,118 @@ namespace
         return true;
     }
 
+    static std::atomic<std::uint8_t>
+        g_SuitParamDonor[256][kPlayerTypeMax] = {};
+    static std::atomic<std::uint8_t>
+        g_AbilityDefense[256][kPlayerTypeMax] = {};
+    static std::atomic<std::uint8_t>
+        g_AbilityRegen[256][kPlayerTypeMax] = {};
+
+    static constexpr std::size_t kAbilityVariantSlots = 8;
+    static std::atomic<std::uint8_t>
+        g_VarDefense[256][kPlayerTypeMax][kAbilityVariantSlots] = {};
+    static std::atomic<std::uint8_t>
+        g_VarRegen[256][kPlayerTypeMax][kAbilityVariantSlots] = {};
+
+    static void PublishSuitParamDonors_NoLock(const OutfitEntry& e)
+    {
+        for (std::uint8_t pt = 0; pt < kPlayerTypeMax; ++pt)
+        {
+            const OutfitPlayerTypeData* pd = e.GetPTData(pt);
+            const std::uint8_t kind = pd ? pd->suitParamKind : std::uint8_t{ 0 };
+
+            const std::uint8_t def = pd ? pd->abilityDefense      : std::uint8_t{ 0 };
+            const std::uint8_t reg = pd ? pd->abilityLifeRecovery : std::uint8_t{ 0 };
+
+            if (e.selectorCode != 0)
+            {
+                g_SuitParamDonor[e.selectorCode][pt].store(
+                    kind, std::memory_order_relaxed);
+                g_AbilityDefense[e.selectorCode][pt].store(
+                    def, std::memory_order_relaxed);
+                g_AbilityRegen[e.selectorCode][pt].store(
+                    reg, std::memory_order_relaxed);
+            }
+
+            for (std::uint8_t vi = 1; vi < e.variantCount; ++vi)
+            {
+                const std::uint8_t sel = e.variantSelectorCodes[vi];
+                if (sel == 0) continue;
+                g_SuitParamDonor[sel][pt].store(kind, std::memory_order_relaxed);
+                g_AbilityDefense[sel][pt].store(def, std::memory_order_relaxed);
+                g_AbilityRegen[sel][pt].store(reg, std::memory_order_relaxed);
+            }
+
+            const std::uint8_t branchVars =
+                pd ? pd->variantCount : std::uint8_t{ 0 };
+            for (std::uint8_t vi = 0;
+                 vi < branchVars && vi < kAbilityVariantSlots; ++vi)
+            {
+                const outfit::OutfitVariant* v = pd->Var(vi);
+                const bool own = v && v->abilities.declared;
+                const std::uint8_t d =
+                    own ? static_cast<std::uint8_t>(v->abilities.defense + 1)
+                        : std::uint8_t{ 0 };
+                const std::uint8_t r =
+                    own ? static_cast<std::uint8_t>(v->abilities.lifeRecovery + 1)
+                        : std::uint8_t{ 0 };
+                if (e.selectorCode != 0)
+                {
+                    g_VarDefense[e.selectorCode][pt][vi].store(
+                        d, std::memory_order_relaxed);
+                    g_VarRegen[e.selectorCode][pt][vi].store(
+                        r, std::memory_order_relaxed);
+                }
+                const std::uint8_t vsel = e.variantSelectorCodes[vi];
+                if (vsel != 0)
+                {
+                    g_VarDefense[vsel][pt][vi].store(d, std::memory_order_relaxed);
+                    g_VarRegen[vsel][pt][vi].store(r, std::memory_order_relaxed);
+                }
+            }
+
+            if (branchVars > kAbilityVariantSlots)
+            {
+                static std::atomic<int> s_varCap{ 0 };
+                if (s_varCap.fetch_add(1, std::memory_order_relaxed) < 4)
+                    Log("[OutfitRegistry] '%s' declares %u variants but only the "
+                        "first %zu carry their own abilities - variants past that "
+                        "fall back to the branch's abilities\n",
+                        e.key, static_cast<unsigned>(branchVars),
+                        kAbilityVariantSlots);
+            }
+        }
+    }
+
+    static void ClearSuitParamDonors_NoLock(const OutfitEntry& e)
+    {
+        for (std::uint8_t pt = 0; pt < kPlayerTypeMax; ++pt)
+        {
+            if (e.selectorCode != 0)
+            {
+                g_SuitParamDonor[e.selectorCode][pt].store(
+                    0, std::memory_order_relaxed);
+                g_AbilityDefense[e.selectorCode][pt].store(
+                    0, std::memory_order_relaxed);
+                g_AbilityRegen[e.selectorCode][pt].store(
+                    0, std::memory_order_relaxed);
+            }
+            for (std::uint8_t vi = 1; vi < e.variantCount; ++vi)
+            {
+                const std::uint8_t sel = e.variantSelectorCodes[vi];
+                if (sel == 0) continue;
+                g_SuitParamDonor[sel][pt].store(0, std::memory_order_relaxed);
+                g_AbilityDefense[sel][pt].store(0, std::memory_order_relaxed);
+                g_AbilityRegen[sel][pt].store(0, std::memory_order_relaxed);
+            }
+        }
+    }
+
     static void UnbindOutfit_NoLock(OutfitEntry& e)
     {
         if (!e.bound)
             return;
+        ClearSuitParamDonors_NoLock(e);
         g_ActiveVariant[e.partsType] = 0;
         e.partsType    = 0;
         e.selectorCode = 0;
@@ -624,6 +748,42 @@ namespace
         kPinAll             = kPinAppliedOrdered | kPinMenuStamps,
     };
 
+    struct RememberedOutfit
+    {
+        std::uint8_t partsType = 0;
+        std::uint8_t selector  = 0;
+        bool         valid     = false;
+    };
+    static RememberedOutfit g_LastOutfitPerPT[kPlayerTypeMax] = {};
+
+    static bool GetRememberedPlayerTypeOutfitNoLock(std::uint8_t playerType,
+                                                    std::uint8_t* outPartsType,
+                                                    std::uint8_t* outSelector)
+    {
+        if (playerType >= kPlayerTypeMax) return false;
+
+        if (g_LastOutfitPerPT[playerType].valid)
+        {
+            if (outPartsType) *outPartsType = g_LastOutfitPerPT[playerType].partsType;
+            if (outSelector)  *outSelector  = g_LastOutfitPerPT[playerType].selector;
+            return true;
+        }
+
+        const char* key = uniquedefaultoutfit::GetDefaultOutfitKey(playerType);
+        if (!key || !key[0]) return false;
+
+        for (auto& e : g_Entries)
+        {
+            if (!e.used) continue;
+            if (std::strncmp(e.key, key, sizeof(e.key) - 1) != 0) continue;
+            if (!e.bound || e.partsType == 0) return false;
+            if (outPartsType) *outPartsType = e.partsType;
+            if (outSelector)  *outSelector  = e.selectorCode;
+            return true;
+        }
+        return false;
+    }
+
     static void ComputePins_NoLock(std::vector<bool>& pinned, bool& scanAvailable,
                                    unsigned scope = kPinAll)
     {
@@ -670,7 +830,7 @@ namespace
         for (std::uint8_t pt = 0; pt < kPlayerTypeMax; ++pt)
         {
             std::uint8_t rpt = 0, rsel = 0;
-            if (outfit::GetRememberedPlayerTypeOutfit(pt, &rpt, &rsel))
+            if (GetRememberedPlayerTypeOutfitNoLock(pt, &rpt, &rsel))
                 pinByBytes(rpt, rsel);
         }
 
@@ -856,9 +1016,10 @@ namespace
             if (here < pinned.size() && pinned[here])
             {
                 if (!probeOnly)
-                    LogDebug("[OutfitRegistry] reclaim of 0x%02X for key=%s refused: "
-                        "holder key=%s is pinned (worn / loadout / supply) - "
-                        "holder keeps it, requester degrades to vanilla\n",
+                    LogDebug("[OutfitRegistry] reclaim of 0x%02X for key=%s "
+                             "refused: holder key=%s is pinned "
+                             "(worn/loadout/supply) - the requester degrades to "
+                             "vanilla\n",
                         wanted, forKey ? forKey : "?", e.key);
                 return false;
             }
@@ -902,6 +1063,9 @@ namespace outfit
         if (perPlayerType[playerType].used)
             return &perPlayerType[playerType];
 
+        if (IsUniqueCharacterPlayerType(playerType))
+            return nullptr;
+
         if (playerType == kPlayerType_Snake
             && perPlayerType[kPlayerType_Avatar].used)
             return &perPlayerType[kPlayerType_Avatar];
@@ -910,7 +1074,8 @@ namespace outfit
             return &perPlayerType[kPlayerType_Snake];
 
         for (std::uint8_t alt = 0; alt < kPlayerTypeMax; ++alt)
-            if (perPlayerType[alt].used)
+            if (!IsUniqueCharacterPlayerType(alt) && perPlayerType[alt].used
+                && IsFemaleBodyPlayerType(alt) == IsFemaleBodyPlayerType(playerType))
                 return &perPlayerType[alt];
 
         return nullptr;
@@ -929,8 +1094,11 @@ namespace outfit
     std::uint8_t OutfitEntry::FirstSupportedPlayerType() const
     {
         for (std::uint8_t pt = 0; pt < kPlayerTypeMax; ++pt)
-            if (perPlayerType[pt].used)
+            if (!IsUniqueCharacterPlayerType(pt) && perPlayerType[pt].used)
                 return pt == kPlayerType_Avatar ? kPlayerType_Snake : pt;
+        for (std::uint8_t pt = 0; pt < kPlayerTypeMax; ++pt)
+            if (perPlayerType[pt].used)
+                return pt;
         return 0xFF;
     }
 
@@ -938,7 +1106,8 @@ namespace outfit
     bool OutfitEntry::IsArmEnabled(std::uint8_t playerType) const
     {
         if (playerType == kPlayerType_DDMale
-            || playerType == kPlayerType_DDFemale)
+            || playerType == kPlayerType_DDFemale
+            || IsUniqueCharacterPlayerType(playerType))
             return false;
         const auto* d = GetPTData(playerType);
         if (!d) return false;
@@ -1405,11 +1574,18 @@ namespace outfit
     }
 
     std::uint64_t OutfitEntry::GetMotionMtarOverride(
-        std::uint8_t playerType, std::size_t slot) const
+        std::uint8_t playerType, std::size_t slot, std::uint8_t variantIdx) const
     {
         if (slot >= kMotionMtarSlotCount) return 0;
         const auto* d = GetPTData(playerType);
-        return d ? d->motionMtars[slot] : 0;
+        if (!d) return 0;
+        if (variantIdx != 0 && variantIdx < d->variantCount)
+        {
+            const auto* v = d->Var(variantIdx);
+            if (v && v->used && v->motionMtars[slot] != 0)
+                return v->motionMtars[slot];
+        }
+        return d->motionMtars[slot];
     }
 
     std::uint64_t OutfitEntry::GetVariantDiamondFv2(
@@ -1469,9 +1645,9 @@ namespace outfit
 
         if (branchCount == 0)
         {
-            LogDebug("[OutfitRegistry] reject: no playerType branches populated. "
-                "At least one of {snake, ddMale, ddFemale, avatar} must "
-                "supply partsPath/fpkPath. (key=%s)\n",
+            LogDebug("[OutfitRegistry] reject: no playerType branches populated - "
+                     "at least one of snake/ddMale/ddFemale/avatar must supply "
+                     "partsPath and fpkPath (key=%s)\n",
                 def.key ? def.key : "(unkeyed)");
             return false;
         }
@@ -1584,6 +1760,17 @@ namespace outfit
             for (; def.key[n] && n < sizeof(slot->key) - 1; ++n)
                 slot->key[n] = def.key[n];
             slot->key[n] = 0;
+            if (def.key[n] != 0)
+            {
+                Log("[OutfitRegistry] outfit key '%s...' is longer than %zu "
+                    "characters - REFUSED. A truncated key persists short but is "
+                    "read back long, so the outfit takes a different partsType on "
+                    "the next launch and whatever the player was wearing resolves "
+                    "to the wrong suit\n",
+                    slot->key, sizeof(slot->key) - 1);
+                slot->used = false;
+                return false;
+            }
         }
         slot->partsTypeHint    = def.partsTypeHint;
         slot->selectorCodeHint = def.selectorCodeHint;
@@ -1628,8 +1815,8 @@ namespace outfit
         {
             if (!BindOutfit_NoLock(*slot, false, "register"))
                 LogDebug("[OutfitRegistry] '%s' has persisted live bytes but could "
-                    "not take them back - registered UNBOUND, re-acquires on "
-                    "first equip, order, or menu stamp\n",
+                         "not take them back - registered UNBOUND, re-acquires on "
+                         "first equip, order or menu stamp\n",
                     slot->key[0] ? slot->key : "(unkeyed)");
         }
 #ifdef _DEBUG
@@ -1686,6 +1873,20 @@ namespace outfit
         }
         outfit::shadow::ResetAll("ClearAllOutfits");
         outfit::shadow::ResetArmTierCache();
+    }
+
+    bool TryGetOutfitByKey(const char* key, const OutfitEntry** outEntry)
+    {
+        if (!key || !key[0]) return false;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        for (auto& e : g_Entries)
+        {
+            if (!e.used) continue;
+            if (std::strncmp(e.key, key, sizeof(e.key) - 1) != 0) continue;
+            if (outEntry) *outEntry = &e;
+            return true;
+        }
+        return false;
     }
 
     bool TryGetOutfitByPartsType(std::uint8_t partsType, const OutfitEntry** outEntry)
@@ -1785,6 +1986,78 @@ namespace outfit
             }
         }
         return false;
+    }
+
+    std::uint8_t GetSuitParamDonorLockFree(std::uint8_t selectorCode,
+                                          std::uint8_t playerType)
+    {
+        if (playerType >= kPlayerTypeMax) return 0;
+        return g_SuitParamDonor[selectorCode][playerType].load(
+            std::memory_order_relaxed);
+    }
+
+    std::uint8_t GetActiveVariantLockFree(std::uint8_t partsType)
+    {
+        return g_ActiveVariant[partsType].load(std::memory_order_relaxed);
+    }
+
+    void GetAbilityLevelsForVariantLockFree(std::uint8_t selectorCode,
+                                            std::uint8_t playerType,
+                                            std::uint8_t variantIdx,
+                                            std::uint8_t* outDefense,
+                                            std::uint8_t* outRecovery)
+    {
+        GetAbilityLevelsLockFree(selectorCode, playerType,
+                                 outDefense, outRecovery);
+        if (playerType >= kPlayerTypeMax
+            || variantIdx >= kAbilityVariantSlots)
+            return;
+
+        const std::uint8_t d =
+            g_VarDefense[selectorCode][playerType][variantIdx].load(
+                std::memory_order_relaxed);
+        const std::uint8_t r =
+            g_VarRegen[selectorCode][playerType][variantIdx].load(
+                std::memory_order_relaxed);
+        if (d != 0 && outDefense)  *outDefense  = static_cast<std::uint8_t>(d - 1);
+        if (r != 0 && outRecovery) *outRecovery = static_cast<std::uint8_t>(r - 1);
+    }
+
+    bool TryGetVariantAbilities(std::uint8_t partsType, std::uint8_t playerType,
+                                std::uint8_t variantIdx,
+                                DeclaredAbilities* out)
+    {
+        if (!out || playerType >= kPlayerTypeMax) return false;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        for (auto& e : g_Entries)
+        {
+            if (!e.used || !e.bound || e.partsType != partsType) continue;
+            const OutfitPlayerTypeData* pd = e.GetPTData(playerType);
+            const OutfitVariant* v = pd ? pd->Var(variantIdx) : nullptr;
+            if (!v || !v->abilities.declared) return false;
+            *out = v->abilities;
+            return true;
+        }
+        return false;
+    }
+
+    void GetAbilityLevelsLockFree(std::uint8_t selectorCode,
+                                  std::uint8_t playerType,
+                                  std::uint8_t* outDefense,
+                                  std::uint8_t* outRecovery)
+    {
+        if (playerType >= kPlayerTypeMax)
+        {
+            if (outDefense)  *outDefense  = 0;
+            if (outRecovery) *outRecovery = 0;
+            return;
+        }
+        if (outDefense)
+            *outDefense = g_AbilityDefense[selectorCode][playerType].load(
+                std::memory_order_relaxed);
+        if (outRecovery)
+            *outRecovery = g_AbilityRegen[selectorCode][playerType].load(
+                std::memory_order_relaxed);
     }
 
     bool TryGetOutfitByVariantSelector(std::uint8_t selectorCode,
@@ -2246,10 +2519,10 @@ namespace outfit
 
         if (count >= kMaxMotionMtarOverrideHashes)
         {
-            Log("[OutfitRegistry] WARN: motionMtars override hash table full "
-                "(%zu entries) - hash %016llX (slot %d) not registered; if this "
-                "archive fails to resolve from the additional-motion block the "
-                "load falls back to the vanilla archive instead of the custom one\n",
+            Log("[OutfitRegistry] WARN: motionMtars override table full (%zu "
+                "entries) - hash %016llX (slot %d) not registered; that archive "
+                "falls back to vanilla if the additional-motion block cannot "
+                "resolve it\n",
                 kMaxMotionMtarOverrideHashes, pathHash, slot);
             return;
         }
@@ -2276,44 +2549,68 @@ namespace outfit
         return false;
     }
 
+    bool AnyMotionMtarOverridesRegistered()
+    {
+        return g_MotionMtarOverrideHashCount.load(std::memory_order_acquire) != 0;
+    }
+
     bool WriteLivePlayerOutfit(std::uint8_t partsType,
                                std::uint8_t selectorCode,
-                               std::uint8_t playerType)
+                               std::uint8_t playerType,
+                               OutfitWriteSource source)
     {
         if (partsType >= kCustomPartsTypeStart
             && partsType <= kCustomPartsTypeEnd)
             SetMotionOutfitHint(partsType, playerType);
         else
             ClearMotionOutfitHint();
-        RequestAdditionalMotionReresolve();
 
         auto* state = GetQuarkLiveState();
         if (!state) return false;
 
+        bool changed = true;
         __try
         {
+            changed = (state[0xF8] != partsType)
+                   || (state[0xF9] != selectorCode)
+                   || (state[0xFB] != playerType);
             state[0xF8] = partsType;
             state[0xF9] = selectorCode;
             state[0xFB] = playerType;
-            return true;
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
             return false;
         }
-    }
 
-
-    namespace
-    {
-        struct RememberedOutfit
+        if (changed)
         {
-            std::uint8_t partsType = 0;
-            std::uint8_t selector  = 0;
-            bool         valid     = false;
-        };
-        RememberedOutfit g_LastOutfitPerPT[kPlayerTypeMax] = {};
+            static std::atomic<std::uint8_t> s_lastSource{ 0 };
+            const std::uint8_t cur  = static_cast<std::uint8_t>(source);
+            const std::uint8_t prev =
+                s_lastSource.exchange(cur, std::memory_order_relaxed);
+
+            if (cur != 0 && prev != 0 && cur < prev)
+            {
+                static std::atomic<int> s_inv{ 0 };
+                if (s_inv.fetch_add(1, std::memory_order_relaxed) < 12)
+                    Log("[OutfitRegistry] precedence inversion: a lower-priority "
+                        "writer (source %u) changed the live outfit to "
+                        "0x%02X/0x%02X pt=%u right after a higher-priority "
+                        "writer (source %u) set it - the later value wins, which "
+                        "may not be the intended suit\n",
+                        static_cast<unsigned>(cur),
+                        static_cast<unsigned>(partsType),
+                        static_cast<unsigned>(selectorCode),
+                        static_cast<unsigned>(playerType),
+                        static_cast<unsigned>(prev));
+            }
+
+            RequestAdditionalMotionReresolve();
+        }
+        return true;
     }
+
 
     void RememberPlayerTypeOutfit(std::uint8_t playerType,
                                   std::uint8_t partsType, std::uint8_t selector)
@@ -2326,8 +2623,32 @@ namespace outfit
                                        std::uint8_t* outPartsType,
                                        std::uint8_t* outSelector)
     {
-        if (playerType >= kPlayerTypeMax || !g_LastOutfitPerPT[playerType].valid)
-            return false;
+        if (playerType >= kPlayerTypeMax) return false;
+
+        if (!g_LastOutfitPerPT[playerType].valid)
+        {
+            std::uint8_t defParts = 0;
+            std::uint8_t defSel   = 0;
+            if (!uniquedefaultoutfit::TryGetBindingFor(playerType,
+                                                       &defParts, &defSel))
+                return false;
+
+            static bool s_logged[kPlayerTypeMax] = {};
+            if (!s_logged[playerType])
+            {
+                s_logged[playerType] = true;
+                Log("[OutfitRegistry] player type %u had no outfit yet this "
+                    "session, so its default-outfit row (partsType=0x%02X) is "
+                    "applied - without it the character keeps whatever suit the "
+                    "previous one wore, which has no parts for this body\n",
+                    static_cast<unsigned>(playerType),
+                    static_cast<unsigned>(defParts));
+            }
+
+            if (outPartsType) *outPartsType = defParts;
+            if (outSelector)  *outSelector  = defSel;
+            return true;
+        }
         if (outPartsType) *outPartsType = g_LastOutfitPerPT[playerType].partsType;
         if (outSelector)  *outSelector  = g_LastOutfitPerPT[playerType].selector;
         return true;
@@ -2437,6 +2758,10 @@ namespace outfit
         g_ActiveVariant[partsType] = 0;
     }
 
+    static std::atomic<bool> g_VanillaExtAbilitiesAny{ false };
+
+    static void PublishVanillaExtSuitParam_NoLock(const VanillaSuitExtension* x);
+
     bool ExtendVanillaSuitVariants(std::uint8_t vanillaPartsType,
                                    std::uint8_t playerType,
                                    std::uint8_t sourceCamo,
@@ -2503,9 +2828,10 @@ namespace outfit
                     (slot < V_FrameWorkState::kPersistedVariantSelectorSlots)
                         ? persisted[slot] : std::uint8_t{0};
                 if (!IsAllocatableSelector(sel) || IsSelectorTaken_NoLock(sel)
+                    || IsVirtualIdTaken_NoLock(sel)
                     || IsSelectorReservedForOther_NoLock(sel, keyHash))
                     sel = AllocateSelector_NoLock(sel, keyHash);
-                if (sel == 0xFF || sel == 0) continue;
+                if (sel == 0xFF || sel == 0) break;
                 x->variantSelectorCodes[slot] = sel;
                 x->variantSourceCamo[slot]    = sourceCamo;
                 ++blockSize;
@@ -2550,6 +2876,7 @@ namespace outfit
                                 ? persisted[slot] : std::uint8_t{0};
                         if (!IsAllocatableSelector(sel)
                             || IsSelectorTaken_NoLock(sel)
+                            || IsVirtualIdTaken_NoLock(sel)
                             || IsSelectorReservedForOther_NoLock(sel, keyHash))
                             sel = AllocateSelector_NoLock(sel, keyHash);
                         if (sel == 0xFF || sel == 0) break;
@@ -2567,8 +2894,8 @@ namespace outfit
             else
             {
                 LogDebug("[OutfitRegistry] vext partsType=0x%02X sourceCamo=0x%02X "
-                    "band (base=%d size=%u) not tail - cannot grow for pt=%u "
-                    "(%u variants); %u extra dropped\n",
+                         "band (base=%d size=%u) is not the tail - cannot grow for "
+                         "pt=%u (%u variants); %u extra dropped\n",
                     static_cast<unsigned>(vanillaPartsType),
                     static_cast<unsigned>(sourceCamo),
                     base, static_cast<unsigned>(blockSize),
@@ -2579,17 +2906,23 @@ namespace outfit
         }
 
         std::uint8_t filled = 0;
+        bool anyVariantAbilities = false;
         for (std::uint8_t j = 0; j < blockSize && j < incomingCount; ++j)
         {
             const std::uint8_t slot = static_cast<std::uint8_t>(base + j);
             x->variants[playerType][slot] = incoming[j];
             x->variants[playerType][slot].used = true;
+            anyVariantAbilities =
+                anyVariantAbilities || incoming[j].abilities.declared;
             ++filled;
         }
         if (filled == 0) return false;
+        if (anyVariantAbilities)
+            g_VanillaExtAbilitiesAny.store(true, std::memory_order_relaxed);
 
         x->variantCount[playerType] =
             static_cast<std::uint8_t>(x->variantSelectorCount + 1);
+        PublishVanillaExtSuitParam_NoLock(x);
         return true;
     }
 
@@ -2621,6 +2954,24 @@ namespace outfit
         if (slot >= kMaxVanillaExtVariants) return nullptr;
         const auto& v = x->variants[playerType][slot];
         return v.used ? &v : nullptr;
+    }
+
+    bool VanillaExtGetVariantAbilities(std::uint8_t vanillaPartsType,
+                                       std::uint8_t playerType,
+                                       std::uint8_t variantIdx,
+                                       DeclaredAbilities* out)
+    {
+        if (!out || playerType >= kPlayerTypeMax || variantIdx == 0)
+            return false;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        const VanillaSuitExtension* x = FindVanillaExt_NoLock(vanillaPartsType);
+        if (!x) return false;
+        const std::uint8_t slot = static_cast<std::uint8_t>(variantIdx - 1);
+        if (slot >= kMaxVanillaExtVariants) return false;
+        const auto& v = x->variants[playerType][slot];
+        if (!v.used || !v.abilities.declared) return false;
+        *out = v.abilities;
+        return true;
     }
 
     static std::uint8_t ResolveVextDonor_NoLock(const VanillaSuitExtension& x,
@@ -2981,6 +3332,137 @@ namespace outfit
         return true;
     }
 
+    bool VanillaExtHasAnyAbilities()
+    {
+        return g_VanillaExtAbilitiesAny.load(std::memory_order_relaxed);
+    }
+
+    static void PublishVanillaExtSuitParam_NoLock(const VanillaSuitExtension* x)
+    {
+        if (!x) return;
+        for (std::uint8_t pt = 0; pt < kPlayerTypeMax; ++pt)
+        {
+            const bool branch = x->suitAbilityOverride[pt];
+            const std::uint8_t kind =
+                branch ? x->suitAbilityParamKind[pt] : std::uint8_t{0};
+            const std::uint8_t def  =
+                branch ? x->suitAbilityDefense[pt] : std::uint8_t{0};
+            const std::uint8_t reg  =
+                branch ? x->suitAbilityRegen[pt] : std::uint8_t{0};
+            for (std::uint8_t s = 0; s < x->variantSelectorCount
+                 && s < kMaxVanillaExtVariants; ++s)
+            {
+                const std::uint8_t sel = x->variantSelectorCodes[s];
+                if (sel == 0) continue;
+                const VanillaSuitVariantAsset& v = x->variants[pt][s];
+                const bool own = v.used && v.abilities.declared;
+                if (!branch && !own) continue;
+                g_SuitParamDonor[sel][pt].store(
+                    own ? v.abilities.suitParamKind : kind,
+                    std::memory_order_relaxed);
+                g_AbilityDefense[sel][pt].store(
+                    own ? v.abilities.defense : def,
+                    std::memory_order_relaxed);
+                g_AbilityRegen[sel][pt].store(
+                    own ? v.abilities.lifeRecovery : reg,
+                    std::memory_order_relaxed);
+            }
+        }
+    }
+
+    bool ExtendVanillaSuitAbilities(std::uint8_t vanillaPartsType,
+                                    std::uint8_t playerType,
+                                    std::uint8_t sourceCamo,
+                                    const VanillaSuitAbilities& abilities)
+    {
+        if (IsCustomPartsType(vanillaPartsType) || vanillaPartsType == 0xFF)
+            return false;
+        if (playerType >= kPlayerTypeMax)
+            return false;
+
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        VanillaSuitExtension* x = FindOrCreateVanillaExt_NoLock(vanillaPartsType);
+        x->suitAbilityOverride[playerType]  = true;
+        x->suitAbilityCamo[playerType]      = sourceCamo;
+        x->suitAbilitySilent[playerType]    = abilities.silentSteps;
+        x->suitAbilityDefense[playerType]   = abilities.defense;
+        x->suitAbilityRegen[playerType]     = abilities.lifeRecovery;
+        x->suitAbilityRattle[playerType]    = abilities.rattleSuit;
+        x->suitAbilityDamageSe[playerType]  = abilities.damageSe;
+        x->suitAbilityParamKind[playerType] = abilities.suitParamKind;
+        PublishVanillaExtSuitParam_NoLock(x);
+        g_VanillaExtAbilitiesAny.store(true, std::memory_order_relaxed);
+        return true;
+    }
+
+    static std::uint8_t VanillaExtAbilitySource_NoLock(
+        const VanillaSuitExtension* x, std::uint8_t playerType)
+    {
+        if (x->suitAbilityOverride[playerType]) return playerType;
+        const std::uint8_t partner =
+            (playerType == kPlayerType_Avatar) ? kPlayerType_Snake
+          : (playerType == kPlayerType_Snake)  ? kPlayerType_Avatar
+                                               : std::uint8_t{0xFF};
+        if (partner != 0xFF && x->suitAbilityOverride[partner]) return partner;
+        return 0xFF;
+    }
+
+    bool VanillaExtGetSuitAbilities(std::uint8_t vanillaPartsType,
+                                    std::uint8_t playerType,
+                                    std::uint8_t wornCamo,
+                                    VanillaSuitAbilities* out)
+    {
+        if (playerType >= kPlayerTypeMax) return false;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        const VanillaSuitExtension* x = FindVanillaExt_NoLock(vanillaPartsType);
+        if (!x) return false;
+        const std::uint8_t src = VanillaExtAbilitySource_NoLock(x, playerType);
+        if (src == 0xFF) return false;
+        if (!HeadCamoMatches_NoLock(x->suitAbilityCamo[src], wornCamo))
+            return false;
+        if (out)
+        {
+            out->silentSteps   = x->suitAbilitySilent[src];
+            out->defense       = x->suitAbilityDefense[src];
+            out->lifeRecovery  = x->suitAbilityRegen[src];
+            out->rattleSuit    = x->suitAbilityRattle[src];
+            out->damageSe      = x->suitAbilityDamageSe[src];
+            out->suitParamKind = x->suitAbilityParamKind[src];
+        }
+        return true;
+    }
+
+    bool VanillaExtGetPinFlags(std::uint8_t vanillaPartsType,
+                               VanillaExtPinFlags* out)
+    {
+        if (!out) return false;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        const VanillaSuitExtension* x = FindVanillaExt_NoLock(vanillaPartsType);
+        if (!x) return false;
+        bool any = false;
+        for (std::uint8_t pt = 0; pt < kPlayerTypeMax; ++pt)
+        {
+            const std::uint8_t src = VanillaExtAbilitySource_NoLock(x, pt);
+            if (src == 0xFF) continue;
+            out->supported[pt] = true;
+            out->quietMove[pt] = x->suitAbilityParamKind[src] != 0;
+            any = true;
+        }
+        return any;
+    }
+
+    bool VanillaExtHasQuietMovement(std::uint8_t vanillaPartsType,
+                                    std::uint8_t playerType)
+    {
+        if (playerType >= kPlayerTypeMax) return false;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        const VanillaSuitExtension* x = FindVanillaExt_NoLock(vanillaPartsType);
+        if (!x) return false;
+        const std::uint8_t src = VanillaExtAbilitySource_NoLock(x, playerType);
+        if (src == 0xFF) return false;
+        return x->suitAbilityParamKind[src] != 0;
+    }
+
     bool VanillaExtHasAnyHeadOptions(std::uint8_t vanillaPartsType,
                                      std::uint8_t playerType,
                                      std::uint8_t wornCamo)
@@ -3040,6 +3522,13 @@ namespace outfit
     {
         std::lock_guard<std::mutex> lock(g_Mutex);
         g_PendingDevelopId = developId;
+        ++g_PendingDevelopIdStamp;
+    }
+
+    std::uint32_t GetPendingOutfitDevelopIdStamp()
+    {
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        return g_PendingDevelopIdStamp;
     }
 
     std::uint16_t GetPendingOutfitDevelopId()

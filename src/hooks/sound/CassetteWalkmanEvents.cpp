@@ -3,8 +3,8 @@
 #include <Windows.h>
 #include <atomic>
 #include <cstdint>
-#ifdef _DEBUG
 #include <intrin.h>
+#ifdef _DEBUG
 #include <mutex>
 #include <set>
 #endif
@@ -20,6 +20,7 @@ namespace
 {
     constexpr const char*   kClass                 = "UI";
     constexpr std::uintptr_t kSpeakerModeVtblOffset = 0x1A0;
+    constexpr std::uintptr_t kMusicTickSpan         = 0x1000;
 
     using StopMusicPlayer_t = std::uint32_t* (__fastcall*)(void*, std::uint32_t*, std::uint32_t, std::uint8_t);
     using PauseResume_t     = int* (__fastcall*)(void*, int*, std::uint32_t);
@@ -36,12 +37,24 @@ namespace
     PauseResume_t     g_OrigResume  = nullptr;
     SetSpeakerMode_t  g_OrigSpeaker = nullptr;
 
+    std::uintptr_t g_MusicTickBase = 0;
+
     void* g_StopTarget    = nullptr;
     void* g_PauseTarget   = nullptr;
     void* g_ResumeTarget  = nullptr;
     void* g_SpeakerTarget = nullptr;
 
     std::uint32_t ByUser() { return t_programmatic ? 0u : 1u; }
+
+    bool IsMusicTickReturnAddress(const void* returnAddress)
+    {
+        if (!g_MusicTickBase || !returnAddress)
+            return false;
+        const std::uintptr_t ret =
+            reinterpret_cast<std::uintptr_t>(returnAddress);
+        return ret >= g_MusicTickBase
+            && ret < g_MusicTickBase + kMusicTickSpan;
+    }
 
 #ifdef _DEBUG
     int ScanStopCallerChainSEH(std::uint64_t* chain4)
@@ -71,10 +84,8 @@ namespace
         std::lock_guard<std::mutex> lk(s_m);
         if (n == 0 || s_seen.size() >= 16 || !s_seen.insert(chain[0]).second)
             return;
-        LogDebug("[CassetteWalkman] StopMusicPlayer caller (game-code, no ASLR): "
-            "0x%llX <- 0x%llX <- 0x%llX <- 0x%llX (tid=%lu prog=%d state=%u) - map "
-            "the first addr to the EN15.4 dump to see which game path polls the "
-            "walkman stop\n",
+        LogDebug("[CassetteWalkman] StopMusicPlayer caller (no ASLR): 0x%llX <- "
+                 "0x%llX <- 0x%llX <- 0x%llX (tid=%lu prog=%d state=%u)\n",
             static_cast<unsigned long long>(chain[0]),
             static_cast<unsigned long long>(chain[1]),
             static_cast<unsigned long long>(chain[2]),
@@ -88,13 +99,15 @@ namespace
     std::uint32_t* __fastcall hk_Stop(void* player, std::uint32_t* outErr,
                                       std::uint32_t fadeMs, std::uint8_t stopByUser)
     {
+        const bool fromTick = IsMusicTickReturnAddress(_ReturnAddress());
 #ifdef _DEBUG
         LogStopCallerOnce();
 #endif
         if (g_playState.exchange(WalkmanPlayState::Stopped, std::memory_order_relaxed)
                 != WalkmanPlayState::Stopped)
             V_FrameWork::EmitMessage(kClass, "StopWalkMan",
-                g_currentTrackId.load(std::memory_order_relaxed), ByUser());
+                g_currentTrackId.load(std::memory_order_relaxed),
+                fromTick ? 0u : ByUser());
         return g_OrigStop ? g_OrigStop(player, outErr, fadeMs, stopByUser) : nullptr;
     }
 
@@ -152,6 +165,13 @@ void Emit_CassetteWalkmanStart(std::uint32_t trackId)
 
 bool Install_CassetteWalkmanEvents_Hook()
 {
+    g_MusicTickBase = reinterpret_cast<std::uintptr_t>(
+        ResolveGameAddress(gAddr.UpdateMusicPlayer));
+    if (!g_MusicTickBase)
+        Log("[CassetteWalkman] WARN: UpdateMusicPlayer address unavailable for "
+            "this build - a tape that ends on its own reports StopWalkMan with "
+            "isStopByUser=1.\n");
+
     void* stop = ResolveGameAddress(gAddr.StopMusicPlayer);
     if (stop && CreateAndEnableHook(stop, reinterpret_cast<void*>(&hk_Stop),
                                     reinterpret_cast<void**>(&g_OrigStop)))

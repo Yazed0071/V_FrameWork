@@ -25,11 +25,15 @@ namespace
         { "RequestToSetTargetCqcStance",              l_RequestToSetTargetCqcStance },
 
         { "IsThereEnoughSpaceAroundPlayer",           l_IsThereEnoughSpaceAroundPlayer },
+        { "RequestToAttachInDemo",                    l_RequestToAttachInDemo },
+        { "ClearAttachInDemo",                        l_ClearAttachInDemo },
+
+        { "SetQuietHoldCqc",                          l_SetQuietHoldCqc },
+        { "SetQuietInterrogate",                      l_SetQuietInterrogate },
 
         { "RegisterOutfit",                           l_RegisterOutfit },
         { "RegisterHeadOption",                       l_RegisterHeadOption },
         { "ExtendVanillaOutfit",                      l_ExtendVanillaOutfit },
-        { "_ForceVanillaVariant",                     l_ForceVanillaVariant },
         { "GetOutfitInfo",                            l_GetOutfitInfo },
 
         { nullptr,          nullptr }

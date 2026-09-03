@@ -8,9 +8,13 @@
 #include "FoxPathInternal.h"
 #include "MissionCodeGuard.h"
 #include "../equip/EquipDevelop_AddToEquipDevelopTable.h"
+#include "../equip/EquipDevelop_SetEquipUndeveloped.h"
 #include "../player/FobPlayerCharacters.h"
+#include "UniqueCharacterPartsTypePin.h"
+#include "AdditionalMotionTable_GetMtarPathId.h"
 
 #include <atomic>
+#include <cstdio>
 #include <cstdint>
 #include <initializer_list>
 #include <intrin.h>
@@ -18,6 +22,14 @@
 #include "AddressSet.h"
 #include "HookUtils.h"
 #include "log.h"
+#include "../player/PlayerAttachInDemo.h"
+
+static inline bool V_WriteOutfitPartsLoad(std::uint8_t p, std::uint8_t c,
+                                  std::uint8_t pt)
+{
+    return outfit::WriteLivePlayerOutfit(
+        p, c, pt, outfit::OutfitWriteSource::PartsLoad);
+}
 
 #pragma intrinsic(_ReturnAddress)
 
@@ -82,6 +94,8 @@ namespace
     constexpr std::uint64_t kSignalRefreshFv2s             = 0x8483a342fa61ull;
     constexpr std::size_t   kP2GO_OffPerPlayerStruct       = 0x80;
     constexpr std::size_t   kP2GO_OffStateMachinePtr       = 0xb0;
+    constexpr std::size_t   kP2GO_OffSlotCount             = 0x228;
+    constexpr std::size_t   kP2GO_OffLocalPlayerSlot       = 0x234;
     constexpr std::size_t   kPP_OffPlayerTypeArr           = 0x40;
     constexpr std::size_t   kPP_OffPartsTypeArr            = 0x48;
     constexpr std::size_t   kPP_OffCamoTypeArr             = 0x50;
@@ -151,6 +165,7 @@ namespace
     static bool g_InstalledPartsAtCamo           = false;
 
     static void* g_CapturedBlockController = nullptr;
+    static std::atomic<std::uint32_t> g_LocalPartsSlot{ 0 };
 
     static thread_local std::uint8_t t_ActiveCustomFaceSlot = 0;
 
@@ -306,10 +321,10 @@ namespace
         g_CaseDArmTable       = tr + kTableOff;
         g_CaseDArmUnpinActive = true;
 #ifdef _DEBUG
-        LogDebug("[CaseDArmUnpin] installed: site=%p tramp=%p armTable=%p band=0x%02X-0x%02X "
-            "(%zu slots) (arm-enabled custom partsType decodes the REAL tier; "
-            "enableArm=false routes to the engine's own armless path - tier 0, "
-            "hand slot off, flesh knock)\n",
+        LogDebug("[CaseDArmUnpin] installed: site=%p tramp=%p armTable=%p "
+                 "band=0x%02X-0x%02X (%zu slots) - arm-enabled custom partsType "
+                 "decodes the real tier; enableArm=false takes the engine's armless "
+                 "path\n",
             reinterpret_cast<void*>(site), tr, tr + kTableOff,
             outfit::kCustomPartsTypeStart, outfit::kCustomPartsTypeEnd, kBandWidth);
 #endif
@@ -343,6 +358,40 @@ namespace
                 return s.realPartsType;
         }
         return paramPartsType;
+    }
+
+    static std::uint32_t EffectivePartsTypeFor(std::uint32_t playerType,
+                                               std::uint32_t paramPartsType)
+    {
+        if (!outfit::shadow::HasCurrentSlot()) return paramPartsType;
+
+        outfit::shadow::Slot s;
+        if (!outfit::shadow::Get(outfit::shadow::GetCurrentSlot(), &s))
+            return paramPartsType;
+
+        if (s.used
+         && s.realPlayerType != static_cast<std::uint8_t>(playerType & 0xFF))
+        {
+            static std::atomic<int> s_mismatch{ 0 };
+            if (s_mismatch.fetch_add(1, std::memory_order_relaxed) < 8)
+                Log("[OutfitRuntimeParts] the thread-local parts slot holds player "
+                    "type %u but the engine asked for %u - kept the engine's parts "
+                    "type rather than substituting another character's suit\n",
+                    static_cast<unsigned>(s.realPlayerType),
+                    static_cast<unsigned>(playerType & 0xFF));
+            return paramPartsType;
+        }
+        return s.realPartsType;
+    }
+
+    constexpr std::uint32_t kCamoDonorVanillaPartsType = 0x17;
+
+    static bool UsesSnakeCamoDonor(std::uint32_t playerType,
+                                   const outfit::OutfitEntry* entry)
+    {
+        if (!entry) return false;
+        return outfit::IsUniqueCharacterPlayerType(
+            static_cast<std::uint8_t>(playerType & 0xFF));
     }
 
     static std::uint32_t VanillaClampPartsType(std::uint32_t partsType)
@@ -382,14 +431,26 @@ namespace
 
         if (!entry->DeclaresPlayerType(ply))
         {
+            if (!outfit::DeclaresBranchInPartsGroupOf(*entry, ply))
+            {
+                static std::atomic<int> refused{ 0 };
+                if (refused.fetch_add(1, std::memory_order_relaxed) < 8)
+                    Log("[OutfitRuntimeParts] outfit developId=%u partsType="
+                        "0x%02X declares no branch in the parts group player "
+                        "type %u loads from, so its assets would be served "
+                        "against a different skeleton - reverting this slot to "
+                        "vanilla\n",
+                        static_cast<unsigned>(entry->developId),
+                        static_cast<unsigned>(entry->partsType),
+                        static_cast<unsigned>(ply));
+                return false;
+            }
+
             static std::atomic<int> logged{ 0 };
             if (logged.fetch_add(1, std::memory_order_relaxed) < 8)
                 LogDebug("[OutfitRuntimeParts] outfit developId=%u partsType=0x%02X "
-                    "declares no branch for the live player type %u - serving its "
-                    "first declared branch instead of reverting to vanilla. Only the "
-                    "Snake/Avatar pair used to substitute for each other, so a "
-                    "DDMale-only suit worn by an Avatar resolved to nothing and the "
-                    "brick guard healed it away.\n",
+                         "declares no branch for live player type %u - serving its "
+                         "first declared branch instead of reverting to vanilla\n",
                     static_cast<unsigned>(entry->developId),
                     static_cast<unsigned>(entry->partsType),
                     static_cast<unsigned>(ply));
@@ -445,8 +506,15 @@ namespace
         return fallback;
     }
 
-    static std::atomic<std::uint8_t> g_VextServedPt[outfit::shadow::kMaxSlots];
-    static std::atomic<std::uint8_t> g_VextServedVar[outfit::shadow::kMaxSlots];
+    static std::atomic<std::uint8_t> g_VextServedPt[outfit::kPlayerTypeMax];
+    static std::atomic<std::uint8_t> g_VextServedVar[outfit::kPlayerTypeMax];
+    static std::atomic<std::uint8_t> g_UniqueServedParts[outfit::shadow::kMaxSlots] = {
+        std::atomic<std::uint8_t>{0xFF}, std::atomic<std::uint8_t>{0xFF},
+        std::atomic<std::uint8_t>{0xFF}, std::atomic<std::uint8_t>{0xFF}
+    };
+
+    constexpr int kRestreamMaxDeferTicks = 120;
+    static std::atomic<int> g_RestreamPendingTicks{ 0 };
 
     static const outfit::VanillaSuitVariantAsset* ResolveVanillaExtActiveVariant(
         std::uint32_t playerType, std::uint32_t effectivePartsType)
@@ -513,13 +581,50 @@ namespace
     }
 
 
+    std::atomic<unsigned> g_PartsPathCalls{ 0 };
+    std::atomic<unsigned> g_PartsPathLastPt{ 0xFFu };
+    std::atomic<unsigned> g_PartsPathLastParts{ 0xFFu };
+
     static std::uint64_t* __fastcall hkLoadPlayerPartsParts(
         std::uint64_t* outPath, std::uint32_t playerType, std::uint32_t playerPartsType)
     {
-        const std::uint32_t effectivePartsType = EffectivePartsType(playerPartsType);
+        const std::uint32_t effectivePartsType =
+            EffectivePartsTypeFor(playerType, playerPartsType);
+
+        g_PartsPathCalls.fetch_add(1, std::memory_order_relaxed);
+        g_PartsPathLastPt.store(playerType & 0xFFu, std::memory_order_relaxed);
+        g_PartsPathLastParts.store(playerPartsType & 0xFFu, std::memory_order_relaxed);
 
         const outfit::OutfitEntry* entry = nullptr;
-        if (ResolveCustomEntry(playerType, effectivePartsType, &entry))
+        const bool uniqueResolved =
+            ResolveCustomEntry(playerType, effectivePartsType, &entry);
+
+        if (outfit::IsUniqueCharacterPlayerType(
+                static_cast<std::uint8_t>(playerType & 0xFF)))
+        {
+            static std::atomic<int> s_uniqParts{ 0 };
+            if (int n = s_uniqParts.load(std::memory_order_relaxed); n < 24)
+            {
+                s_uniqParts.store(n + 1, std::memory_order_relaxed);
+                const std::uint64_t probePath =
+                    (uniqueResolved && entry)
+                        ? entry->GetVariantPartsPath(
+                              static_cast<std::uint8_t>(playerType & 0xFF),
+                              entry->HasVariants()
+                                  ? outfit::GetActiveVariant(entry->partsType) : 0)
+                        : 0ull;
+                LogDebug("[OutfitRuntimeParts:uniq] PARTS pt=%u partsType=0x%02X "
+                    "effective=0x%02X resolved=%d path=0x%016llX exists=%d\n",
+                    static_cast<unsigned>(playerType),
+                    static_cast<unsigned>(playerPartsType & 0xFF),
+                    static_cast<unsigned>(effectivePartsType & 0xFF),
+                    uniqueResolved ? 1 : 0,
+                    static_cast<unsigned long long>(probePath),
+                    probePath ? (fox::detail::PathExistsByCode(probePath) ? 1 : 0) : -1);
+            }
+        }
+
+        if (uniqueResolved)
         {
             const auto pt = static_cast<std::uint8_t>(playerType & 0xFF);
             const std::uint8_t v = entry->HasVariants()
@@ -569,10 +674,39 @@ namespace
     static std::uint64_t* __fastcall hkLoadPlayerPartsFpk(
         std::uint64_t* outPath, std::uint32_t playerType, std::uint32_t playerPartsType)
     {
-        const std::uint32_t effectivePartsType = EffectivePartsType(playerPartsType);
+        const std::uint32_t effectivePartsType =
+            EffectivePartsTypeFor(playerType, playerPartsType);
 
         const outfit::OutfitEntry* entry = nullptr;
-        if (ResolveCustomEntry(playerType, effectivePartsType, &entry))
+        const bool uniqueFpkResolved =
+            ResolveCustomEntry(playerType, effectivePartsType, &entry);
+
+        if (outfit::IsUniqueCharacterPlayerType(
+                static_cast<std::uint8_t>(playerType & 0xFF)))
+        {
+            static std::atomic<int> s_uniqFpk{ 0 };
+            if (int n = s_uniqFpk.load(std::memory_order_relaxed); n < 24)
+            {
+                s_uniqFpk.store(n + 1, std::memory_order_relaxed);
+                const std::uint64_t probeFpk =
+                    (uniqueFpkResolved && entry)
+                        ? entry->GetVariantFpkPath(
+                              static_cast<std::uint8_t>(playerType & 0xFF),
+                              entry->HasVariants()
+                                  ? outfit::GetActiveVariant(entry->partsType) : 0)
+                        : 0ull;
+                Log("[OutfitRuntimeParts:uniq] FPK pt=%u partsType=0x%02X "
+                    "effective=0x%02X resolved=%d path=0x%016llX exists=%d\n",
+                    static_cast<unsigned>(playerType),
+                    static_cast<unsigned>(playerPartsType & 0xFF),
+                    static_cast<unsigned>(effectivePartsType & 0xFF),
+                    uniqueFpkResolved ? 1 : 0,
+                    static_cast<unsigned long long>(probeFpk),
+                    probeFpk ? (fox::detail::PathExistsByCode(probeFpk) ? 1 : 0) : -1);
+            }
+        }
+
+        if (uniqueFpkResolved)
         {
             const auto pt = static_cast<std::uint8_t>(playerType & 0xFF);
             const std::uint8_t v = entry->HasVariants()
@@ -592,9 +726,10 @@ namespace
                 return WriteFoxPath(outPath, path);
             }
         }
-        if (effectivePartsType < outfit::kCustomPartsTypeStart)
+        if (effectivePartsType < outfit::kCustomPartsTypeStart
+            && playerType < outfit::kPlayerTypeMax)
         {
-            const auto servedIdx = static_cast<std::size_t>(playerType & 0x3);
+            const auto servedIdx = static_cast<std::size_t>(playerType);
             const auto servedPt  = static_cast<std::uint8_t>(effectivePartsType & 0xFF);
             g_VextServedPt[servedIdx].store(servedPt, std::memory_order_relaxed);
             g_VextServedVar[servedIdx].store(outfit::GetActiveVariant(servedPt),
@@ -634,9 +769,9 @@ namespace
         if (int n = s_log.load(std::memory_order_relaxed); n < 4)
         {
             s_log.store(n + 1, std::memory_order_relaxed);
-            LogDebug("[OutfitRuntimeParts] CAMO-CLAMP: out-of-table camo 0x%02X on a "
-                "vanilla realize - clamping to 0 (vanilla camo path table has "
-                "0x75 entries, unbounded in the engine; prevents fatal load)\n",
+            LogDebug("[OutfitRuntimeParts] CAMO-CLAMP: out-of-table camo 0x%02X on "
+                     "a vanilla realize - clamped to 0 (the vanilla camo path table "
+                     "has 0x75 entries and is unbounded in the engine)\n",
                 camo);
         }
         return 0;
@@ -705,6 +840,10 @@ namespace
                                          VanillaClampPartsType(playerPartsType),
                                          ClampVanillaCamo(src));
         }
+        if (UsesSnakeCamoDonor(playerType, entry))
+            return g_OrigLoadCamoFpk(outPath, outfit::kPlayerType_Snake,
+                                     kCamoDonorVanillaPartsType,
+                                     ClampVanillaCamo(playerCamoType));
         return g_OrigLoadCamoFpk(outPath, playerType, VanillaClampPartsType(playerPartsType),
                                  ClampVanillaCamo(playerCamoType));
     }
@@ -807,6 +946,23 @@ namespace
                 return g_OrigLoadCamoFv2(outPath, playerType,
                                          VanillaClampPartsType(playerPartsType),
                                          ClampVanillaCamo(src));
+        }
+        if (UsesSnakeCamoDonor(playerType, entry))
+        {
+            static std::atomic<int> s_log{ 0 };
+            if (int n = s_log.load(std::memory_order_relaxed); n < 4)
+            {
+                s_log.store(n + 1, std::memory_order_relaxed);
+                LogDebug("[OutfitRuntimeParts] CAMO-DONOR: player type %u has no "
+                         "vanilla camo table of its own, so its custom suit takes "
+                         "Snake's camo set for camo 0x%02X - declare camoFv2 on the "
+                         "branch to override\n",
+                    static_cast<unsigned>(playerType & 0xFF),
+                    static_cast<unsigned>(playerCamoType & 0xFF));
+            }
+            return g_OrigLoadCamoFv2(outPath, outfit::kPlayerType_Snake,
+                                     kCamoDonorVanillaPartsType,
+                                     ClampVanillaCamo(playerCamoType));
         }
         return g_OrigLoadCamoFv2(outPath, playerType, VanillaClampPartsType(playerPartsType),
                                  ClampVanillaCamo(playerCamoType));
@@ -1056,12 +1212,11 @@ namespace
 
                 static std::atomic<std::uint64_t> s_loggedMissingFv2{ 0 };
                 if (s_loggedMissingFv2.exchange(code) != code)
-                    LogDebug("[OutfitHeadOption] custom head '%s' face .fv2 is not in "
-                        "any mounted archive (code=0x%016llX pt=%u partsType=0x%02X) "
-                        "- the head model never loads, so the face renders invisible "
-                        "and the face FOVA model slot stays null, which faults the "
-                        "parts apply on the next player rebuild; falling back to the "
-                        "vanilla face for this suit\n",
+                    LogDebug("[OutfitHeadOption] custom head '%s' face .fv2 is in "
+                             "no mounted archive (code=0x%016llX pt=%u "
+                             "partsType=0x%02X) - the face would render invisible "
+                             "and the null FOVA slot faults the next parts apply; "
+                             "falling back to the vanilla face\n",
                         head->name, static_cast<unsigned long long>(code),
                         static_cast<unsigned>(pt),
                         static_cast<unsigned>(effectivePartsType & 0xFF));
@@ -1193,11 +1348,11 @@ namespace
 
                 static std::atomic<std::uint64_t> s_loggedMissingFpk{ 0 };
                 if (s_loggedMissingFpk.exchange(code) != code)
-                    LogDebug("[OutfitHeadOption] custom head '%s' face .fpk is not in "
-                        "any mounted archive (code=0x%016llX pt=%u partsType=0x%02X) "
-                        "- the head model package never mounts, so the face renders "
-                        "invisible even when its .fv2 resolves; falling back to the "
-                        "vanilla face for this suit\n",
+                    LogDebug("[OutfitHeadOption] custom head '%s' face .fpk is in "
+                             "no mounted archive (code=0x%016llX pt=%u "
+                             "partsType=0x%02X) - the face renders invisible even "
+                             "when its .fv2 resolves; falling back to the vanilla "
+                             "face\n",
                         head->name, static_cast<unsigned long long>(code),
                         static_cast<unsigned>(pt),
                         static_cast<unsigned>(effectivePartsType & 0xFF));
@@ -1254,8 +1409,8 @@ namespace
             if (s_diag < 8)
             {
                 ++s_diag;
-                LogDebug("[SnakeHead] HeadOptionFv2 hook: avatar head '%s' replaces "
-                    "the headwear fova (faceId=%u, fv2Code=0x%016llX)\n",
+                LogDebug("[SnakeHead] HeadOptionFv2: avatar head '%s' replaces the "
+                         "headwear fova (faceId=%u fv2Code=0x%016llX)\n",
                     head->name, faceId,
                     static_cast<unsigned long long>(
                         head->faceFv2Code[outfit::kPlayerType_Avatar]));
@@ -1279,8 +1434,8 @@ namespace
             if (s_diag < 8)
             {
                 ++s_diag;
-                LogDebug("[SnakeHead] HeadOptionFpk hook: avatar head '%s' pack "
-                    "mounted in the head-option slot (fpkCode=0x%016llX)\n",
+                LogDebug("[SnakeHead] HeadOptionFpk: avatar head '%s' mounted in "
+                         "the head-option slot (fpkCode=0x%016llX)\n",
                     head->name,
                     static_cast<unsigned long long>(
                         head->faceFpkCode[outfit::kPlayerType_Avatar]));
@@ -1510,6 +1665,7 @@ namespace
     {
         if (!signalPtr || *signalPtr != kSignalRefreshFv2s)
         {
+            Note_PlayerGameObjectImpl(p1);
             if (g_OrigProcessSignal) g_OrigProcessSignal(p1, p2, slot, signalPtr);
             return;
         }
@@ -1532,8 +1688,8 @@ namespace
                     if (origByte >= outfit::kCustomPartsTypeStart
                      && origByte <= outfit::kCustomPartsTypeEnd)
                     {
-                        outfit::shadow::SetCurrentSlot(slot);
                         partsTypeArr[slot] = kProcessSignalSpoofPartsType;
+                        outfit::shadow::SetCurrentSlot(slot);
                         spoofWritten = true;
                     }
                 }
@@ -1541,7 +1697,15 @@ namespace
         }
         __except (EXCEPTION_EXECUTE_HANDLER) { partsTypeArr = nullptr; }
 
-        if (g_OrigProcessSignal) g_OrigProcessSignal(p1, p2, slot, signalPtr);
+        __try
+        {
+            Note_PlayerGameObjectImpl(p1);
+            if (g_OrigProcessSignal) g_OrigProcessSignal(p1, p2, slot, signalPtr);
+        }
+        __finally
+        {
+            if (spoofWritten) outfit::shadow::ClearCurrentSlot();
+        }
 
         if (spoofWritten)
         {
@@ -1552,9 +1716,526 @@ namespace
     }
 
 
+    constexpr int kPartsSettleTicks = 45;
+    constexpr int kPartsStallTicks  = 900;
+    constexpr int kFacialUnstickTicks = 60;
+
+    struct PartsPipeline
+    {
+        bool          valid = false;
+        bool          settled = false;
+        bool          busy  = false;
+        std::uint32_t slot  = 0;
+        std::uint32_t count = 0;
+        std::uint8_t  state[8] = {};
+    };
+
+    static void ReadPartsPipeline(void* self, PartsPipeline* out)
+    {
+        __try
+        {
+            std::uint8_t* base = reinterpret_cast<std::uint8_t*>(self);
+            const std::uint8_t* stateArr =
+                *reinterpret_cast<std::uint8_t**>(base + kP2GO_OffStateMachinePtr);
+            const std::uint32_t count =
+                *reinterpret_cast<std::uint32_t*>(base + kP2GO_OffSlotCount);
+            const std::uint32_t slot =
+                *reinterpret_cast<std::uint32_t*>(base + kP2GO_OffLocalPlayerSlot);
+            if (!stateArr || count > 64u || slot >= count) return;
+
+            out->valid = true;
+            out->slot  = slot;
+            if (slot < outfit::shadow::kMaxSlots)
+                g_LocalPartsSlot.store(slot, std::memory_order_relaxed);
+            out->count = count;
+            for (std::uint32_t i = 0; i < count && i < 8u; ++i)
+                out->state[i] = stateArr[i];
+            const std::uint8_t st = stateArr[slot];
+            out->busy = (st == 1u || st == 2u);
+            out->settled = (st == 3u);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            out->valid = false; out->busy = false; out->settled = false;
+        }
+    }
+
+    static void TracePartsState(const PartsPipeline& pp)
+    {
+        static std::uint8_t s_last[8] = { 0xFEu, 0xFEu, 0xFEu, 0xFEu,
+                                          0xFEu, 0xFEu, 0xFEu, 0xFEu };
+        static std::atomic<int> s_lines{ 0 };
+        static std::atomic<bool> s_wasValid{ false };
+
+        if (!pp.valid)
+        {
+            if (s_wasValid.exchange(false)
+             && s_lines.fetch_add(1, std::memory_order_relaxed) < 128)
+                Log("[PartsState] the parts pipeline became unreadable - every "
+                    "transition after this is invisible until it comes back\n");
+            return;
+        }
+        s_wasValid.store(true, std::memory_order_relaxed);
+
+        for (std::uint32_t i = 0; i < pp.count && i < 8u; ++i)
+        {
+            if (s_last[i] == pp.state[i]) continue;
+            const std::uint8_t prev = s_last[i];
+            s_last[i] = pp.state[i];
+
+            if (s_lines.fetch_add(1, std::memory_order_relaxed) >= 128) return;
+
+            char all[64];
+            int n = 0;
+            for (std::uint32_t j = 0; j < pp.count && j < 8u
+                                   && n + 4 < static_cast<int>(sizeof all); ++j)
+                n += std::snprintf(all + n, sizeof all - n, "%u%s",
+                                   static_cast<unsigned>(pp.state[j]),
+                                   (j + 1 < pp.count && j + 1 < 8u) ? "," : "");
+            all[n < 0 ? 0 : n] = 0;
+
+            Log("[PartsState] slot %u: %u -> %u %s| all=[%s] local=%u/%u "
+                "pt=%u parts=0x%02X camo=0x%02X\n",
+                i, static_cast<unsigned>(prev),
+                static_cast<unsigned>(pp.state[i]),
+                (i == pp.slot) ? "(LOCAL) " : "",
+                all, pp.slot, pp.count,
+                static_cast<unsigned>(outfit::ReadLivePlayerType()),
+                static_cast<unsigned>(outfit::ReadLivePartsType()),
+                static_cast<unsigned>(outfit::ReadLiveSelectorCode()));
+        }
+    }
+
+    std::atomic<int> g_PushLogged{ 0 };
+
+    constexpr std::size_t kP2BC_OffImpl         = 0x10;
+    constexpr std::size_t kP2BC_OffLocalIndex   = 0x18;
+    constexpr std::size_t kBCI_OffResidentCount = 0x168;
+    constexpr std::size_t kBCI_OffStreamCount   = 0x16c;
+    constexpr std::size_t kBCI_OffRequestState  = 0x17c;
+    constexpr std::size_t kBCI_OffBlockState    = 0x1bc;
+    constexpr std::size_t kBCI_OffJobArm        = 0x1080;
+    constexpr std::size_t kBCI_OffJobState      = 0x10c0;
+    constexpr std::size_t kBCI_OffFacialGroup   = 0x160;
+    constexpr std::size_t kBCI_OffFacialReq     = 0x214;
+    constexpr std::size_t kBCI_OffFacialState   = 0x218;
+    constexpr std::size_t kBCI_OffFacialPath    = 0x220;
+    constexpr std::uint32_t kBCI_BlockArrayLen  = 16u;
+
+    constexpr int kPartsGroupsHoldMaxTicks = 240;
+
+    struct PartsBlockView
+    {
+        bool          read     = false;
+        std::uint32_t resident = 0;
+        std::uint32_t streamed = 0;
+        std::uint32_t implSlot = 0;
+        std::int32_t  req      = -1;
+        std::int32_t  req4[4]  = { -1, -1, -1, -1 };
+        std::int32_t  blockState  = -1;
+        std::int32_t  jobArm      = -1;
+        std::int32_t  jobState    = -1;
+        bool          facialGroup = false;
+        std::int32_t  facialReq   = -1;
+        std::int32_t  facialState = -1;
+        std::uint64_t facialPath  = 0;
+    };
+
+    static void ReadPartsBlockView(std::uint32_t playerSlot, PartsBlockView* out)
+    {
+        void* wrapper = g_CapturedBlockController;
+        if (!wrapper) return;
+        __try
+        {
+            auto* w = reinterpret_cast<std::uint8_t*>(wrapper);
+            auto* impl = *reinterpret_cast<std::uint8_t**>(w + kP2BC_OffImpl);
+            if (!impl) return;
+
+            const std::uint32_t localIndex =
+                *reinterpret_cast<std::uint32_t*>(w + kP2BC_OffLocalIndex);
+
+            std::uint32_t block = playerSlot;
+            if (playerSlot == localIndex)     block = 0u;
+            else if (playerSlot < localIndex) block = playerSlot + 1u;
+
+            out->implSlot = block;
+            out->resident =
+                *reinterpret_cast<std::uint32_t*>(impl + kBCI_OffResidentCount);
+            out->streamed =
+                *reinterpret_cast<std::uint32_t*>(impl + kBCI_OffStreamCount);
+
+            for (int i = 0; i < 4; ++i)
+                out->req4[i] = *reinterpret_cast<std::int32_t*>(
+                    impl + kBCI_OffRequestState + static_cast<std::size_t>(i) * 4u);
+
+            if (block < 4u) out->req = out->req4[block];
+
+            if (block < kBCI_BlockArrayLen)
+            {
+                const std::size_t off = static_cast<std::size_t>(block) * 4u;
+                out->blockState = *reinterpret_cast<std::int32_t*>(
+                    impl + kBCI_OffBlockState + off);
+                out->jobArm = *reinterpret_cast<std::int32_t*>(
+                    impl + kBCI_OffJobArm + off);
+                out->jobState = *reinterpret_cast<std::int32_t*>(
+                    impl + kBCI_OffJobState + off);
+            }
+
+            out->facialGroup =
+                *reinterpret_cast<void**>(impl + kBCI_OffFacialGroup) != nullptr;
+            out->facialReq =
+                *reinterpret_cast<std::int32_t*>(impl + kBCI_OffFacialReq);
+            out->facialState =
+                *reinterpret_cast<std::int32_t*>(impl + kBCI_OffFacialState);
+            out->facialPath =
+                *reinterpret_cast<std::uint64_t*>(impl + kBCI_OffFacialPath);
+
+            out->read = true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { out->read = false; }
+    }
+
+    static bool ReleaseAdditionalFacialBlock()
+    {
+        void* wrapper = g_CapturedBlockController;
+        if (!wrapper) return false;
+        __try
+        {
+            auto* w = reinterpret_cast<std::uint8_t*>(wrapper);
+            auto* impl = *reinterpret_cast<std::uint8_t**>(w + kP2BC_OffImpl);
+            if (!impl) return false;
+            if (!*reinterpret_cast<void**>(impl + kBCI_OffFacialGroup)) return false;
+            *reinterpret_cast<std::int32_t*>(impl + kBCI_OffFacialReq) = 0;
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    }
+
+    static bool PartsGroupsLive(const PartsBlockView& v)
+    {
+        if (!v.read) return true;
+        if (v.implSlot >= v.resident + v.streamed) return false;
+        return v.req != 0;
+    }
+
+    static bool ReadEngineIdentitySeh(void* self, std::uint32_t slot,
+                                      std::uint8_t* outPt, std::uint8_t* outParts,
+                                      std::uint8_t* outCamo)
+    {
+        __try
+        {
+            auto* base = reinterpret_cast<std::uint8_t*>(self);
+            void* perPlayer =
+                *reinterpret_cast<void**>(base + kP2GO_OffPerPlayerStruct);
+            if (!perPlayer)
+                return false;
+            auto* pps = reinterpret_cast<std::uint8_t*>(perPlayer);
+
+            auto* ptArr =
+                *reinterpret_cast<std::uint8_t**>(pps + kPP_OffPlayerTypeArr);
+            auto* partsArr =
+                *reinterpret_cast<std::uint8_t**>(pps + kPP_OffPartsTypeArr);
+            auto* camoArr =
+                *reinterpret_cast<std::uint8_t**>(pps + kPP_OffCamoTypeArr);
+            if (!ptArr || !partsArr || !camoArr)
+                return false;
+
+            *outPt    = ptArr[slot];
+            *outParts = partsArr[slot];
+            *outCamo  = camoArr[slot];
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
+    static void PushIdentityToEngineArrays(void* self, const PartsPipeline& pp)
+    {
+        if (!pp.valid) return;
+
+        const std::uint8_t livePT    = outfit::ReadLivePlayerType();
+        const std::uint8_t liveParts = outfit::ReadLivePartsType();
+        const std::uint8_t liveCamo  = outfit::ReadLiveSelectorCode();
+
+        if (!outfit::IsUniqueCharacterPlayerType(livePT)) return;
+        if (liveParts < outfit::kCustomPartsTypeStart
+         || liveParts > outfit::kCustomPartsTypeEnd) return;
+        if (liveCamo == 0) return;
+
+        __try
+        {
+            auto* base = reinterpret_cast<std::uint8_t*>(self);
+            void* perPlayer =
+                *reinterpret_cast<void**>(base + kP2GO_OffPerPlayerStruct);
+            if (!perPlayer) return;
+            auto* pps = reinterpret_cast<std::uint8_t*>(perPlayer);
+
+            auto* ptArr =
+                *reinterpret_cast<std::uint8_t**>(pps + kPP_OffPlayerTypeArr);
+            auto* partsArr =
+                *reinterpret_cast<std::uint8_t**>(pps + kPP_OffPartsTypeArr);
+            auto* camoArr =
+                *reinterpret_cast<std::uint8_t**>(pps + kPP_OffCamoTypeArr);
+            if (!ptArr || !partsArr || !camoArr) return;
+
+            std::uint32_t syncCount = pp.count;
+            if (syncCount == 0 || syncCount > outfit::shadow::kMaxSlots)
+                syncCount = 1;
+            if (pp.slot < outfit::shadow::kMaxSlots && syncCount <= pp.slot)
+                syncCount = pp.slot + 1;
+
+            if (pp.slot >= outfit::shadow::kMaxSlots)
+            {
+                static std::atomic<int> s_slotOob{ 0 };
+                if (s_slotOob.fetch_add(1, std::memory_order_relaxed) < 8)
+                    Log("[OutfitRuntimeParts] the parts pipeline reports slot %u, "
+                        "past the %zu-slot mirror - the engine identity arrays are "
+                        "left alone for it, so that slot keeps whatever suit it "
+                        "already had\n",
+                        pp.slot, outfit::shadow::kMaxSlots);
+                return;
+            }
+
+            for (std::uint32_t i = 0; i < syncCount; ++i)
+            {
+                if (i != pp.slot)
+                {
+                    const bool sameCharacter = (ptArr[i] == livePT);
+                    const bool otherUnique =
+                        outfit::IsUniqueCharacterPlayerType(ptArr[i]);
+                    const bool staleCustom =
+                        partsArr[i] >= outfit::kCustomPartsTypeStart
+                     && partsArr[i] <= outfit::kCustomPartsTypeEnd;
+                    if (!sameCharacter && !otherUnique && !staleCustom)
+                        continue;
+                }
+
+                if (ptArr[i] == livePT
+                 && partsArr[i] == liveParts
+                 && camoArr[i] == liveCamo) continue;
+
+                if (g_PushLogged.fetch_add(1, std::memory_order_relaxed) < 32)
+                    LogDebug("[OutfitRuntimeParts] engine identity arrays for slot %u "
+                        "read parts=0x%02X camo=0x%02X playerType=%u but the live quark "
+                        "holds parts=0x%02X camo=0x%02X playerType=%u - syncing every "
+                        "slot of this pipeline, not just the current one: the re-stream "
+                        "reloads them all, so a slot left on the previous suit "
+                        "re-resolves that outfit and the two slots serve different "
+                        "suits\n",
+                        i,
+                        static_cast<unsigned>(partsArr[i]),
+                        static_cast<unsigned>(camoArr[i]),
+                        static_cast<unsigned>(ptArr[i]),
+                        static_cast<unsigned>(liveParts),
+                        static_cast<unsigned>(liveCamo),
+                        static_cast<unsigned>(livePT));
+
+                ptArr[i]    = livePT;
+                partsArr[i] = liveParts;
+                camoArr[i]  = liveCamo;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+
     static void __fastcall hkUpdatePartsStatus(void* self)
     {
-        fobchars::ReassertSelectedCharacter();
+        PartsPipeline pp;
+        ReadPartsPipeline(self, &pp);
+
+        static std::atomic<int> s_partsIdleTicks { kPartsSettleTicks };
+        static std::atomic<int> s_partsStallTicks{ 0 };
+        static std::atomic<int> s_partsStallLogged{ 0 };
+        static std::atomic<int> s_partsUnservedTicks { 0 };
+        static std::atomic<int> s_partsUnservedLogged{ 0 };
+
+        if (pp.busy)
+        {
+            s_partsIdleTicks.store(0, std::memory_order_relaxed);
+            const int held =
+                s_partsStallTicks.fetch_add(1, std::memory_order_relaxed) + 1;
+
+            if (held >= kFacialUnstickTicks && pp.valid && pp.state[pp.slot] == 1u)
+            {
+                PartsBlockView fv;
+                ReadPartsBlockView(pp.slot, &fv);
+                if (fv.read && fv.facialGroup
+                 && fv.facialReq == 1 && fv.facialState == 1
+                 && ReleaseAdditionalFacialBlock())
+                {
+                    static std::atomic<int> s_facialFreed{ 0 };
+                    if (s_facialFreed.fetch_add(1, std::memory_order_relaxed) < 8)
+                        Log("[OutfitRuntimeParts] the additional facial block this mission "
+                            "created was never handed a path for player type %u, so it is "
+                            "stuck unrequested - IsPartsBlockActiveNew refuses every parts "
+                            "block while that is true, so the engine never builds a player "
+                            "model and the loading screen never ends; released it the way "
+                            "DeleteAdditionalFacialBlock does\n",
+                            static_cast<unsigned>(outfit::ReadLivePlayerType()));
+                }
+            }
+
+            if (held == kPartsStallTicks
+             && s_partsStallLogged.fetch_add(1, std::memory_order_relaxed) < 4)
+            {
+                std::uint8_t ePt = 0xFFu, eParts = 0xFFu, eCamo = 0xFFu;
+                const bool eOk =
+                    pp.valid && ReadEngineIdentitySeh(self, pp.slot, &ePt, &eParts, &eCamo);
+
+                Log("[OutfitRuntimeParts] the local player's parts pipeline has been "
+                    "mid-load for %d straight ticks - the engine is still waiting on a "
+                    "player model, so the loading screen will not end; live "
+                    "partsType=0x%02X camo=0x%02X playerType=%u | localSlot=%u of %u "
+                    "state=[%u %u %u %u]\n",
+                    kPartsStallTicks,
+                    static_cast<unsigned>(outfit::ReadLivePartsType()),
+                    static_cast<unsigned>(outfit::ReadLiveSelectorCode()),
+                    static_cast<unsigned>(outfit::ReadLivePlayerType()),
+                    pp.slot, pp.count,
+                    static_cast<unsigned>(pp.state[0]),
+                    static_cast<unsigned>(pp.state[1]),
+                    static_cast<unsigned>(pp.state[2]),
+                    static_cast<unsigned>(pp.state[3]));
+
+                Log("[OutfitRuntimeParts] stall detail: the identity the engine actually "
+                    "snapshotted for slot %u reads parts=0x%02X camo=0x%02X playerType=%u "
+                    "(%s); the .parts path resolver has run %u time(s) this session, last "
+                    "asked for playerType=%u partsType=0x%02X. A snapshot that does not "
+                    "match the live pair is the pin losing the race; a resolver count that "
+                    "does not move while the machine sits at state 1 means the engine never "
+                    "asked for a model at all\n",
+                    pp.slot,
+                    static_cast<unsigned>(eParts),
+                    static_cast<unsigned>(eCamo),
+                    static_cast<unsigned>(ePt),
+                    eOk ? "read ok" : "arrays unreadable",
+                    g_PartsPathCalls.load(std::memory_order_relaxed),
+                    g_PartsPathLastPt.load(std::memory_order_relaxed),
+                    g_PartsPathLastParts.load(std::memory_order_relaxed));
+
+                PartsBlockView sv;
+                if (pp.valid) ReadPartsBlockView(pp.slot, &sv);
+
+                Log("[OutfitRuntimeParts] stall detail 2: the block controller was %s - "
+                    "local player slot %u maps to parts block %u, resident groups=%u "
+                    "streamed=%u, request state=[%d %d %d %d]. LoadPartsNew returns "
+                    "without asking for a model whenever that block's request state is "
+                    "0, and GetPartsBlockStateNew reports nothing at all once the block "
+                    "index passes resident+streamed\n",
+                    sv.read ? "read ok"
+                            : (g_CapturedBlockController ? "unreadable"
+                                                         : "never captured"),
+                    pp.slot, sv.implSlot, sv.resident, sv.streamed,
+                    sv.req4[0], sv.req4[1], sv.req4[2], sv.req4[3]);
+
+                Log("[OutfitRuntimeParts] stall detail 3: block %u reports load state "
+                    "%d, realize arm=%d job=%d; the additional facial block is %s with "
+                    "request=%d state=%d path=0x%016llX. IsPartsBlockActiveNew needs the "
+                    "block at 3 with request 3, and it needs the additional facial block "
+                    "either absent or at request 3 state 3 - any other combination keeps "
+                    "the parts machine at state 1 forever\n",
+                    sv.implSlot, sv.blockState, sv.jobArm, sv.jobState,
+                    sv.facialGroup ? "live" : "absent",
+                    sv.facialReq, sv.facialState,
+                    static_cast<unsigned long long>(sv.facialPath));
+            }
+        }
+        else
+        {
+            s_partsStallTicks.store(0, std::memory_order_relaxed);
+            const int idle =
+                s_partsIdleTicks.fetch_add(1, std::memory_order_relaxed) + 1;
+
+            PartsBlockView bv;
+            if (pp.valid) ReadPartsBlockView(pp.slot, &bv);
+            bool partsAlive = PartsGroupsLive(bv);
+
+            static std::atomic<int> s_groupsHeldTicks{ 0 };
+            if (!partsAlive)
+            {
+                const int held =
+                    s_groupsHeldTicks.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (held > kPartsGroupsHoldMaxTicks)
+                {
+                    partsAlive = true;
+                    static std::atomic<int> s_releaseLogged{ 0 };
+                    if (s_releaseLogged.fetch_add(1, std::memory_order_relaxed) < 8)
+                        Log("[OutfitRuntimeParts] the block controller has reported the "
+                            "local player's parts block %u unloadable for %d straight "
+                            "ticks (resident=%u streamed=%u request state=%d) - holding "
+                            "the outfit reassert any longer would leave the character "
+                            "and their suit unrestored for the whole mission, so the "
+                            "hold is being released\n",
+                            bv.implSlot, held, bv.resident, bv.streamed, bv.req);
+                }
+                else
+                {
+                    static std::atomic<int> s_deadLogged{ 0 };
+                    if (s_deadLogged.fetch_add(1, std::memory_order_relaxed) < 16)
+                        LogDebug("[OutfitRuntimeParts] the local player's parts block %u "
+                            "cannot be loaded yet (resident=%u streamed=%u request "
+                            "state=%d) - LoadPartsNew returns without asking for a model "
+                            "while that request state is 0, so the outfit reassert is "
+                            "held off until the mission unload's release is undone\n",
+                            bv.implSlot, bv.resident, bv.streamed, bv.req);
+                }
+            }
+            else
+            {
+                s_groupsHeldTicks.store(0, std::memory_order_relaxed);
+            }
+
+            TracePartsState(pp);
+
+            const bool servedSlot = partsAlive &&
+                pp.valid && (pp.settled || pp.state[pp.slot] == 0u);
+
+            if (idle >= kPartsSettleTicks && servedSlot)
+            {
+                s_partsUnservedTicks.store(0, std::memory_order_relaxed);
+
+                static std::atomic<int> s_reassertLogged{ 0 };
+                if (s_reassertLogged.fetch_add(1, std::memory_order_relaxed) < 64)
+                    LogDebug("[OutfitRuntimeParts] outfit reassert allowed at parts "
+                        "load state %u (3 = served, 0 = before the engine snapshots "
+                        "identity) slot=%u of %u\n",
+                        static_cast<unsigned>(pp.state[pp.slot]),
+                        pp.slot, pp.count);
+
+                fobchars::ReassertSelectedCharacter();
+
+                uniquecharpin::ReassertAfterRestore();
+
+                PushIdentityToEngineArrays(self, pp);
+            }
+            else if (idle >= kPartsSettleTicks)
+            {
+                const int held =
+                    s_partsUnservedTicks.fetch_add(
+                        1, std::memory_order_relaxed) + 1;
+                if (held == kPartsStallTicks
+                 && s_partsUnservedLogged.fetch_add(
+                        1, std::memory_order_relaxed) < 4)
+                    Log("[OutfitRuntimeParts] the local player's parts slot has "
+                        "sat at load state %u (3 = served, 0 = pre-snapshot, 0xFF = the "
+                        "parts pipeline could not be read at all) for %d "
+                        "ticks, so the outfit reassert is still being held off - "
+                        "writing the live parts type now would start a load the "
+                        "re-stream can never re-issue; live partsType=0x%02X "
+                        "camo=0x%02X playerType=%u | localSlot=%u of %u\n",
+                        pp.valid ? pp.state[pp.slot] : 0xFFu, held,
+                        static_cast<unsigned>(outfit::ReadLivePartsType()),
+                        static_cast<unsigned>(outfit::ReadLiveSelectorCode()),
+                        static_cast<unsigned>(outfit::ReadLivePlayerType()),
+                        pp.slot, pp.count);
+            }
+        }
+
+        uniquecharpin::SyncSupport(outfit::ReadLivePartsType(),
+                                   outfit::ReadLiveSelectorCode(),
+                                   MissionCodeGuard::ShouldBypassHooks());
 
         EquipDevelopAdd::MaybeRefreshDynamicGates();
 
@@ -1596,7 +2277,8 @@ namespace
                             if (outfit::VanillaExtVariantSlotCount(pt) == 0)
                                 continue;
                             const auto servedIdx =
-                                static_cast<std::size_t>(playerTypeArr[i] & 0x3);
+                                static_cast<std::size_t>(playerTypeArr[i]);
+                            if (servedIdx >= outfit::kPlayerTypeMax) continue;
                             if (g_VextServedPt[servedIdx].load(
                                     std::memory_order_relaxed) != pt) continue;
                             const std::uint8_t want =
@@ -1607,11 +2289,76 @@ namespace
                             if (have == want) continue;
                             vextRestream |= (1u << i);
                         }
+                    if (!MissionCodeGuard::ShouldBypassHooks() && stateMachineArr)
+                    {
+                        bool uniqueChanged = false;
+                        bool anyBusy       = false;
+                        for (std::size_t i = 0;
+                             i < outfit::shadow::kMaxSlots; ++i)
+                        {
+                            if (stateMachineArr[i] == 1
+                             || stateMachineArr[i] == 2) anyBusy = true;
+                            if (!outfit::IsUniqueCharacterPlayerType(
+                                    playerTypeArr[i])) continue;
+                            if (stateMachineArr[i] != 3) continue;
+                            if (g_UniqueServedParts[i].load(
+                                    std::memory_order_relaxed)
+                                != partsTypeArr[i]) uniqueChanged = true;
+                        }
+
+                        outfit::NotePartsPipelineBusy(anyBusy);
+
+                        int pending =
+                            g_RestreamPendingTicks.load(std::memory_order_relaxed);
+                        if (uniqueChanged && pending == 0)
+                            pending = kRestreamMaxDeferTicks;
+
+                        if (pending > 0)
+                        {
+                            const bool deadline = (pending == 1);
+                            if (!anyBusy || deadline)
+                            {
+                                for (std::size_t i = 0;
+                                     i < outfit::shadow::kMaxSlots; ++i)
+                                {
+                                    if (stateMachineArr[i] == 3)
+                                        vextRestream |= (1u << i);
+                                    g_UniqueServedParts[i].store(
+                                        partsTypeArr[i],
+                                        std::memory_order_relaxed);
+                                }
+                                pending = 0;
+
+                                if (deadline && anyBusy)
+                                {
+                                    static std::atomic<int> s_lateLogged{ 0 };
+                                    if (s_lateLogged.fetch_add(
+                                            1, std::memory_order_relaxed) < 8)
+                                        Log("[OutfitRuntimeParts] a slot was still "
+                                            "mid-load %d ticks after the suit "
+                                            "changed, so the re-stream fired "
+                                            "without it - that slot keeps the "
+                                            "previous suit until its next load\n",
+                                            kRestreamMaxDeferTicks);
+                                }
+                            }
+                            else
+                            {
+                                --pending;
+                            }
+                        }
+
+                        g_RestreamPendingTicks.store(
+                            pending, std::memory_order_relaxed);
+                    }
+
                     if (vextRestream)
                     {
                         *reinterpret_cast<std::uint32_t*>(
                             reinterpret_cast<std::uint8_t*>(perPlayer)
                             + kPP_OffVariantChangedBits) |= vextRestream;
+                        if (stateChangedBits)
+                            *stateChangedBits |= vextRestream;
                     }
 #ifdef _DEBUG
                     {
@@ -1620,9 +2367,9 @@ namespace
                         {
                             s_lastRestreamMask = vextRestream;
                             if (vextRestream)
-                                LogDebug("[OutfitRuntimeParts:vextrestream] active "
-                                    "vext variant differs from last-served - "
-                                    "forcing slot re-stream (mask=0x%X)\n",
+                                LogDebug("[OutfitRuntimeParts] active vext variant "
+                                         "differs from last served - forcing a slot "
+                                         "re-stream (mask=0x%X)\n",
                                     vextRestream);
                         }
                     }
@@ -1642,28 +2389,42 @@ namespace
 
                         if (camoTypeArr)
                         {
-                            const std::uint8_t camo = camoTypeArr[i];
+                            std::uint8_t camo = camoTypeArr[i];
                             if (camo < outfit::kCustomSelectorStart
                              || camo > outfit::kCustomSelectorEnd)
                             {
-                                static std::uint16_t s_lastCollisionKey
-                                    [outfit::shadow::kMaxSlots] =
-                                    { 0xFFFFu, 0xFFFFu, 0xFFFFu, 0xFFFFu };
-                                const std::uint16_t ck =
-                                    static_cast<std::uint16_t>((pt << 8) | camo);
-                                if (s_lastCollisionKey[i] != ck)
+                                outfit::shadow::Slot sh{};
+                                if (outfit::shadow::Get(i, &sh)
+                                 && sh.used
+                                 && sh.realPartsType == pt
+                                 && sh.realCamoType >= outfit::kCustomSelectorStart
+                                 && sh.realCamoType <= outfit::kCustomSelectorEnd)
                                 {
-                                    s_lastCollisionKey[i] = ck;
-                                    LogDebug("[OutfitRuntimeParts] camo/partsType "
-                                        "collision guard: slot=%zu partsType=0x%02X "
-                                        "camo=0x%02X ply=%u (vanilla camo in custom "
-                                        "partsType range) - not a real custom slot, "
-                                        "skipping to prevent mis-resolve hang\n",
-                                        i, static_cast<unsigned>(pt),
-                                        static_cast<unsigned>(camo),
-                                        static_cast<unsigned>(ply));
+                                    camo = sh.realCamoType;
                                 }
-                                continue;
+                                else
+                                {
+                                    static std::uint16_t s_lastCollisionKey
+                                        [outfit::shadow::kMaxSlots] =
+                                        { 0xFFFFu, 0xFFFFu, 0xFFFFu, 0xFFFFu };
+                                    const std::uint16_t ck =
+                                        static_cast<std::uint16_t>((pt << 8) | camo);
+                                    if (s_lastCollisionKey[i] != ck)
+                                    {
+                                        s_lastCollisionKey[i] = ck;
+                                        LogDebug("[OutfitRuntimeParts] camo/partsType "
+                                                 "collision guard: slot=%zu "
+                                                 "partsType=0x%02X camo=0x%02X ply=%u - "
+                                                 "the shadow holds no custom selector for "
+                                                 "this parts type either, so this is not a "
+                                                 "real custom slot; skipped to avoid a "
+                                                 "mis-resolve hang\n",
+                                            i, static_cast<unsigned>(pt),
+                                            static_cast<unsigned>(camo),
+                                            static_cast<unsigned>(ply));
+                                    }
+                                    continue;
+                                }
                             }
                         }
 
@@ -1700,7 +2461,6 @@ namespace
                         overrides[i].active       = true;
                         overrides[i].restoreValue = resolvedTier;
 
-                        (void)stateChangedBits;
                         if (!g_CaseDArmUnpinActive && armTypeArr) armTypeArr[i] = 0;
                     }
                 }
@@ -1789,8 +2549,8 @@ namespace
             {
                 s_crateResetLog.store(n + 1, std::memory_order_relaxed);
                 LogDebug("[OutfitRuntimeParts] SupplyCbox pickup of plain vanilla "
-                    "camo 0x%02X -> vext variants reset (crate delivers the "
-                    "base suit, matching menu-equip semantics)\n", camo);
+                         "camo 0x%02X -> vext variants reset (the crate delivers "
+                         "the base suit)\n", camo);
             }
 #endif
         }
@@ -1854,8 +2614,8 @@ namespace
             }
 
             LogDebug("[OutfitRuntimeParts] SupplyCbox camo->partsType: custom camo "
-                "0x%02X UNRESOLVED - leaving vanilla 0 (dangling guard will "
-                "degrade to vanilla suit, no hang)\n", camo);
+                     "0x%02X UNRESOLVED - left at vanilla 0; the dangling guard "
+                     "degrades to the vanilla suit\n", camo);
         }
 
         return r;
@@ -1866,8 +2626,20 @@ namespace
         void* self, std::uint32_t playerIndex,
         LoadPartsPlayerInfo* info, std::uint32_t flags)
     {
-        if (!g_CapturedBlockController && self)
+        if (self && g_CapturedBlockController != self)
+        {
+            if (g_CapturedBlockController)
+            {
+                static std::atomic<int> s_bcRebound{ 0 };
+                if (s_bcRebound.fetch_add(1, std::memory_order_relaxed) < 4)
+                    Log("[OutfitRuntimeParts] the block controller changed - "
+                        "rebound to the live one; the previous pointer was kept "
+                        "for the whole session and its allocation can be reused, "
+                        "which turns the facial-unstick write into heap "
+                        "corruption\n");
+            }
             g_CapturedBlockController = self;
+        }
 
         if (!info)
         {
@@ -1881,8 +2653,8 @@ namespace
         {
             if (outfit::DrainPendingHeads() > 0)
                 LogDebug("[OutfitRuntimeParts] realize carries worn custom head "
-                    "slot 0x%02X while its registration was still deferred - "
-                    "drained the pending heads before resolving the face\n",
+                         "slot 0x%02X while its registration was deferred - drained "
+                         "the pending heads first\n",
                     static_cast<unsigned>(info->playerFaceEquipId));
         }
 
@@ -1933,7 +2705,7 @@ namespace
                     info->playerCamoType  = persistSel;
                     outfit::SetActiveVariant(entry->partsType, variantIdx);
                     if (isRealPlayerSlot)
-                        outfit::WriteLivePlayerOutfit(entry->partsType,
+                        V_WriteOutfitPartsLoad(entry->partsType,
                                                       persistSel,
                                                       info->playerType);
                     feedShadow(entry, variantIdx);
@@ -1941,6 +2713,19 @@ namespace
                 }
                 else
                 {
+                    static std::atomic<int> s_selMissLogged{ 0 };
+                    if (s_selMissLogged.fetch_add(
+                            1, std::memory_order_relaxed) < 12)
+                        Log("[OutfitRuntimeParts] custom selector 0x%02X on slot %u "
+                            "resolved to %s for player type %u - the descriptor "
+                            "names a suit this load cannot serve, so the dangling "
+                            "guard heals it to vanilla and the slot's shadow is "
+                            "dropped\n",
+                            static_cast<unsigned>(camo),
+                            playerIndex,
+                            entry ? "an outfit that does not declare that character"
+                                  : "no registered outfit",
+                            static_cast<unsigned>(info->playerType));
                 }
             }
             else if (camo == 0xFF)
@@ -1962,7 +2747,7 @@ namespace
                     info->playerPartsType = byPending->partsType;
                     info->playerCamoType  = persistSel;
                     if (isRealPlayerSlot)
-                        outfit::WriteLivePlayerOutfit(byPending->partsType,
+                        V_WriteOutfitPartsLoad(byPending->partsType,
                                                       persistSel,
                                                       info->playerType);
                     feedShadow(byPending, pendVar);
@@ -1970,9 +2755,10 @@ namespace
                 }
                 else
                 {
-                    LogDebug("[OutfitRuntimeParts] BRICK-GUARD: broken-custom signal "
-                        "(partsType=0 camo=0xFF) with no pending developId "
-                        "(pt=%u) - healing to vanilla NORMAL (0x01), no hang\n",
+                    LogDebug("[OutfitRuntimeParts] BRICK-GUARD: broken-custom "
+                             "signal (partsType=0 camo=0xFF) with no pending "
+                             "developId (pt=%u) - healing to vanilla NORMAL "
+                             "(0x01)\n",
                         static_cast<unsigned>(info->playerType));
                     info->playerPartsType    = kBionicArmVanillaPartsTypeSubstitute;
                     info->playerCamoType     = 0;
@@ -1980,8 +2766,9 @@ namespace
                     info->playerFaceEquipUnk =
                         static_cast<std::uint8_t>(info->playerFaceEquipUnk & 0xF8);
                     if (isRealPlayerSlot)
-                        outfit::WriteLivePlayerOutfit(
+                        V_WriteOutfitPartsLoad(
                             kBionicArmVanillaPartsTypeSubstitute, 0, info->playerType);
+                    outfit::shadow::Clear(playerIndex);
                 }
             }
         }
@@ -2017,9 +2804,9 @@ namespace
                         variantIdx = outfit::PeekCrateDeliveredVariantIdx();
                     }
                     LogDebug("[OutfitRuntimeParts] MIX-REINTERPRET: vanilla "
-                        "partsType=0x%02X + custom camo=0x%02X (pt=%u) - "
-                        "persisted mixed pair; reinterpreting as custom outfit "
-                        "developId=%u partsType=0x%02X variantIdx=%u\n",
+                             "partsType=0x%02X + custom camo=0x%02X (pt=%u) - "
+                             "persisted mixed pair read as custom outfit "
+                             "developId=%u partsType=0x%02X variantIdx=%u\n",
                         static_cast<unsigned>(info->playerPartsType),
                         static_cast<unsigned>(camo),
                         static_cast<unsigned>(info->playerType),
@@ -2032,7 +2819,7 @@ namespace
                     info->playerCamoType  = persistSel;
                     outfit::SetActiveVariant(mixEntry->partsType, variantIdx);
                     if (isRealPlayerSlot)
-                        outfit::WriteLivePlayerOutfit(mixEntry->partsType,
+                        V_WriteOutfitPartsLoad(mixEntry->partsType,
                                                       persistSel,
                                                       info->playerType);
                     feedShadow(mixEntry, variantIdx);
@@ -2107,10 +2894,10 @@ namespace
             const bool structurallyInvalid = partsInvalid || fpkInvalid;
             if ((partsMissing || fpkMissing) && (anyPresent || structurallyInvalid))
             {
-                LogDebug("[OutfitRuntimeParts] BRICK-GUARD: resolved custom outfit "
-                    "developId=%u partsType=0x%02X has a BAD asset path "
-                    "(parts=%s fpk=%s; pt=%u; evidence=%s) - degrading to "
-                    "vanilla NORMAL (0x01) to prevent infinite load\n",
+                LogDebug("[OutfitRuntimeParts] BRICK-GUARD: custom outfit "
+                         "developId=%u partsType=0x%02X has a BAD asset path "
+                         "(parts=%s fpk=%s pt=%u evidence=%s) - degrading to "
+                         "vanilla NORMAL (0x01) to prevent an infinite load\n",
                     static_cast<unsigned>(entry->developId),
                     static_cast<unsigned>(entry->partsType),
                     partsInvalid ? "INVALID-EXT" : (partsMissing ? "MISSING" : "ok"),
@@ -2124,7 +2911,7 @@ namespace
                     static_cast<std::uint8_t>(info->playerFaceEquipUnk & 0xF8);
                 outfit::shadow::Clear(playerIndex);
                 if (isRealPlayerSlot)
-                    outfit::WriteLivePlayerOutfit(
+                    V_WriteOutfitPartsLoad(
                         kBionicArmVanillaPartsTypeSubstitute, 0, info->playerType);
                 isCustom = false;
                 entry    = nullptr;
@@ -2194,14 +2981,13 @@ namespace
                     info->playerCamoType  =
                         (srcCamo != 0xFF) ? srcCamo : std::uint8_t{0};
                     LogDebug("[OutfitRuntimeParts] BRICK-GUARD: vext variant "
-                        "partsType=0x%02X variantIdx=%u missing/invalid asset - "
-                        "healing to source camo 0x%02X (vanilla base) to prevent "
-                        "infinite load\n",
+                             "partsType=0x%02X variantIdx=%u has a missing/invalid "
+                             "asset - healing to source camo 0x%02X\n",
                         static_cast<unsigned>(vextPartsType),
                         static_cast<unsigned>(vextVariantIdx),
                         static_cast<unsigned>(info->playerCamoType));
                     if (isRealPlayerSlot)
-                        outfit::WriteLivePlayerOutfit(vextPartsType,
+                        V_WriteOutfitPartsLoad(vextPartsType,
                                                       info->playerCamoType,
                                                       info->playerType);
                 }
@@ -2215,7 +3001,7 @@ namespace
                     if (serveCamo != 0xFF)
                         info->playerCamoType = serveCamo;
                     if (isRealPlayerSlot)
-                        outfit::WriteLivePlayerOutfit(vextPartsType, sel,
+                        V_WriteOutfitPartsLoad(vextPartsType, sel,
                                                       info->playerType);
                 }
             }
@@ -2229,10 +3015,10 @@ namespace
                     const std::uint8_t healPartsType =
                         (!danglingPT && pt != 0)
                             ? pt : kBionicArmVanillaPartsTypeSubstitute;
-                    LogDebug("[OutfitRuntimeParts] BRICK-GUARD: unresolved custom suit "
-                        "partsType=0x%02X selector=0x%02X (pt=%u) - healing to "
-                        "vanilla partsType=0x%02X / camo=0 / faceEquip=0x00 to "
-                        "prevent infinite load\n",
+                    LogDebug("[OutfitRuntimeParts] BRICK-GUARD: unresolved custom "
+                             "suit partsType=0x%02X selector=0x%02X (pt=%u) - "
+                             "healing to vanilla partsType=0x%02X, camo 0, "
+                             "faceEquip 0\n",
                         static_cast<unsigned>(pt), static_cast<unsigned>(sel),
                         static_cast<unsigned>(info->playerType),
                         static_cast<unsigned>(healPartsType));
@@ -2242,7 +3028,8 @@ namespace
                     info->playerFaceEquipUnk =
                         static_cast<std::uint8_t>(info->playerFaceEquipUnk & 0xF8);
                     if (isRealPlayerSlot)
-                        outfit::WriteLivePlayerOutfit(healPartsType, 0, info->playerType);
+                        V_WriteOutfitPartsLoad(healPartsType, 0, info->playerType);
+                    outfit::shadow::Clear(playerIndex);
                 }
             }
         }
@@ -2300,9 +3087,9 @@ namespace
                 if (!offered || MissionCodeGuard::ShouldBypassHooks())
                 {
                     LogDebug("[OutfitRuntimeParts] custom head slot 0x%02X dropped "
-                        "at realize: equipId=%u partsType=0x%02X playerType=%u "
-                        "(%s) - the head is not offered by the worn outfit for "
-                        "this player type\n",
+                             "at realize: equipId=%u partsType=0x%02X playerType=%u "
+                             "(%s) - not offered by the worn outfit for this player "
+                             "type\n",
                         static_cast<unsigned>(wornHead),
                         static_cast<unsigned>(h ? h->equipId : 0),
                         static_cast<unsigned>(vpt),
@@ -2349,9 +3136,9 @@ namespace
                 else
                 {
 #ifdef _DEBUG
-                LogDebug("[SnakeHead] LoadPartsNew: normalized custom head faceEquipId "
-                    "0x%02X -> 0x01 (bandana variation) for pt=%u; real slot kept "
-                    "for the face hooks\n",
+                LogDebug("[SnakeHead] LoadPartsNew: custom head faceEquipId 0x%02X "
+                         "normalized to 0x01 (bandana variation) for pt=%u; the "
+                         "real slot is kept for the face hooks\n",
                     static_cast<unsigned>(info->playerFaceEquipId),
                     static_cast<unsigned>(info->playerType));
 #endif
@@ -2418,7 +3205,14 @@ namespace
             __except (EXCEPTION_EXECUTE_HANDLER) { shellTypeInfoPtr = nullptr; }
         }
 
-        g_OrigLoadPartsNew(self, playerIndex, info, flags);
+        __try
+        {
+            g_OrigLoadPartsNew(self, playerIndex, info, flags);
+        }
+        __finally
+        {
+            if (spoofPartsType) outfit::shadow::ClearCurrentSlot();
+        }
 
         t_ActiveCustomFaceSlot = 0;
 
@@ -2437,6 +3231,487 @@ namespace
 
     }
 
+    using ApplyQuietSuitShaderParams_t = void (__fastcall*)(void*, int);
+
+    static ApplyQuietSuitShaderParams_t g_OrigApplyQuietSuitShaderParams = nullptr;
+    static bool g_InstalledQuietSuitShaderParams = false;
+
+    using SuitShaderProduce_t    = void (__fastcall*)(void*, int);
+    using SuitShaderBlendVec_t   = void (__fastcall*)(void*, int, const void*, float);
+    using SuitShaderBlendPair_t  = void (__fastcall*)(void*, int, float, float);
+
+    static SuitShaderProduce_t   g_OrigSuitShaderProduce   = nullptr;
+    static void* g_SuitShaderProduceTarget = nullptr;
+    static SuitShaderBlendVec_t  g_OrigSuitShaderBlendVec  = nullptr;
+    static SuitShaderBlendPair_t g_OrigSuitShaderBlendPair = nullptr;
+    static void* g_SuitShaderBlendVecTarget  = nullptr;
+    static void* g_SuitShaderBlendPairTarget = nullptr;
+
+    static std::atomic<int>  g_QspRepairLogged{ 0 };
+    static std::atomic<int>  g_QspBlendAttempts{ 0 };
+    static std::atomic<bool> g_QspBlendArmed{ false };
+    static std::atomic<bool> g_QspBlendGaveUp{ false };
+    static std::atomic<bool> g_QspFaultLogged{ false };
+    static std::atomic<bool> g_QspBlendFaultLogged{ false };
+
+    constexpr std::size_t    kQSP_OffPlayer2GameObject = 0x138;
+    constexpr std::size_t    kQSP_OffPartsControl      = 0x110;
+    constexpr std::size_t    kQSP_OffModelArray        = 0x30;
+    constexpr std::size_t    kQSP_OffParamEntryCache   = 0x38;
+    constexpr std::size_t    kQSP_OffModelsPerSlot     = 0x40;
+    constexpr std::size_t    kQSP_OffSlotCount         = 0x54;
+    constexpr std::uint32_t  kQSP_KeysPerModel         = 6;
+    constexpr std::size_t    kSPT_OffKeyCount          = 0x20;
+    constexpr std::size_t    kSPT_OffKeyData           = 0x28;
+    constexpr std::size_t    kSPT_OffValueCount        = 0x30;
+    constexpr std::size_t    kSPT_OffValueCapacity     = 0x34;
+    constexpr std::size_t    kSPT_OffValueData         = 0x38;
+    constexpr std::uint32_t  kQSP_MaxSaneModelsPerSlot = 0x100;
+    constexpr std::uint32_t  kQSP_MaxSaneSlotCount     = 0x20;
+    constexpr std::uint32_t  kSPT_MaxSaneParams        = 0x4000;
+    constexpr std::uint32_t  kSPT_EntryIndexMask       = 0x1FFFFFFFu;
+    constexpr std::uintptr_t kQSP_UserAddressCeiling   = 0x0000800000000000ull;
+    constexpr std::size_t    kQSP_VtblProduce          = 1;
+    constexpr std::size_t    kQSP_VtblBlendPair        = 2;
+    constexpr std::size_t    kQSP_VtblBlendVec         = 3;
+    constexpr std::size_t    kQSP_FnScanBytes          = 0x200;
+    constexpr std::size_t    kQSP_FnScanStep           = 0x10;
+    constexpr std::size_t    kQSP_FnHeadBytes          = 0x40;
+    constexpr int            kQSP_MaxBlendAttempts     = 8;
+
+    static bool ShaderParamRangeIsSane(std::uintptr_t data, std::uint32_t count,
+                                       std::uint32_t stride)
+    {
+        if (count > kSPT_MaxSaneParams) return false;
+        if (count == 0) return true;
+        if (data == 0 || data >= kQSP_UserAddressCeiling) return false;
+        return data + static_cast<std::uintptr_t>(count) * stride
+               < kQSP_UserAddressCeiling;
+    }
+
+    static bool ShaderParamTableIsLive(const std::uint8_t* tbl)
+    {
+        if (reinterpret_cast<std::uintptr_t>(tbl) >= kQSP_UserAddressCeiling)
+            return false;
+
+        if (!ShaderParamRangeIsSane(
+                *reinterpret_cast<const std::uintptr_t*>(tbl + kSPT_OffKeyData),
+                *reinterpret_cast<const std::uint32_t*>(tbl + kSPT_OffKeyCount), 8u))
+            return false;
+
+        const std::uint32_t valCount =
+            *reinterpret_cast<const std::uint32_t*>(tbl + kSPT_OffValueCount);
+        const std::uint32_t valCap =
+            *reinterpret_cast<const std::uint32_t*>(tbl + kSPT_OffValueCapacity);
+        if (valCount > valCap) return false;
+
+        return ShaderParamRangeIsSane(
+            *reinterpret_cast<const std::uintptr_t*>(tbl + kSPT_OffValueData),
+            valCap, 16u);
+    }
+
+    static bool CachedEntryIsStale(const std::uint8_t* tbl, const void* cached)
+    {
+        if (!cached) return false;
+
+        if (*reinterpret_cast<const std::uintptr_t*>(tbl + kSPT_OffValueData) == 0)
+            return true;
+
+        const std::uintptr_t keyData =
+            *reinterpret_cast<const std::uintptr_t*>(tbl + kSPT_OffKeyData);
+        const std::uint32_t keyCount =
+            *reinterpret_cast<const std::uint32_t*>(tbl + kSPT_OffKeyCount);
+        if (keyData == 0 || keyCount == 0) return true;
+
+        const std::uintptr_t c = reinterpret_cast<std::uintptr_t>(cached);
+        if (c < keyData) return true;
+        if (c >= keyData + static_cast<std::uintptr_t>(keyCount) * 8u) return true;
+        if (((c - keyData) % 8u) != 0) return true;
+
+        const std::uint32_t valCap =
+            *reinterpret_cast<const std::uint32_t*>(tbl + kSPT_OffValueCapacity);
+        const std::uint32_t idx =
+            *reinterpret_cast<const std::uint32_t*>(
+                reinterpret_cast<const std::uint8_t*>(cached) + 4)
+            & kSPT_EntryIndexMask;
+        return idx >= valCap;
+    }
+
+    static void* ResolveGateParts(void* self)
+    {
+        void* parts = nullptr;
+        __try
+        {
+            auto* go = *reinterpret_cast<std::uint8_t**>(
+                reinterpret_cast<std::uint8_t*>(self) + kQSP_OffPlayer2GameObject);
+            if (go) parts = *reinterpret_cast<void**>(go + kQSP_OffPartsControl);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { parts = nullptr; }
+        return parts;
+    }
+
+    static std::uint32_t SanitizeShaderParamSlot(void* partsControl, int slot)
+    {
+        std::uint32_t repaired = 0;
+        __try
+        {
+            auto* parts = reinterpret_cast<std::uint8_t*>(partsControl);
+            if (parts)
+            {
+                const std::uint32_t slotCount =
+                    *reinterpret_cast<std::uint8_t*>(parts + kQSP_OffSlotCount);
+                const std::uint32_t perSlot = *reinterpret_cast<std::uint32_t*>(
+                    parts + kQSP_OffModelsPerSlot);
+                auto** tables =
+                    *reinterpret_cast<void***>(parts + kQSP_OffModelArray);
+                auto** cache =
+                    *reinterpret_cast<void***>(parts + kQSP_OffParamEntryCache);
+
+                if (slot >= 0 && slotCount != 0
+                 && slotCount <= kQSP_MaxSaneSlotCount
+                 && static_cast<std::uint32_t>(slot) < slotCount
+                 && tables && perSlot != 0
+                 && perSlot <= kQSP_MaxSaneModelsPerSlot)
+                {
+                    const std::uint32_t base =
+                        static_cast<std::uint32_t>(slot) * perSlot;
+                    for (std::uint32_t i = 0; i < perSlot; ++i)
+                    {
+                        auto* tbl =
+                            reinterpret_cast<std::uint8_t*>(tables[base + i]);
+                        if (!tbl) continue;
+
+                        const std::uint32_t first =
+                            (base + i) * kQSP_KeysPerModel;
+
+                        if (!ShaderParamTableIsLive(tbl))
+                        {
+                            tables[base + i] = nullptr;
+                            if (cache)
+                                for (std::uint32_t k = 0; k < kQSP_KeysPerModel; ++k)
+                                    cache[first + k] = nullptr;
+                            ++repaired;
+                            continue;
+                        }
+
+                        if (!cache) continue;
+                        for (std::uint32_t k = 0; k < kQSP_KeysPerModel; ++k)
+                        {
+                            if (!CachedEntryIsStale(tbl, cache[first + k])) continue;
+                            cache[first + k] = nullptr;
+                            ++repaired;
+                        }
+                    }
+                }
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+        return repaired;
+    }
+
+    static void SanitizeAndReport(void* partsControl, int slot)
+    {
+        const std::uint32_t repaired = SanitizeShaderParamSlot(partsControl, slot);
+        if (repaired != 0
+         && g_QspRepairLogged.fetch_add(1, std::memory_order_relaxed) < 8)
+            Log("[OutfitRuntimeParts] retired %u stale shader-param cache entry/"
+                "table(s) on slot %d before the engine read them - a suit change had "
+                "replaced this parts control's parameter tables while its key-entry "
+                "cache still pointed into the previous suit's arrays, and the engine "
+                "only rebuilds that cache while the slot's camo byte is Quiet's 0x74, "
+                "which a custom outfit is not for the first few hundred ms\n",
+                static_cast<unsigned>(repaired), slot);
+    }
+
+    static std::size_t SafeCopyBoundedCode(const void* fn, std::uint8_t* dst,
+                                           std::size_t n)
+    {
+        std::size_t got = 0;
+        while (got + kQSP_FnScanStep <= n)
+        {
+            __try
+            {
+                std::memcpy(dst + got,
+                            static_cast<const std::uint8_t*>(fn) + got,
+                            kQSP_FnScanStep);
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) { break; }
+            got += kQSP_FnScanStep;
+        }
+        return got;
+    }
+
+    static bool SuitShaderBlendPatternMatches(const void* fn)
+    {
+        if (!fn) return false;
+
+        std::uint8_t code[kQSP_FnScanBytes];
+        std::size_t len = SafeCopyBoundedCode(fn, code, sizeof code);
+        if (len < kQSP_FnHeadBytes) return false;
+
+        for (std::size_t i = 0; i + 4 <= len; ++i)
+            if (code[i] == 0xCC && code[i + 1] == 0xCC
+             && code[i + 2] == 0xCC && code[i + 3] == 0xCC) { len = i; break; }
+
+        const std::size_t head = len < kQSP_FnHeadBytes ? len : kQSP_FnHeadBytes;
+        bool readsModelsPerSlot = false;
+        for (std::size_t i = 0; i + 3 <= head; ++i)
+            if (code[i] == 0x8B && code[i + 1] == 0x41 && code[i + 2] == 0x40)
+            { readsModelsPerSlot = true; break; }
+        if (!readsModelsPerSlot) return false;
+
+        for (std::size_t i = 0; i + 6 <= len; ++i)
+            if (code[i] == 0x81 && code[i + 1] == 0xE1
+             && code[i + 2] == 0xFF && code[i + 3] == 0xFF
+             && code[i + 4] == 0xFF && code[i + 5] == 0x1F)
+                return true;
+        return false;
+    }
+
+    static bool SuitShaderProducePatternMatches(const void* fn)
+    {
+        if (!fn) return false;
+
+        std::uint8_t code[kQSP_FnScanBytes];
+        std::size_t len = SafeCopyBoundedCode(fn, code, sizeof code);
+        if (len < kQSP_FnHeadBytes) return false;
+
+        for (std::size_t i = 0; i + 4 <= len; ++i)
+            if (code[i] == 0xCC && code[i + 1] == 0xCC
+             && code[i + 2] == 0xCC && code[i + 3] == 0xCC) { len = i; break; }
+
+        const std::size_t head = len < kQSP_FnHeadBytes ? len : kQSP_FnHeadBytes;
+        bool readsModelsPerSlot = false;
+        for (std::size_t i = 0; i + 3 <= head; ++i)
+            if (code[i] == 0x8B && code[i + 1] == 0x41 && code[i + 2] == 0x40)
+            { readsModelsPerSlot = true; break; }
+        if (!readsModelsPerSlot) return false;
+
+        for (std::size_t i = 0; i + 6 <= len; ++i)
+            if (code[i] == 0x81 && code[i + 1] == 0xE1
+             && code[i + 2] == 0xFF && code[i + 3] == 0xFF
+             && code[i + 4] == 0xFF && code[i + 5] == 0x1F)
+                return false;
+
+        for (std::size_t i = 0; i + 4 <= len; ++i)
+            if (code[i] == 0x48 && code[i + 1] == 0x89
+             && code[i + 2] == 0x04 && code[i + 3] == 0xD1)
+                return true;
+        return false;
+    }
+
+    static bool g_QspSanitizeInProducer = true;
+
+    static void CallSuitShaderProduceGuarded(void* partsControl, int slot)
+    {
+        __try
+        {
+            g_OrigSuitShaderProduce(partsControl, slot);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            if (!g_QspBlendFaultLogged.exchange(true))
+                Log("[OutfitRuntimeParts] the suit shader-param rebuild faulted on "
+                    "slot %d and was swallowed - it wrote into a parameter table the "
+                    "suit change had already freed; the suit keeps the material "
+                    "params it had last frame instead of taking the game down\n", slot);
+        }
+    }
+
+    static void __fastcall hkSuitShaderProduce(void* partsControl, int slot)
+    {
+        if (!g_OrigSuitShaderProduce) return;
+
+        static std::atomic<bool> s_noted{ false };
+        if (!g_QspSanitizeInProducer && !s_noted.exchange(true))
+            Log("[OutfitRuntimeParts] the shader-param rebuild runs unsanitised "
+                "(A/B): the crash guard still wraps it, but stale cache entries are "
+                "no longer retired on this path - if a character that used to render "
+                "comes back, the sanitize was blanking its material params\n");
+
+        if (g_QspSanitizeInProducer)
+            SanitizeAndReport(partsControl, slot);
+        CallSuitShaderProduceGuarded(partsControl, slot);
+    }
+
+    static void CallSuitShaderBlendVecGuarded(void* partsControl, int slot,
+                                              const void* colour, float weight)
+    {
+        __try
+        {
+            g_OrigSuitShaderBlendVec(partsControl, slot, colour, weight);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            if (!g_QspBlendFaultLogged.exchange(true))
+                Log("[OutfitRuntimeParts] the per-frame suit shader-param blend "
+                    "faulted on slot %d and was swallowed - it read a cached "
+                    "parameter entry belonging to a parameter table the suit change "
+                    "had already replaced; the suit keeps last frame's material "
+                    "params instead of taking the game down\n", slot);
+        }
+    }
+
+    static void CallSuitShaderBlendPairGuarded(void* partsControl, int slot,
+                                               float a, float b)
+    {
+        __try
+        {
+            g_OrigSuitShaderBlendPair(partsControl, slot, a, b);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            if (!g_QspBlendFaultLogged.exchange(true))
+                Log("[OutfitRuntimeParts] the per-frame suit shader-param blend "
+                    "faulted on slot %d and was swallowed - it read a cached "
+                    "parameter entry belonging to a parameter table the suit change "
+                    "had already replaced; the suit keeps last frame's material "
+                    "params instead of taking the game down\n", slot);
+        }
+    }
+
+    static void __fastcall hkSuitShaderBlendVec(void* partsControl, int slot,
+                                                const void* colour, float weight)
+    {
+        if (!g_OrigSuitShaderBlendVec) return;
+        SanitizeAndReport(partsControl, slot);
+        CallSuitShaderBlendVecGuarded(partsControl, slot, colour, weight);
+    }
+
+    static void __fastcall hkSuitShaderBlendPair(void* partsControl, int slot,
+                                                 float a, float b)
+    {
+        if (!g_OrigSuitShaderBlendPair) return;
+        SanitizeAndReport(partsControl, slot);
+        CallSuitShaderBlendPairGuarded(partsControl, slot, a, b);
+    }
+
+    static bool ReadPartsControlVtbl(void* partsControl, void** outVec,
+                                     void** outPair, void** outProduce)
+    {
+        bool ok = false;
+        __try
+        {
+            void** vtbl = *reinterpret_cast<void***>(partsControl);
+            if (vtbl)
+            {
+                *outVec  = vtbl[kQSP_VtblBlendVec];
+                *outPair = vtbl[kQSP_VtblBlendPair];
+                *outProduce = vtbl[kQSP_VtblProduce];
+                ok = true;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { ok = false; }
+        return ok;
+    }
+
+    static void InstallSuitShaderBlendGuards(void* partsControl)
+    {
+        if (g_QspBlendArmed.load(std::memory_order_relaxed)) return;
+        if (g_QspBlendAttempts.fetch_add(1, std::memory_order_relaxed)
+                >= kQSP_MaxBlendAttempts)
+        {
+            if (!g_QspBlendGaveUp.exchange(true))
+                Log("[OutfitRuntimeParts] could not identify the per-frame suit "
+                    "shader-param blend on the parts control vtable - the stale "
+                    "cache is still retired whenever the camo-0x74 pass runs, but "
+                    "the window between a custom suit change and that pass stays "
+                    "unguarded\n");
+            return;
+        }
+
+        void* fnVec     = nullptr;
+        void* fnPair    = nullptr;
+        void* fnProduce = nullptr;
+        if (!ReadPartsControlVtbl(partsControl, &fnVec, &fnPair, &fnProduce))
+            return;
+        if (!SuitShaderBlendPatternMatches(fnVec)) return;
+        if (!SuitShaderBlendPatternMatches(fnPair)) return;
+        if (!SuitShaderProducePatternMatches(fnProduce)) return;
+
+        const bool okVec = CreateAndEnableHook(
+            fnVec, reinterpret_cast<void*>(&hkSuitShaderBlendVec),
+            reinterpret_cast<void**>(&g_OrigSuitShaderBlendVec));
+        const bool okPair = CreateAndEnableHook(
+            fnPair, reinterpret_cast<void*>(&hkSuitShaderBlendPair),
+            reinterpret_cast<void**>(&g_OrigSuitShaderBlendPair));
+        const bool okProduce = CreateAndEnableHook(
+            fnProduce, reinterpret_cast<void*>(&hkSuitShaderProduce),
+            reinterpret_cast<void**>(&g_OrigSuitShaderProduce));
+
+        if (!okVec || !okPair || !okProduce)
+        {
+            if (okProduce)
+            {
+                DisableAndRemoveHook(fnProduce);
+                g_OrigSuitShaderProduce = nullptr;
+            }
+            if (okVec)
+            {
+                DisableAndRemoveHook(fnVec);
+                g_OrigSuitShaderBlendVec = nullptr;
+            }
+            if (okPair)
+            {
+                DisableAndRemoveHook(fnPair);
+                g_OrigSuitShaderBlendPair = nullptr;
+            }
+            Log("[OutfitRuntimeParts] the per-frame suit shader-param blend guard "
+                "FAILED to install (vec=%s pair=%s rebuild=%s) - a custom suit "
+                "change can still leave the engine reading or writing a parameter "
+                "table the previous suit owned\n",
+                okVec ? "OK" : "fail", okPair ? "OK" : "fail",
+                okProduce ? "OK" : "fail");
+            return;
+        }
+
+        g_SuitShaderBlendVecTarget  = fnVec;
+        g_SuitShaderBlendPairTarget = fnPair;
+        g_SuitShaderProduceTarget   = fnProduce;
+        g_QspBlendArmed.store(true, std::memory_order_release);
+
+#ifdef _DEBUG
+        LogDebug("[OutfitRuntimeParts] per-frame suit shader-param blend guard armed: "
+                 "vec=%p pair=%p rebuild=%p (identified by the parameter-entry "
+                 "index decode and cache store they carry, taken off the live parts "
+                 "control vtable rather than a hard-coded address)\n",
+                 fnVec, fnPair, fnProduce);
+#endif
+    }
+
+    static void CallQuietSuitShaderParamsGuarded(void* self, int slot)
+    {
+        __try
+        {
+            g_OrigApplyQuietSuitShaderParams(self, slot);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            if (!g_QspFaultLogged.exchange(true))
+                Log("[OutfitRuntimeParts] the engine's suit shader-param pass faulted "
+                    "on slot %d and was swallowed - it reached a model whose "
+                    "shader-param table a suit change had already freed; the suit "
+                    "keeps the material params it had last frame instead of taking "
+                    "the game down\n", slot);
+        }
+    }
+
+    static void __fastcall hkApplyQuietSuitShaderParams(void* self, int slot)
+    {
+        if (!g_OrigApplyQuietSuitShaderParams) return;
+
+        if (self)
+        {
+            void* parts = ResolveGateParts(self);
+            if (parts)
+            {
+                InstallSuitShaderBlendGuards(parts);
+                SanitizeAndReport(parts, slot);
+            }
+        }
+
+        CallQuietSuitShaderParamsGuarded(self, slot);
+    }
 }
 
 namespace outfit
@@ -2475,14 +3750,19 @@ namespace outfit
             static std::atomic<std::uint32_t> s_skips{ 0 };
             const std::uint32_t n = s_skips.fetch_add(1) + 1;
             if (n <= 8 || (n % 256) == 0)
-                LogDebug("[OutfitFacialGuard] skipped facial apply with a wild AnimControl "
-                    "binding (self=%p skip#%u) - prevented SetMotionDataCore AV from a "
-                    "custom-outfit identity mismatch; face left unchanged (never-brick).\n",
+                LogDebug("[OutfitFacialGuard] skipped a facial apply with a wild "
+                         "AnimControl binding (self=%p skip#%u) - prevented a "
+                         "SetMotionDataCore AV; face left unchanged\n",
                     self, static_cast<unsigned>(n));
             return;
         }
         if (g_OrigPluginFacialApplyMotion)
             g_OrigPluginFacialApplyMotion(self, a2, a3, a4);
+    }
+
+    std::uint32_t GetLocalPartsSlot()
+    {
+        return g_LocalPartsSlot.load(std::memory_order_relaxed);
     }
 
     bool Install_OutfitRuntimeParts_Hooks()
@@ -2569,28 +3849,47 @@ namespace outfit
             { ResolveGameAddress(gAddr.LoadAvatarHeadOptionFpk),
               reinterpret_cast<void*>(&hkLoadAvatarHeadOptionFpk),
               reinterpret_cast<void**>(&g_OrigLoadAvatarHeadOptionFpk), &g_InstalledAvatarHeadOptionFpk },
+            { ResolveGameAddress(gAddr.Player2BlockController_ApplyQuietSuitShaderParams),
+              reinterpret_cast<void*>(&hkApplyQuietSuitShaderParams),
+              reinterpret_cast<void**>(&g_OrigApplyQuietSuitShaderParams),
+              &g_InstalledQuietSuitShaderParams },
         };
         for (auto& h : hooks)
         {
             if (h.tgt) *h.installed = CreateAndEnableHook(h.tgt, h.hk, h.orig);
         }
 
+        if (ResolveGameAddress(
+                gAddr.Player2BlockController_ApplyQuietSuitShaderParams)
+            && !g_InstalledQuietSuitShaderParams)
+            Log("[OutfitRuntimeParts] the Quiet suit shader-param guard FAILED to "
+                "install - the engine keeps pushing her vanilla sneaking-suit "
+                "shader params onto custom outfits, and a suit change during that "
+                "pass crashes on a freed model entry\n");
+
+#ifdef _DEBUG
+        LogDebug("[OutfitRuntimeParts] Quiet suit shader-param guard: %s\n",
+                 g_InstalledQuietSuitShaderParams
+                     ? "armed"
+                     : "skip (no address for this build)");
+#endif
+
         g_FoxModelFromHandle = reinterpret_cast<FoxModelFromHandle_t>(
             ResolveGameAddress(gAddr.Fox_ModelFromHandle));
 
         if (g_InstalledUpdatePartsStatus)
+        {
             InstallCaseDArmUnpin();
+            uniquecharpin::Install();
+        }
 
 #ifdef _DEBUG
-        LogDebug("[OutfitRuntimeParts] installed: parts=%s fpk=%s camo=%s diamond=%s "
-            "camoFv2=%s diamondFv2=%s "
-            "bionicArmFv2=%s bionicArmFpk=%s snakeFaceFv2=%s snakeFaceFpk=%s "
-            "avatarFaceFv2=%s avatarFaceFpk=%s avatarFaceEdit=%s "
-            "avatarHeadOptFv2=%s avatarHeadOptFpk=%s "
-            "lpn=%s doesNeedFace=%s doesNeedFaceAvatar=%s setHandSlotEnabled=%s "
-            "isArtificialHandEnabled=%s isArtHandForCurrent=%s processSignal=%s "
-            "updatePartsStatus=%s setUpParts=%s facialCrashGuard=%s "
-            "supplyCamoParts=%s\n",
+        LogDebug("[OutfitRuntimeParts] installed: parts=%s fpk=%s camo=%s "
+                 "diamond=%s camoFv2=%s diamondFv2=%s armFv2=%s armFpk=%s "
+                 "snakeFaceFv2=%s snakeFaceFpk=%s avFaceFv2=%s avFaceFpk=%s "
+                 "avFaceEdit=%s avHeadOptFv2=%s avHeadOptFpk=%s lpn=%s needFace=%s "
+                 "needFaceAv=%s handSlot=%s artHand=%s artHandCur=%s procSignal=%s "
+                 "updParts=%s setUpParts=%s facialGuard=%s supplyCamo=%s\n",
             g_InstalledParts                 ? "OK" : "skip",
             g_InstalledFpk                   ? "OK" : "skip",
             g_InstalledCamo                  ? "OK" : "skip",
@@ -2654,11 +3953,51 @@ namespace outfit
             { &g_InstalledPlayer2ImplSetUpParts, ResolveGameAddress(gAddr.Player2Impl_SetUpParts) },
             { &g_InstalledFacialCrashGuard,      ResolveGameAddress(gAddr.PluginFacial_ApplyMotion) },
             { &g_InstalledPartsAtCamo,           ResolveGameAddress(gAddr.PlayerInfoInterfaceImpl_GetPartsTypeAtCamoType) },
+            { &g_InstalledQuietSuitShaderParams, ResolveGameAddress(gAddr.Player2BlockController_ApplyQuietSuitShaderParams) },
         };
         for (auto& h : hooks)
         {
             if (*h.installed && h.tgt) DisableAndRemoveHook(h.tgt);
             *h.installed = false;
+        }
+
+        if (g_QspBlendArmed.exchange(false, std::memory_order_acq_rel))
+        {
+            if (g_SuitShaderBlendVecTarget)
+                DisableAndRemoveHook(g_SuitShaderBlendVecTarget);
+            if (g_SuitShaderBlendPairTarget)
+                DisableAndRemoveHook(g_SuitShaderBlendPairTarget);
+            if (g_SuitShaderProduceTarget)
+                DisableAndRemoveHook(g_SuitShaderProduceTarget);
+            g_SuitShaderBlendVecTarget  = nullptr;
+            g_SuitShaderBlendPairTarget = nullptr;
+            g_SuitShaderProduceTarget   = nullptr;
+            g_OrigSuitShaderBlendVec    = nullptr;
+            g_OrigSuitShaderBlendPair   = nullptr;
+            g_OrigSuitShaderProduce     = nullptr;
+        }
+
+        if (g_CaseDArmUnpinActive && g_CaseDPatchSite)
+        {
+            DWORD oldp = 0;
+            if (VirtualProtect(g_CaseDPatchSite, 9, PAGE_EXECUTE_READWRITE, &oldp))
+            {
+                std::memcpy(g_CaseDPatchSite, g_CaseDOrigBytes, 9);
+                DWORD tmp = 0;
+                VirtualProtect(g_CaseDPatchSite, 9, oldp, &tmp);
+                FlushInstructionCache(GetCurrentProcess(), g_CaseDPatchSite, 9);
+                if (g_CaseDTrampoline)
+                    VirtualFree(g_CaseDTrampoline, 0, MEM_RELEASE);
+            }
+            else
+            {
+                Log("[CaseDArmUnpin] the patched site could not be restored at "
+                    "uninstall, so its trampoline is LEAKED rather than freed - the "
+                    "jump written into the game still points into it\n");
+            }
+            g_CaseDTrampoline     = nullptr;
+            g_CaseDPatchSite      = nullptr;
+            g_CaseDArmUnpinActive = false;
         }
 
         g_OrigLoadPartsParts            = nullptr;
@@ -2690,6 +4029,8 @@ namespace outfit
         g_OrigGetPartsTypeAtCamoType    = nullptr;
         g_FoxPath_Path                  = nullptr;
         g_CapturedBlockController       = nullptr;
+
+        uniquecharpin::Uninstall();
 
         outfit::shadow::ResetAll("Uninstall_OutfitRuntimeParts_Hooks");
         outfit::shadow::ResetArmTierCache();

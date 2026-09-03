@@ -3,7 +3,7 @@
 #include <cstdint>
 
 bool Set_MissionDeployWarning(std::uint16_t missionCode, const char* langId, const char* colorName);
-void Clear_MissionDeployWarning(std::uint16_t missionCode);
+void Clear_AllMissionDeployWarnings();
 
 bool Install_MissionDeployWarning_Hook();
 bool Uninstall_MissionDeployWarning_Hook();

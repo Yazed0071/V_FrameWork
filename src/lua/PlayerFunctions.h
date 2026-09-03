@@ -9,3 +9,8 @@ int __cdecl l_ClearAllPlayerVoiceFpkOverrides(lua_State* L);
 int __cdecl l_IsBarrierActive(lua_State* L);
 int __cdecl l_RequestToSetTargetCqcStance(lua_State* L);
 int __cdecl l_IsThereEnoughSpaceAroundPlayer(lua_State* L);
+int __cdecl l_RequestToAttachInDemo(lua_State* L);
+int __cdecl l_ClearAttachInDemo(lua_State* L);
+
+int __cdecl l_SetQuietHoldCqc(lua_State* L);
+int __cdecl l_SetQuietInterrogate(lua_State* L);

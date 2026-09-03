@@ -35,6 +35,16 @@ namespace
         {"SQUAT", 1},
         { nullptr, 0.0 }
     };
+    static const ConstEntry V_TppDataBase[] = {
+        {"TAB_MEDICINAL_PLANTS", 0},
+        {"TAB_PHOTO",            1},
+        {"TAB_BLUEPRINT",        2},
+        {"TAB_ANIMAL",           4},
+        {"TAB_CODENAMES",        5},
+        {"TAB_KEY_ITEM",         7},
+        {"TAB_POSTERS",          8},
+        { nullptr, 0.0 }
+    };
     static const ConstEntry V_TppCallSign[] = {
         {"NONE",     0},
         {"ZULU_1",   1},  {"ZOYA_1",     1},
@@ -124,6 +134,41 @@ void Register_V_PlayerCqcStanceConstants(lua_State* L)
     #ifdef _DEBUG
     LogDebug("[V_FrameWork] Registered global V_PlayerCqcStance (%d constants)\n", registered);
     #endif
+}
+
+bool IsListableDataBaseTab(std::int32_t tab)
+{
+    for (const auto& e : V_TppDataBase)
+    {
+        if (!e.name) break;
+        if (static_cast<std::int32_t>(e.value) == tab)
+            return true;
+    }
+    return false;
+}
+
+void Register_V_TppDataBaseConstants(lua_State* L)
+{
+    if (!L || !ResolveLuaApi())
+        return;
+
+    g_lua_pushstring(L, const_cast<char*>("V_TppDataBase"));
+    g_lua_createtable(L, 0, 0);
+
+    int registered = 0;
+    for (const auto& e : V_TppDataBase)
+    {
+        if (!e.name) break;
+        g_lua_pushstring(L, const_cast<char*>(e.name));
+        g_lua_pushnumber(L, e.value);
+        g_lua_settable(L, -3);
+        ++registered;
+    }
+
+    g_lua_settable(L, LUA_GLOBALSINDEX_51);
+#ifdef _DEBUG
+    LogDebug("[V_FrameWork] Registered global V_TppDataBase (%d constants)\n", registered);
+#endif
 }
 
 void Register_V_TppCallSignConstants(lua_State* L)

@@ -312,9 +312,6 @@ static void __fastcall hkLostHostageDiscovery_CheckSightNoticeHostage(
         return;
     }
 
-    if (Soldier_IgnoresNotice(soldierIndex, SoldierNoticeIgnore::kHostage))
-        return;
-
     std::uint16_t beforeIds[LHD_TRACKED_SLOT_COUNT] =
     {
         LHD_INVALID_TARGET_ID, LHD_INVALID_TARGET_ID, LHD_INVALID_TARGET_ID

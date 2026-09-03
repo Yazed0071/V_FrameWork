@@ -18,10 +18,12 @@ extern "C" {
 #include "../../../core/MissionCodeGuard.h"
 #include "../../../core/MissionStateReset.h"
 #include "../../sahelan/PhaseSneakAiImpl_PreUpdate.h"
+#include "../../ui/HeadMarkMarkerEvCall_SetIconSubType.h"
 #include "../../sahelan/RealizedSahelanFovaHook.h"
 #include "../../sahelan/SetEyeLampColorHook.h"
 #include "../../soldier/LostHostageHook.h"
 #include "../../soldier/StepRadioDiscovery.h"
+#include "../../soldier/HostageGender.h"
 #include "../../soldier/VIPSleepFaintHook.h"
 #include "../../soldier/VIPHoldupHook.h"
 #include "../../soldier/VIPRadioHook.h"
@@ -33,6 +35,7 @@ extern "C" {
 #include "../../soldier/NoticeControllerImpl_CheckSightNoticePlayer.h"
 #include "GetGameObjectIdWithIndex.h"
 #include "../../soldier/InterrogationVoiceEvent.h"
+#include "../../soldier/SoldierAkObjIdMap.h"
 #include "../../bullet/Bullet3Impl_ActivateBulletAtEmptyWorkPatch.h"
 #include "../../../core/FoxHashes.h"
 #include "../../../lua/LuaApi.h"
@@ -264,6 +267,119 @@ namespace
         *a = SmartScaleA(*a);
     }
 
+    static int ReadHeadMarkState(lua_State* L, int cmdStackIdx)
+    {
+        g_lua_pushstring(L, const_cast<char*>("state"));
+        g_lua_gettable(L, cmdStackIdx);
+
+        const int t = g_lua_type(L, -1);
+        if (t == LUA_TNIL)
+            return -1;
+
+        if (t == LUA_TNUMBER)
+        {
+            const int n = static_cast<int>(g_lua_tonumber(L, -1));
+            return (n >= 0 && n <= 4) ? n : -2;
+        }
+
+        if (t != LUA_TSTRING)
+            return -2;
+
+        const char* v = g_lua_tolstring(L, -1, nullptr);
+        if (!v || !v[0])                        return -2;
+        if (!_stricmp(v, "neutral"))            return 0;
+        if (!_stricmp(v, "enemy"))              return 1;
+        if (!_stricmp(v, "friendly"))           return 2;
+        if (!_stricmp(v, "friend"))             return 2;
+        if (!_stricmp(v, "powerless"))          return 3;
+        if (!_stricmp(v, "dying"))              return 4;
+        return -2;
+    }
+
+    static bool ReadHeadMarkStop(lua_State* L, int cmdStackIdx, const char* key,
+                                 HeadMarkColourStop& out)
+    {
+        g_lua_pushstring(L, const_cast<char*>(key));
+        g_lua_gettable(L, cmdStackIdx);
+
+        const int t = g_lua_type(L, -1);
+
+        if (t == LUA_TNUMBER)
+        {
+            out.isRgb     = false;
+            out.paletteId = static_cast<std::uint32_t>(
+                static_cast<long long>(g_lua_tonumber(L, -1)));
+            return true;
+        }
+
+        if (t == LUA_TSTRING)
+        {
+            const char* v = g_lua_tolstring(L, -1, nullptr);
+            if (!v || !v[0])
+                return false;
+            out.isRgb     = false;
+            out.paletteId = ::ResolveHeadMarkColourId(v);
+            return out.paletteId != 0u;
+        }
+
+        if (t == LUA_TTABLE)
+        {
+            const int tbl = g_lua_gettop(L);
+            float r = 0.0f, g = 0.0f, b = 0.0f;
+            g_lua_pushstring(L, const_cast<char*>("r")); g_lua_gettable(L, tbl);
+            if (g_lua_type(L, -1) == LUA_TNUMBER) r = static_cast<float>(g_lua_tonumber(L, -1));
+            g_lua_settop(L, tbl);
+            g_lua_pushstring(L, const_cast<char*>("g")); g_lua_gettable(L, tbl);
+            if (g_lua_type(L, -1) == LUA_TNUMBER) g = static_cast<float>(g_lua_tonumber(L, -1));
+            g_lua_settop(L, tbl);
+            g_lua_pushstring(L, const_cast<char*>("b")); g_lua_gettable(L, tbl);
+            if (g_lua_type(L, -1) == LUA_TNUMBER) b = static_cast<float>(g_lua_tonumber(L, -1));
+            g_lua_settop(L, tbl);
+
+            SmartScaleRgb(&r, &g, &b);
+            out.isRgb = true;
+            out.r = r;
+            out.g = g;
+            out.b = b;
+            return true;
+        }
+
+        return false;
+    }
+
+    static unsigned ReadHeadMarkStops(lua_State* L, int cmdStackIdx,
+                                      HeadMarkColourStop* out, unsigned max)
+    {
+        static const char* const kKeys[6] =
+            { "color", "color2", "color3", "color4", "color5", "color6" };
+        static const char* const kAlts[6] =
+            { "colour", "colour2", "colour3", "colour4", "colour5", "colour6" };
+
+        unsigned n = 0;
+        for (unsigned i = 0; i < 6 && n < max; ++i)
+        {
+            HeadMarkColourStop stop{};
+            if (ReadHeadMarkStop(L, cmdStackIdx, kKeys[i], stop) ||
+                ReadHeadMarkStop(L, cmdStackIdx, kAlts[i], stop))
+            {
+                out[n++] = stop;
+            }
+        }
+        return n;
+    }
+
+    static bool ReadHeadMarkBlend(lua_State* L, int cmdStackIdx)
+    {
+        g_lua_pushstring(L, const_cast<char*>("blend"));
+        g_lua_gettable(L, cmdStackIdx);
+        const int t = g_lua_type(L, -1);
+        if (t == LUA_TBOOLEAN)
+            return g_lua_toboolean(L, -1) != 0;
+        if (t == LUA_TNUMBER)
+            return static_cast<int>(g_lua_tonumber(L, -1)) != 0;
+        return true;
+    }
+
     static bool CautionPerCpTarget(lua_State* L)
     {
         const int top = g_lua_gettop(L);
@@ -365,23 +481,21 @@ namespace
         char ripDesc[MAX_PATH + 32];
         DescribeAddr(rip, ripDesc, sizeof(ripDesc));
 
-        Log("[StallWatchdog] %s (report %d): the game thread has been parked at ONE "
-            "instruction for %ums. rip=0x%llX = %s, rsp=0x%llX. If that module is ntdll or "
-            "KERNELBASE this is a BLOCKING WAIT, and the frames below name what the game "
-            "was doing when it decided to wait.\n",
+        Log("[StallWatchdog] %s (report %d): the game thread has been parked at one "
+            "instruction for %ums. rip=0x%llX = %s, rsp=0x%llX. ntdll/KERNELBASE "
+            "there means a blocking wait; the frames below name what it was doing\n",
             kind, shot, heldMs,
             static_cast<unsigned long long>(rip), ripDesc,
             static_cast<unsigned long long>(rsp));
 
         if (logStall)
-            Log("[StallWatchdog]   AT THAT MOMENT the framework logger was already inside "
-                "its own console/disk write for %lums, on thread %lu (game thread is %lu). "
-                "If that thread IS the game thread, the freeze is this DLL's logging "
-                "blocking the game - not anything in the equip or mission code.\n",
+            Log("[StallWatchdog]   the framework logger was already inside a "
+                "console/disk write for %lums on thread %lu (game thread %lu) - if "
+                "those match, this DLL's logging is the freeze\n",
                 logStall, logOwner, static_cast<unsigned long>(tid));
         else
-            Log("[StallWatchdog]   the framework logger was NOT mid-write when the freeze "
-                "was sampled, so the stall is somewhere other than this DLL's logging.\n");
+            Log("[StallWatchdog]   the framework logger was not mid-write when "
+                "sampled, so the stall is elsewhere\n");
 
         int shown = 0;
         for (std::size_t i = 0; i < stackn && shown < 20; ++i)
@@ -396,8 +510,8 @@ namespace
             ++shown;
         }
         if (!shown)
-            Log("[StallWatchdog]   no game-code addresses in the first 1.5KB of stack - "
-                "the thread is parked deep inside a system DLL (a wait or an I/O call)\n");
+            Log("[StallWatchdog]   no game-code addresses in the first 1.5KB of "
+                "stack - parked deep inside a system DLL (a wait or I/O)\n");
     }
 
     static void ReportQuietWindow(DWORD tid, DWORD64 rip, DWORD64 rsp,
@@ -556,19 +670,6 @@ namespace
             g_lua_pushnumber(L, phase);
             return 1;
         }
-        if (idStr == "SetEscapeState")
-        {
-            std::uint32_t gameObjectId = 0;
-            if (g_lua_type(L, 1) == LUA_TNUMBER)
-            {
-                gameObjectId = static_cast<std::uint32_t>(
-                    g_lua_tointeger(L, 1) & 0xFFFFFFFFLL);
-            }
-            const bool enable = ReadCommandBool(L, 2, "enable");
-            g_lua_settop(L, top);
-            ::PlayerTookHostage(gameObjectId, enable);
-            return 0;
-        }
         if (idStr == "SetOccasionalChatList")
         {
             std::uint32_t labels[256];
@@ -672,11 +773,8 @@ namespace
             std::uint8_t mask = 0;
             if (ReadCommandBool(L, 2, "enabled"))
             {
-                if (ReadCommandBool(L, 2, "ignorePlayer"))       mask |= SoldierNoticeIgnore::kPlayer;
-                if (ReadCommandBool(L, 2, "ignoreHostage"))      mask |= SoldierNoticeIgnore::kHostage;
-                if (ReadCommandBool(L, 2, "ignoreNoticeObject")) mask |= SoldierNoticeIgnore::kNoticeObject;
-                if (ReadCommandBool(L, 2, "ignoreCBox"))         mask |= SoldierNoticeIgnore::kCBox;
-                if (ReadCommandBool(L, 2, "ignoreNoise"))        mask |= SoldierNoticeIgnore::kNoise;
+                if (ReadCommandBool(L, 2, "ignorePlayer"))
+                    mask |= SoldierNoticeIgnore::kPlayer;
             }
             g_lua_settop(L, top);
 
@@ -686,15 +784,58 @@ namespace
                 ::Set_SoldierNoticeIgnoreMask(id, mask);
             return r;
         }
+        if (idStr == "SetHeadMarkColor")
+        {
+            const std::uint32_t id    = ReadCommandTargetId(L);
+            const int           state = ReadHeadMarkState(L, 2);
+
+            HeadMarkColourStop stops[6]{};
+            const unsigned     count = ReadHeadMarkStops(L, 2, stops, 6);
+            const float        speed = static_cast<float>(ReadCommandNumberOr(L, 2, "speed", 1.0));
+            const bool         blend = ReadHeadMarkBlend(L, 2);
+            const float        fade  = static_cast<float>(ReadCommandNumberOr(L, 2, "fade", 0.0));
+            g_lua_settop(L, top);
+
+            if (state == -2)
+            {
+                Log("[HeadMarkDying] SetHeadMarkColor was given an unusable state for game object "
+                    "0x%X - pass neutral/alive/friendly/powerless/dying, so that marker keeps its "
+                    "vanilla colour\n", id);
+                return 0;
+            }
+
+            ::SetHeadMarkEntityColour(id, state, stops, count, speed, blend, fade);
+            return 0;
+        }
         if (idStr == "SetVoicePitch")
         {
             const std::uint32_t id = ReadCommandTargetId(L);
             const float cents = static_cast<float>(ReadCommandNumber(L, 2, "pitch"));
             g_lua_settop(L, top);
-            if (!::Set_SoldierVoicePitch(id, cents))
-                Log("[SoldierVoicePitch] ERROR: SetVoicePitch could not apply pitch %.2f to game "
-                    "object 0x%X - that soldier has no live sound object, so it keeps its vanilla "
-                    "voice pitch.\n", cents, id);
+
+            const std::uint32_t targetType = id >> 9;
+
+            if (targetType == TppGameObjectType::kCommandPost)
+            {
+                SoldierAkObjIdMap::SetCommandPostVoiceCents(id & 0x1FFu, cents);
+                return 0;
+            }
+
+            if (targetType != TppGameObjectType::kSoldier2)
+            {
+                Log("[SoldierVoicePitch] ERROR: SetVoicePitch was aimed at game object "
+                    "0x%X, whose type is %u - only a soldier (%u) or a command post (%u) "
+                    "owns a voice this can bias, so the pitch %.2f was applied to "
+                    "nothing. A type of 0 means the target name resolved to no game "
+                    "object at all\n",
+                    id, targetType,
+                    static_cast<std::uint32_t>(TppGameObjectType::kSoldier2),
+                    static_cast<std::uint32_t>(TppGameObjectType::kCommandPost),
+                    cents);
+                return 0;
+            }
+
+            ::Set_SoldierVoicePitch(id, cents);
             return 0;
         }
         if (idStr == "SetVIPImportant")
@@ -715,13 +856,6 @@ namespace
             ::Remove_VIPSleepFaintImportantGameObjectId(id);
             ::Remove_VIPHoldupImportantGameObjectId(id);
             ::Remove_VIPRadioImportantGameObjectId(id);
-            return 0;
-        }
-        if (idStr == "SetUseConcernedHoldupRecovery")
-        {
-            const bool enable = ReadCommandBool(L, 2, "enable");
-            g_lua_settop(L, top);
-            ::Set_UseCustomNonVipHoldupRecovery(enable);
             return 0;
         }
         if (idStr == "SetRadioCallSign")
@@ -747,8 +881,10 @@ namespace
             const std::uint32_t id = ReadCommandTargetId(L);
             const int hostageType = static_cast<int>(ReadCommandNumber(L, 2, "hostageType"));
             const std::uint32_t customLostLabel = ReadCommandStrCode32(L, 2, "customLostLabel");
+            const std::uint32_t customLostLabelTaken =
+                ReadCommandStrCode32(L, 2, "customLostLabelTaken");
             g_lua_settop(L, top);
-            ::Add_LostHostageTrap(id, hostageType, customLostLabel);
+            ::Add_LostHostageTrap(id, hostageType, customLostLabel, customLostLabelTaken);
             ::Add_LostHostageDiscovery(id, hostageType);
             return 0;
         }
@@ -826,6 +962,17 @@ namespace
             ::Set_FriendlyFire(enable);
             return 0;
         }
+        if (idStr == "GetHostageGender")
+        {
+            const std::uint32_t id = ReadCommandTargetId(L);
+            const int gender = HostageGender::Read(id);
+            g_lua_settop(L, top);
+            if (gender == HostageGender::kUnknown)
+                g_lua_pushnil(L);
+            else
+                g_lua_pushnumber(L, static_cast<double>(gender));
+            return 1;
+        }
         if (idStr == "IsFriendlyFire")
         {
             g_lua_settop(L, top);
@@ -853,10 +1000,10 @@ namespace
             if (hasEvent || hasMarkerEvent)
             {
                 if (cp == 0xFFFFFFFFu)
-                    Log("[InterrogationVoice] ERROR: AssignInterrogationWithVoice did not reach the "
-                        "Command Post dispatcher, so its CP index could not be captured - "
-                        "soundDialogueEvent 0x%X / soundDialogueEventMarker 0x%X were NOT "
-                        "registered and this CP keeps the vanilla interrogation voice.\n",
+                    Log("[InterrogationVoice] ERROR: AssignInterrogationWithVoice "
+                        "never reached the CP dispatcher, so its CP index was not "
+                        "captured - soundDialogueEvent 0x%X / marker 0x%X not "
+                        "registered; this CP keeps the vanilla voice\n",
                         ev, evMarker);
                 else
                 {

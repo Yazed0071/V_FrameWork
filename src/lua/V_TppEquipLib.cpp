@@ -146,8 +146,8 @@ namespace
             if (!hasMdt)
             {
                 LogDebug("[AssembleMotion] ReloadEquipMotionData: the table has no "
-                    "'MotionDataTable' field (typo in the mod?) - call refused "
-                    "(the native parser would crash on it)\n");
+                         "'MotionDataTable' field - call refused (the native parser "
+                         "would crash on it)\n");
                 return 0;
             }
         }
@@ -231,73 +231,12 @@ namespace
 
     struct ChimeraMotionEntry
     {
-        int    copyFrom    = 0;
-        double row[11]     = {};
-        int    rowN        = 0;
-        bool   explicitSet = false;
+        int copyFrom = 0;
     };
     static std::mutex g_ChimeraMutex;
     static std::map<int, ChimeraMotionEntry> g_ChimeraEntries;
 
     constexpr int kMotionTableRows = 233;
-
-    static int l_SetReceiverPartMotion(lua_State* L)
-    {
-        if (!ResolveLuaApi())
-            return 0;
-        ChimeraMotion_EnsureWrapInstalled(L);
-        if (LuaType(L, 1) != LUA_TTABLE)
-        {
-            LogDebug("[ChimeraMotion] SetReceiverPartMotion: argument #1 must be a table\n");
-            return 0;
-        }
-        int receiverId = 0;
-        LuaGetField(L, 1, "receiverId");
-        if (LuaIsNumber(L, -1)) receiverId = GetLuaInt(L, -1);
-        LuaPop(L, 1);
-        if (receiverId <= 0)
-        {
-            LogDebug("[ChimeraMotion] SetReceiverPartMotion: missing/invalid receiverId\n");
-            return 0;
-        }
-
-        ChimeraMotionEntry e;
-        LuaGetField(L, 1, "copyFrom");
-        if (LuaIsNumber(L, -1)) e.copyFrom = GetLuaInt(L, -1);
-        LuaPop(L, 1);
-
-        LuaGetField(L, 1, "row");
-        if (LuaType(L, -1) == LUA_TTABLE)
-        {
-            int n = static_cast<int>(LuaObjLen(L, -1));
-            if (n > 11) n = 11;
-            for (int i = 1; i <= n; ++i)
-            {
-                LuaRawGetI(L, -1, i);
-                e.row[i - 1] = LuaIsNumber(L, -1)
-                    ? static_cast<double>(GetLuaNumber(L, -1)) : 0.0;
-                LuaPop(L, 1);
-            }
-            e.rowN = n;
-        }
-        LuaPop(L, 1);
-
-        if (e.copyFrom <= 0 && e.rowN == 0)
-        {
-            LogDebug("[ChimeraMotion] SetReceiverPartMotion receiverId=%d: needs "
-                "copyFrom (vanilla RC_) or row ({11 numbers})\n", receiverId);
-            return 0;
-        }
-
-        e.explicitSet = true;
-        {
-            std::lock_guard<std::mutex> lock(g_ChimeraMutex);
-            g_ChimeraEntries[receiverId] = e;
-        }
-        LogDebug("[ChimeraMotion] receiverId=%d part-motion assignment registered "
-            "(%s)\n", receiverId, e.rowN > 0 ? "raw row" : "copyFrom");
-        return 0;
-    }
 
     static bool RegisterChimeraDefault(int receiverId, int copyFromRc)
     {
@@ -306,17 +245,11 @@ namespace
 
         std::lock_guard<std::mutex> lock(g_ChimeraMutex);
         auto it = g_ChimeraEntries.find(receiverId);
-        if (it != g_ChimeraEntries.end())
-        {
-            if (it->second.explicitSet)
-                return false;
-            if (it->second.copyFrom == copyFromRc)
-                return false;
-        }
+        if (it != g_ChimeraEntries.end() && it->second.copyFrom == copyFromRc)
+            return false;
 
         ChimeraMotionEntry e;
         e.copyFrom = copyFromRc;
-        e.explicitSet = false;
         g_ChimeraEntries[receiverId] = e;
         return true;
     }
@@ -393,23 +326,6 @@ namespace
                 }
                 if (FindAssignmentRowByRc(L, asgAbs, vanillaCount, kv.first))
                     continue;
-                if (kv.second.rowN > 0)
-                {
-                    g_lua_pushnumber(L, static_cast<lua_Number>(n + 1));
-                    g_lua_createtable(L, 12, 0);
-                    g_lua_pushnumber(L, 1.0);
-                    g_lua_pushnumber(L, static_cast<lua_Number>(kv.first));
-                    g_lua_rawset(L, -3);
-                    for (int c = 0; c < kv.second.rowN; ++c)
-                    {
-                        g_lua_pushnumber(L, static_cast<lua_Number>(c + 2));
-                        g_lua_pushnumber(L, kv.second.row[c]);
-                        g_lua_rawset(L, -3);
-                    }
-                    g_lua_rawset(L, asgAbs);
-                    ++n;
-                    continue;
-                }
                 int srcIdx = 0;
                 for (int i = 1; i <= vanillaCount && srcIdx == 0; ++i)
                 {
@@ -450,13 +366,12 @@ namespace
                 ++n;
             }
             if (oobCount > 0)
-                LogDebug("[ChimeraMotion] %d custom receiver(s) (%d..%d) get NO per-receiver "
-                    "part-motion row: the engine's table holds only %d (EquipMotionDataTableImpl "
-                    "arrays at +0x688/+0xa2c/+0xdd0/+0xeb9) and its parser indexes them as row-1 "
-                    "with no bounds check, so writing one would corrupt the neighbouring array. "
-                    "Motion itself is NOT refused - each still animates from its motionFrom "
-                    "donor's row via the SetUpGunInfo redirect. Only an explicitly authored "
-                    "custom bolt/slide row needs that table grown.\n",
+                LogDebug("[ChimeraMotion] %d custom receiver(s) (%d..%d) get no "
+                         "per-receiver part-motion row: the engine's table holds "
+                         "only %d and its parser indexes it as row-1 with no bounds "
+                         "check, so writing one would corrupt the neighbouring "
+                         "array. Each still animates from its motionFrom donor's "
+                         "row\n",
                     oobCount, oobFirst, oobLast, (int)kMotionTableRows);
             g_lua_settop(L, nargs);
         }
@@ -487,9 +402,10 @@ namespace
                 if (!logged)
                 {
                     logged = true;
-                    LogDebug("[AssembleMotion] the global TppEquip table does not exist "
-                        "yet - ReloadEquipMotionData NOT wrapped on this attempt. "
-                        "Custom assemble motions cannot merge until it is.\n");
+                    LogDebug("[AssembleMotion] the global TppEquip table does not "
+                             "exist yet - ReloadEquipMotionData NOT wrapped this "
+                             "attempt; custom assemble motions cannot merge until "
+                             "it is\n");
                 }
             }
             return;
@@ -545,10 +461,11 @@ namespace
                 if (!logged)
                 {
                     logged = true;
-                    LogDebug("[ChimeraMotion] the global TppEquip table does not exist "
-                        "yet - ReloadEquipMotionData2 NOT wrapped on this attempt. "
-                        "Until it is, custom receiver part-motion rows cannot reach "
-                        "the engine and bolts/slides will not move.\n");
+                    LogDebug("[ChimeraMotion] the global TppEquip table does not "
+                             "exist yet - ReloadEquipMotionData2 NOT wrapped this "
+                             "attempt; until it is, custom receiver part-motion "
+                             "rows cannot reach the engine and bolts/slides will "
+                             "not move\n");
                 }
             }
             return;
@@ -693,7 +610,6 @@ namespace
         { "SetDamage",              l_SetDamage },
         { "DeclareDamages",         l_DeclareDamages },
         { "SetAssembleMotion",      l_SetAssembleMotion },
-        { "SetReceiverPartMotion",  l_SetReceiverPartMotion },
         { "SetWeaponHandling",      l_SetWeaponHandling },
 
         { nullptr, nullptr }
@@ -706,9 +622,8 @@ void ChimeraMotion_InheritFromMotionFrom(int receiverId, int motionFromRc)
     if (!RegisterChimeraDefault(receiverId, motionFromRc))
         return;
 
-    LogDebug("[ChimeraMotion] receiverId=%d part-motion inherited from motionFrom=%d "
-        "- the donor's bolt/slide animation now drives this weapon. Call "
-        "SetReceiverPartMotion explicitly to override.\n",
+    LogDebug("[ChimeraMotion] receiverId=%d part-motion inherited from "
+             "motionFrom=%d - the donor's bolt/slide animation drives this weapon\n",
         receiverId, motionFromRc);
 }
 

@@ -107,9 +107,9 @@ bool PartIdWiden_Install()
 
     if (gGameBuild != ::AddressSetRuntime::GameBuild::En_1_0_15_4a)
     {
-        Log("[PartIdWiden] ERROR: the part-id widening patch table is authored for EN 1.0.15.4 "
-            "(day3900) only - every custom part id stays capped at the 255-lane byte on this "
-            "build until the table is ported\n");
+        Log("[PartIdWiden] ERROR: the patch table is authored for EN 1.0.15.4 "
+            "(day3900) only - custom part ids stay capped at the 255-lane byte "
+            "until it is ported\n");
         return false;
     }
 
@@ -119,16 +119,17 @@ bool PartIdWiden_Install()
         std::uint8_t cur[5] = {};
         if (!ReadBytesSEH(addr, cur, kSitesEn154[i].len))
         {
-            Log("[PartIdWiden] ERROR: site %s @%p is unreadable - NOTHING was patched, part ids "
-                "stay byte-capped (a half-applied table would load weapons with garbage parts)\n",
+            Log("[PartIdWiden] ERROR: site %s @%p is unreadable - NOTHING patched, "
+                "part ids stay byte-capped (a half-applied table would load garbage "
+                "parts)\n",
                 kSitesEn154[i].slot, addr);
             return false;
         }
         if (std::memcmp(cur, kSitesEn154[i].expect, static_cast<size_t>(kSitesEn154[i].len)) != 0)
         {
-            Log("[PartIdWiden] ERROR: site %s @%p holds unexpected bytes "
-                "(%02X %02X %02X %02X %02X) - another mod owns this instruction or the build "
-                "differs. NOTHING was patched; part ids stay byte-capped\n",
+            Log("[PartIdWiden] ERROR: site %s @%p holds unexpected bytes (%02X %02X "
+                "%02X %02X %02X) - another mod owns it or the build differs; "
+                "NOTHING patched\n",
                 kSitesEn154[i].slot, addr, cur[0], cur[1], cur[2], cur[3], cur[4]);
             return false;
         }
@@ -139,8 +140,9 @@ bool PartIdWiden_Install()
         void* addr = reinterpret_cast<void*>(static_cast<uintptr_t>(kSitesEn154[i].addr));
         if (!WriteBytes(addr, kSitesEn154[i].patch, kSitesEn154[i].len))
         {
-            Log("[PartIdWiden] ERROR: site %s @%p failed to write - rolling back the %d site(s) "
-                "already applied so the desc layout stays consistent\n",
+            Log("[PartIdWiden] ERROR: site %s @%p failed to write - rolling back "
+                "the %d site(s) already applied to keep the desc layout "
+                "consistent\n",
                 kSitesEn154[i].slot, addr, i);
             for (int j = 0; j < i; ++j)
             {

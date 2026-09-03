@@ -95,9 +95,8 @@ namespace
         {
             if (!g_FirstOverrideLogged.exchange(true))
             {
-                LogDebug("[OutfitCamoBonus] SEH fault during peek - hook "
-                    "no-op'd; check Info+0x%zx / Controller+0x%zx "
-                    "offsets for build drift\n",
+                LogDebug("[OutfitCamoBonus] SEH during peek - hook no-op'd; check "
+                         "Info+0x%zx / Controller+0x%zx for build drift\n",
                     kInfoCamoBufferPtrOffset,
                     kControllerSlotIndexOffset);
             }

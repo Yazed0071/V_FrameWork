@@ -5,11 +5,14 @@
 #include <intrin.h>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <string>
+#include <utility>
 #include <unordered_map>
 #include <unordered_set>
 
 #include "AddressSet.h"
+#include "../equip/EquipDevelop_SetEquipUndeveloped.h"
 #include "FoxHashes.h"
 #include "HookUtils.h"
 #include "MissionCodeGuard.h"
@@ -112,38 +115,105 @@ namespace
                                                           bool important);
     static AnnounceLogView_t g_OrigAnnounceLogViewDiag = nullptr;
 
-    static constexpr DWORD kAnnounceWindowMs = 1000;
-    static constexpr int   kAnnouncePerWindow = 4;
+    static constexpr DWORD kAnnounceReportMs = 1000;
 
-    static DWORD g_AnnounceWindowStart = 0;
-    static int   g_AnnounceInWindow    = 0;
-    static long  g_AnnounceSuppressed  = 0;
-    static DWORD g_LastSuppressReport  = 0;
+    static constexpr std::size_t kCdm_AnnounceLogCursor = 0x1134;
+    static constexpr unsigned    kAnnounceLogSlots      = 100;
+    static constexpr std::size_t kAnnounceQueueMax      = 256;
+
+    static long  g_AnnounceOverflowed  = 0;
+    static DWORD g_LastOverflowReport  = 0;
+    static DWORD g_LastHoldReport      = 0;
+
+    struct DeferredAnnounce
+    {
+        std::string  text;
+        std::uint8_t type      = 0;
+        std::uint8_t se        = 0;
+        bool         important = false;
+    };
+
+    static std::deque<DeferredAnnounce> g_AnnounceQueue;
+    static void*                        g_AnnounceCdm = nullptr;
+
+    static unsigned AnnounceLogCursor(void* cdm)
+    {
+        if (!cdm)
+            return kAnnounceLogSlots;
+        return *(reinterpret_cast<const std::uint8_t*>(cdm) + kCdm_AnnounceLogCursor);
+    }
+
+    static bool EngineHasAnnounceRoom(void* cdm)
+    {
+        if (!cdm)
+            return false;
+        return AnnounceLogCursor(cdm) + 1u < kAnnounceLogSlots;
+    }
+
+    static void DeferAnnounce(const char* text, std::uint8_t type, std::uint8_t se,
+                              bool important, DWORD now)
+    {
+        if (g_AnnounceQueue.size() >= kAnnounceQueueMax)
+        {
+            const long lost = ++g_AnnounceOverflowed;
+            if (now - g_LastOverflowReport >= kAnnounceReportMs)
+            {
+                g_LastOverflowReport = now;
+                Log("[AnnounceLog] the deferred announce queue is full at %zu "
+                    "entries (%ld lost) - announces are being raised faster than "
+                    "the log types them out, so these newest lines never reach "
+                    "the announce HUD\n",
+                    kAnnounceQueueMax, lost);
+            }
+            return;
+        }
+        if (now - g_LastHoldReport >= kAnnounceReportMs)
+        {
+            g_LastHoldReport = now;
+            Log("[AnnounceLog] the engine announce log has no free slot (display cursor "
+                "%u of %u) - %zu line(s) are held back and are released as the HUD types "
+                "the backlog out\n",
+                AnnounceLogCursor(g_AnnounceCdm),
+                static_cast<unsigned>(kAnnounceLogSlots),
+                g_AnnounceQueue.size() + 1u);
+        }
+
+        DeferredAnnounce entry;
+        entry.text      = text ? text : "";
+        entry.type      = type;
+        entry.se        = se;
+        entry.important = important;
+        g_AnnounceQueue.push_back(std::move(entry));
+    }
+
+    static void DrainDeferredAnnounces()
+    {
+        if (g_AnnounceQueue.empty() || !g_OrigAnnounceLogViewDiag || !g_AnnounceCdm)
+            return;
+        while (!g_AnnounceQueue.empty() && EngineHasAnnounceRoom(g_AnnounceCdm))
+        {
+            const DeferredAnnounce entry = std::move(g_AnnounceQueue.front());
+            g_AnnounceQueue.pop_front();
+            g_OrigAnnounceLogViewDiag(g_AnnounceCdm, entry.text.c_str(),
+                                      entry.type, entry.se, entry.important);
+        }
+    }
 
     static std::uint64_t __fastcall hkAnnounceLogViewDiag(void* cdm, const char* text,
                                                           std::uint8_t type, std::uint8_t se,
                                                           bool important)
     {
-        const DWORD now = GetTickCount();
-        if (now - g_AnnounceWindowStart >= kAnnounceWindowMs)
-        {
-            g_AnnounceWindowStart = now;
-            g_AnnounceInWindow    = 0;
-        }
+        if (cdm)
+            g_AnnounceCdm = cdm;
 
-        if (++g_AnnounceInWindow > kAnnouncePerWindow)
+        if (g_UpdateInstalled)
         {
-            const long dropped = ++g_AnnounceSuppressed;
-            if (now - g_LastSuppressReport >= kAnnounceWindowMs)
+            DrainDeferredAnnounces();
+            if (!g_AnnounceQueue.empty() || !EngineHasAnnounceRoom(cdm))
             {
-                g_LastSuppressReport = now;
-                LogDebug("[AnnounceLog] announce flood declined (%ld dropped so far; >%d per %ums). "
-                    "The engine caps lifetime announces at 100 via a byte counter at "
-                    "CommonDataManager+0x1134 that only resets once the log drains, so a burst "
-                    "permanently kills the announce HUD. Declining keeps that counter intact.\n",
-                    dropped, kAnnouncePerWindow, kAnnounceWindowMs);
+                DeferAnnounce(text, type, se, important, GetTickCount());
+                return 1;
             }
-            return 0;
         }
 
 #ifdef _DEBUG
@@ -153,10 +223,19 @@ namespace
         if (s_viewCount < 12)
         {
             ++s_viewCount;
-            LogDebug("[AnnounceDiag] AnnounceLogView #%d caller=%p type=%u se=%u important=%d text=\"%s\"\n",
+            const std::int32_t announcing = EquipDevelop_AnnouncingDevelopId();
+            char origin[64];
+            if (announcing != 0)
+                std::snprintf(origin, sizeof(origin), "developId=%d",
+                              announcing);
+            else
+                std::snprintf(origin, sizeof(origin),
+                              "developId=none (the game raised this, not V_FrameWork)");
+
+            LogDebug("[AnnounceDiag] AnnounceLogView #%d caller=%p type=%u se=%u important=%d %s text=\"%s\"\n",
                 s_viewTotal, _ReturnAddress(),
                 static_cast<unsigned>(type), static_cast<unsigned>(se),
-                important ? 1 : 0, text ? text : "(null)");
+                important ? 1 : 0, origin, text ? text : "(null)");
         }
 #endif
 
@@ -244,6 +323,7 @@ namespace
 
     static void __fastcall hkTypingLogActUpdate(void* self)
     {
+        DrainDeferredAnnounces();
         if (self)
         {
             auto* seIdPtr = reinterpret_cast<std::uint32_t*>(reinterpret_cast<char*>(self) + kTLA_SeId);
@@ -513,6 +593,8 @@ bool Uninstall_AnnounceLogHook()
     g_GetGraphState     = nullptr;
     g_VoicePlay         = nullptr;
     g_UpdateInstalled   = false;
+    g_AnnounceQueue.clear();
+    g_AnnounceCdm = nullptr;
     g_Overrides.clear();
     g_SeIdByType.clear();
     g_Payloads.clear();

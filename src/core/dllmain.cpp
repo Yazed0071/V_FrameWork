@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "../hooks/outfit/UniqueCharacterDefaultOutfit.h"
 #include <Windows.h>
 #include <atomic>
 #include <cstdio>
@@ -99,10 +100,13 @@ static DWORD WINAPI InitThread(LPVOID)
     V_FrameWorkState::Load();
 
     g_HookBatchMode = true;
+    uniquedefaultoutfit::QueueDevelopRowsEarly();
+
     const bool allOk = FeatureModuleRegistry::Instance().InstallAll(hGame);
     g_HookBatchMode = false;
     const MH_STATUS applySt = MH_ApplyQueued();
     Log("[DLL] FeatureModuleRegistry::InstallAll -> %s\n", allOk ? "OK" : "PARTIAL/FAIL");
+    V_FrameWorkState::NoteInstallOutcome(allOk && applySt == MH_OK);
     if (applySt == MH_OK)
         LogDebug("[DLL] MH_ApplyQueued -> OK\n");
     else
@@ -123,9 +127,8 @@ static void UninstallAll(bool processTerminating)
         V_FrameWorkState::AbandonFlusherThread();
 
 #ifdef _DEBUG
-        Log("[DLL] DLL_PROCESS_DETACH: process terminating, skipping "
-            "FeatureModule uninstall (per MSDN guidance - other DLLs "
-            "may already be unloaded). OS will reclaim address space.\n");
+        Log("[DLL] DLL_PROCESS_DETACH: process terminating, skipping FeatureModule "
+            "uninstall (other DLLs may already be unloaded)\n");
 #endif
         fflush(stdout);
         fflush(stderr);
@@ -166,6 +169,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved)
             return TRUE;
 
         ResolveAddressSet(GetModuleHandleW(nullptr));
+        HookArena::ReserveEarly();
         equip::PreApplyDevelopArrayGrowPatches();
 
         HANDLE hThread = CreateThread(nullptr, 0, InitThread, nullptr, 0, nullptr);

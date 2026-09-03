@@ -53,10 +53,9 @@ namespace
             {
                 s_Warned = true;
                 LogDebug("[UiTextureGuard] a UI material texture slot holds the "
-                    "corrupt streamer descriptor %p - the bind is skipped so "
-                    "fox::gr::TextureStreamerStatus does not fault on it; "
-                    "that slot draws untextured instead of crashing the "
-                    "render worker\n", src);
+                         "corrupt streamer descriptor %p - bind skipped so "
+                         "fox::gr::TextureStreamerStatus cannot fault; that slot "
+                         "draws untextured\n", src);
             }
             return 0;
         }

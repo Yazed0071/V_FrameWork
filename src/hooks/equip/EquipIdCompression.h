@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 
 namespace EquipIdCompression
 {
@@ -68,9 +69,13 @@ namespace EquipIdCompression
         return equipId >= kExtendedEquipIdFirst && equipId <= kExtendedEquipIdLast;
     }
 
+    using ExtendedReservedFn = std::function<bool(std::int32_t)>;
+
     void  MarkExtendedEquipIdUsed(std::int32_t equipId);
     bool  IsExtendedEquipIdUsed(std::int32_t equipId);
     std::int32_t FindLowestFreeExtendedEquipId();
+    std::int32_t FindLowestFreeExtendedEquipId(
+        const ExtendedReservedFn& isReservedElsewhere);
 
     template <typename SessionUsedFn>
     inline std::int32_t FindLowestFreeEquipId(SessionUsedFn isSessionUsed,

@@ -709,29 +709,30 @@ bool Install_BarrierEffectSpawn()
 {
     InitFakeStorage();
 
-    g_IsFobMode = reinterpret_cast<BoolFn>(gAddr.Barrier_IsFobMode);
+    g_IsFobMode = reinterpret_cast<BoolFn>(
+        ResolveGameAddress(gAddr.Barrier_IsFobMode));
     if (!g_IsFobMode)
         Log("[Barrier] WARNING: no IsFobMode address for %s; the dome cannot stand down inside FOB missions (may render there too).\n", GetGameBuildName(gGameBuild));
 
-    g_SetEquipItemCallRet = reinterpret_cast<void*>(gAddr.Barrier_EquipItemCallRet);
+    g_SetEquipItemCallRet = ResolveGameAddress(gAddr.Barrier_EquipItemCallRet);
     if (!g_SetEquipItemCallRet)
         Log("[Barrier] WARNING: no equip return-address for %s; the dome may not trigger when the Energy Wall is equipped.\n", GetGameBuildName(gGameBuild));
 
-    void* git = reinterpret_cast<void*>(gAddr.Barrier_GetItemId);
+    void* git = ResolveGameAddress(gAddr.Barrier_GetItemId);
     const bool gitOk = git && CreateAndEnableHook(git, reinterpret_cast<void*>(&hk_GetItemId), reinterpret_cast<void**>(&g_OrigGetItemId));
     g_GitAddr = gitOk ? git : nullptr;
     if (!gitOk)
         Log("[Barrier] ERROR: could not hook equip detection (addr 0x%llX) for %s; the Energy Wall dome will never appear on this build.\n",
             static_cast<unsigned long long>(gAddr.Barrier_GetItemId), GetGameBuildName(gGameBuild));
 
-    void* upd = reinterpret_cast<void*>(gAddr.Barrier_Updater);
+    void* upd = ResolveGameAddress(gAddr.Barrier_Updater);
     const bool updOk = upd && CreateAndEnableHook(upd, reinterpret_cast<void*>(&hk_Update), reinterpret_cast<void**>(&g_Orig));
     g_UpdAddr = updOk ? upd : nullptr;
     if (!updOk)
         Log("[Barrier] ERROR: could not hook the effect updater (addr 0x%llX) for %s; the Energy Wall dome will not render on this build.\n",
             static_cast<unsigned long long>(gAddr.Barrier_Updater), GetGameBuildName(gGameBuild));
 
-    void* dtor = reinterpret_cast<void*>(BarrierPlayerDtorAddr());
+    void* dtor = ResolveGameAddress(BarrierPlayerDtorAddr());
     if (dtor && CreateAndEnableHook(dtor, reinterpret_cast<void*>(&hk_PlayerDtor), reinterpret_cast<void**>(&g_OrigDtor)))
         g_DtorAddr = dtor;
     else if (!dtor)

@@ -19,6 +19,3 @@ void Remove_VIPRadioImportantGameObjectId(std::uint32_t gameObjectId);
 
 
 void Clear_VIPRadioImportantGameObjectIds();
-
-
-bool Try_GetSingleRecentImportantCorpseIndex(std::uint16_t& outSoldierIndex, bool& outIsOfficer);

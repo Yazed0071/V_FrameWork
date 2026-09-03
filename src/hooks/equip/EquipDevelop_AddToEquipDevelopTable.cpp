@@ -1,5 +1,6 @@
-#include "pch.h"
+﻿#include "pch.h"
 #include "EquipDevelop_AddToEquipDevelopTable.h"
+#include "../outfit/UniqueCharacterDefaultOutfit.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -14,6 +15,7 @@
 
 #include "AddressSet.h"
 #include "DevelopArrayGrow.h"
+#include "CustomBluePrint.h"
 #include "FoxHashes.h"
 #include "HookUtils.h"
 #include "log.h"
@@ -26,6 +28,7 @@
 #include "../outfit/EquipDevelopControllerImpl_GetSuitDevelopInfoIndex.h"
 #include "../outfit/ShadowState.h"
 #include "EquipDevelop_SetEquipUndeveloped.h"
+#include "TppEquip_ReloadEquipIdTable.h"
 
 namespace equip { int MenuGridRowCap(); }
 
@@ -135,6 +138,7 @@ namespace
     constexpr const char* kGateTableKey     = "V_FrameWork_DevGates";
     struct DynamicGate { std::uint16_t flowIndex; std::string key; };
     std::vector<DynamicGate> g_DynamicGates;
+    std::vector<DynamicGate> g_BluePrintGates;
     std::atomic<bool>        g_AnyDynamicGate{ false };
     volatile DWORD           g_LastGateRefreshTick = 0;
     constexpr DWORD          kGateRefreshThrottleMs = 300;
@@ -199,6 +203,44 @@ namespace
         g_AnyDynamicGate.store(true, std::memory_order_relaxed);
     }
 
+    static void RegisterBluePrintGate(std::uint16_t flowIndex,
+                                     const std::string& key)
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_StateMutex);
+        for (DynamicGate& gt : g_BluePrintGates)
+        {
+            if (gt.key == key)
+            {
+                gt.flowIndex = flowIndex;
+                return;
+            }
+        }
+        g_BluePrintGates.push_back({ flowIndex, key });
+        g_AnyDynamicGate.store(true, std::memory_order_relaxed);
+    }
+
+    static bool RefreshBluePrintGates()
+    {
+        std::vector<DynamicGate> gates;
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_StateMutex);
+            if (g_BluePrintGates.empty())
+                return false;
+            gates = g_BluePrintGates;
+        }
+
+        bool anyRevealed = false;
+        for (const DynamicGate& gt : gates)
+        {
+            const bool visible   = bluePrint::HasKey(gt.key.c_str());
+            const bool wasHidden = outfit::IsDevelopHidden(gt.flowIndex);
+            outfit::SetDevelopHidden(gt.flowIndex, !visible);
+            if (wasHidden && visible)
+                anyRevealed = true;
+        }
+        return anyRevealed;
+    }
+
     static int EvalOneGateSEH(lua_State* L, std::uint16_t flowIndex,
                               const char* key)
     {
@@ -212,9 +254,9 @@ namespace
                 if (!s_logged)
                 {
                     s_logged = true;
-                    LogDebug("[EquipDevelop] dynamic gate eval skipped (key=%s): the running "
-                        "Lua frame is too tight to push safely; it re-evaluates on the next "
-                        "R&D menu build. Skipping prevents a Lua stack-overflow crash.\n",
+                    LogDebug("[EquipDevelop] dynamic gate eval skipped (key=%s): "
+                             "the Lua frame is too tight to push safely - "
+                             "re-evaluates on the next R&D menu build\n",
                         key);
                 }
                 return 0;
@@ -257,11 +299,17 @@ namespace
 
     static void RefreshDynamicGatesImpl()
     {
+        bool bluePrintRevealed = RefreshBluePrintGates();
+
         std::vector<DynamicGate> gates;
         {
             std::lock_guard<std::recursive_mutex> lock(g_StateMutex);
             if (g_DynamicGates.empty())
+            {
+                if (bluePrintRevealed)
+                    EquipDevelop_TriggerRequirementsMetAnnounce();
                 return;
+            }
             gates = g_DynamicGates;
         }
         if (!ResolveLuaApi())
@@ -270,7 +318,7 @@ namespace
         if (!L)
             return;
 
-        bool anyRevealed = false;
+        bool anyRevealed = bluePrintRevealed;
         for (const DynamicGate& gt : gates)
             if (EvalOneGateSEH(L, gt.flowIndex, gt.key.c_str()) == 1)
                 anyRevealed = true;
@@ -344,6 +392,231 @@ namespace
         {
             return false;
         }
+    }
+
+    constexpr std::size_t kResultRankLimitByte = 0x50;
+
+    using EdcDevelopIdToRow_t = std::uint16_t (__fastcall*)(void* self, std::uint16_t developId);
+    using EdcIsRankLimited_t  = std::uint8_t  (__fastcall*)(void* self, std::uint16_t row);
+
+    constexpr std::size_t kEdcDevelopIdToRowSlot = 0x0E0 / sizeof(void*);
+    constexpr std::size_t kEdcIsRankLimitedSlot  = 0x490 / sizeof(void*);
+
+    using RankLimitBinding_t = int (__fastcall*)(void* luaState);
+
+    static RankLimitBinding_t g_OrigRankLimitBinding = nullptr;
+    static bool               g_RankLimitBindingHooked = false;
+    static int                g_RankLimitBindingCalls  = 0;
+
+    static constexpr std::uintptr_t kRankLimitBindingAddr = 0x140A96BB0ull;
+    static constexpr std::uint8_t   kRankLimitBindingPrologue[10] =
+        { 0x48, 0x89, 0x5C, 0x24, 0x18, 0x56, 0x48, 0x83, 0xEC, 0x20 };
+
+    static int __fastcall hkRankLimitBinding(void* luaState)
+    {
+        const int n = ++g_RankLimitBindingCalls;
+        if (n <= 8)
+            Log("[EquipDevelop] IsResultRankLimitedItem called by the game (call #%d) - "
+                "the result-rank path DOES consult this binding\n", n);
+        return g_OrigRankLimitBinding ? g_OrigRankLimitBinding(luaState) : 0;
+    }
+
+    static void EnsureRankLimitBindingHook()
+    {
+        if (g_RankLimitBindingHooked)
+            return;
+        g_RankLimitBindingHooked = true;
+
+        void* target = ResolveGameAddress(kRankLimitBindingAddr);
+        if (!target)
+            return;
+
+        __try
+        {
+            if (std::memcmp(target, kRankLimitBindingPrologue,
+                            sizeof(kRankLimitBindingPrologue)) != 0)
+            {
+                Log("[EquipDevelop] IsResultRankLimitedItem prologue mismatch at %p - "
+                    "call tracing skipped on this build\n", target);
+                return;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return;
+        }
+
+        if (!CreateAndEnableHook(target, reinterpret_cast<void*>(&hkRankLimitBinding),
+                                 reinterpret_cast<void**>(&g_OrigRankLimitBinding)))
+            Log("[EquipDevelop] IsResultRankLimitedItem call tracer failed to install at %p\n",
+                target);
+    }
+
+    static bool ProbeEngineRankLimit(void* controller, std::uint16_t developId,
+                                     std::uint16_t knownRow, std::uint16_t& outEngineRow,
+                                     std::uint8_t& outEngineFlag, std::uint8_t& outFlagAtKnownRow)
+    {
+        __try
+        {
+            auto** vtbl = *reinterpret_cast<void***>(controller);
+            if (!vtbl)
+                return false;
+
+            auto toRow = reinterpret_cast<EdcDevelopIdToRow_t>(vtbl[kEdcDevelopIdToRowSlot]);
+            auto isLim = reinterpret_cast<EdcIsRankLimited_t>(vtbl[kEdcIsRankLimitedSlot]);
+            if (!toRow || !isLim)
+                return false;
+
+            outEngineRow      = toRow(controller, developId);
+            outEngineFlag     = isLim(controller, outEngineRow);
+            outFlagAtKnownRow = isLim(controller, knownRow);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
+    static void ProbeNameFieldOffset(void* controller, std::uint16_t flowIndex,
+                                    std::uint16_t developId,
+                                    const std::vector<FieldValue>& constFields)
+    {
+        static std::atomic<int> s_logged{ 0 };
+        static std::atomic<int> s_p30{ -1 };
+        static std::atomic<int> s_p07{ -1 };
+        static std::atomic<int> s_p06{ -1 };
+
+        bool anyString = false;
+        for (const FieldValue& f : constFields)
+            if (f.type == FieldValue::Type::String
+                && f.name.size() == 3 && f.name[0] == 0x70) { anyString = true; break; }
+        if (!anyString) return;
+
+        __try
+        {
+            const std::uint8_t* rec =
+                reinterpret_cast<const std::uint8_t*>(controller)
+                + kDevelopRecordArrayOffset
+                + static_cast<std::size_t>(flowIndex) * kDevelopRecordStride;
+
+            char found[640];
+            found[0] = 0;
+            std::size_t used = 0;
+
+            for (const FieldValue& f : constFields)
+            {
+                if (f.type != FieldValue::Type::String) continue;
+                if (f.name.size() != 3 || f.name[0] != 0x70) continue;
+
+                const std::uint64_t want = FoxHashes::StrCode64(f.stringValue);
+                if (!want) continue;
+
+                int off = -1, width = 0;
+                for (std::size_t o = 0; o + 8 <= kDevelopRecordStride; ++o)
+                {
+                    const std::uint64_t q =
+                        *reinterpret_cast<const std::uint64_t*>(rec + o);
+                    const std::uint32_t d =
+                        *reinterpret_cast<const std::uint32_t*>(rec + o);
+                    if (q == want) { off = static_cast<int>(o); width = 64; break; }
+                    if ((q & 0xFFFFFFFFFFFFull) == (want & 0xFFFFFFFFFFFFull))
+                    { off = static_cast<int>(o); width = 48; break; }
+                    if (d == static_cast<std::uint32_t>(want))
+                    { off = static_cast<int>(o); width = 32; break; }
+                }
+
+                if (off >= 0)
+                {
+                    if (f.name == "p30") s_p30.store(off, std::memory_order_relaxed);
+                    else if (f.name == "p07") s_p07.store(off, std::memory_order_relaxed);
+                    else if (f.name == "p06") s_p06.store(off, std::memory_order_relaxed);
+                }
+
+                if (used + 40 < sizeof(found))
+                {
+                    const int n = _snprintf_s(found + used, sizeof(found) - used,
+                                              _TRUNCATE, "%s=rec+0x%X(%db) ",
+                                              f.name.c_str(), off, width);
+                    if (n > 0) used += static_cast<std::size_t>(n);
+                }
+            }
+
+            EquipDevelop_SetRecordNameOffsets(
+                s_p30.load(std::memory_order_relaxed),
+                s_p07.load(std::memory_order_relaxed),
+                s_p06.load(std::memory_order_relaxed));
+
+            if (s_logged.fetch_add(1, std::memory_order_relaxed) < 6)
+                Log("[EquipDevelop] record string fields row=%u developId=%u: %s"
+                    "(-1 = that field is not stored in the 0x68-byte record; p30 "
+                    "langEquipRealName is the field the own-suit row name is "
+                    "written to)\n", flowIndex, developId, found);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+
+    static void ProbeResultRankLimitBit(std::uint16_t flowIndex,
+                                        std::uint16_t developId,
+                                        const std::vector<FieldValue>& fields)
+    {
+        const FieldValue* p31 = nullptr;
+        for (const FieldValue& f : fields)
+        {
+            if (f.name == "p31")
+            {
+                p31 = &f;
+                break;
+            }
+        }
+        if (!p31)
+            return;
+
+        int requested = -1;
+        if (p31->type == FieldValue::Type::Boolean)
+            requested = p31->boolValue ? 1 : 0;
+        else if (p31->type == FieldValue::Type::Number)
+            requested = static_cast<int>(p31->numberValue);
+
+        EnsureRankLimitBindingHook();
+
+        void* controller = EquipDevelop_ResolveDevelopController();
+        if (!controller)
+        {
+            Log("[EquipDevelop] p31 probe: develop controller unresolved - cannot tell "
+                "whether isResultRankLimited landed on row %u\n", flowIndex);
+            return;
+        }
+
+        __try
+        {
+            const std::uint8_t* rec =
+                reinterpret_cast<const std::uint8_t*>(controller)
+                + kDevelopRecordArrayOffset
+                + static_cast<std::size_t>(flowIndex) * kDevelopRecordStride;
+            const std::uint16_t rowDevelopId = *reinterpret_cast<const std::uint16_t*>(rec);
+            const std::uint32_t word =
+                *reinterpret_cast<const std::uint32_t*>(rec + kResultRankLimitByte);
+            std::uint16_t engineRow  = 0xFFFF;
+            std::uint8_t  engineFlag = 0xFF;
+            std::uint8_t  flagAtRow  = 0xFF;
+            const bool engineOk = ProbeEngineRankLimit(controller, developId, flowIndex,
+                                                       engineRow, engineFlag, flagAtRow);
+
+            Log("[EquipDevelop] p31 probe: row=%u developId=%u rowDevelopId=%u "
+                "word@rec+0x50=0x%08X bit7=%u bit15=%u requested=%d | engine: %s "
+                "row=%u flagAtEngineRow=%u flagAtRealRow=%u\n",
+                flowIndex, developId, rowDevelopId, word,
+                (word >> 7) & 1u, (word >> 15) & 1u, requested,
+                engineOk ? "ok" : "FAULTED", engineRow, engineFlag, flagAtRow);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            Log("[EquipDevelop] p31 probe: record read faulted at row %u - "
+                "isResultRankLimited state unknown\n", flowIndex);
+        }
+
+        ProbeNameFieldOffset(controller, flowIndex, developId, fields);
     }
 
     static void BuildNativeRecordSnapshot(std::vector<NativeRecordSnap>& out)
@@ -1561,12 +1834,21 @@ namespace
 
         for (const FieldValue& field : fields)
         {
+            if (field.type == FieldValue::Type::String && field.name == "p05")
+                continue;
+            if (field.type == FieldValue::Type::Number && field.name == "p05"
+                && bluePrint::SlotFromPublicId(field.numberValue) > 0)
+                continue;
+            if (field.type == FieldValue::Type::Boolean && field.name == "p05")
+                continue;
             if (field.wide)
                 SetWideField(L, tableIndex, field.name.c_str(), field.wideValue);
             else if (field.type == FieldValue::Type::Number)
                 SetIntField(L, tableIndex, field.name.c_str(), field.numberValue);
             else if (field.type == FieldValue::Type::String)
                 SetStringField(L, tableIndex, field.name.c_str(), field.stringValue);
+            else if (field.type == FieldValue::Type::Boolean)
+                SetIntField(L, tableIndex, field.name.c_str(), field.boolValue ? 1 : 0);
         }
     }
 
@@ -1586,6 +1868,8 @@ namespace
                 SetIntField(L, tableIndex, field.name.c_str(), field.numberValue);
             else if (field.type == FieldValue::Type::String)
                 SetStringField(L, tableIndex, field.name.c_str(), field.stringValue);
+            else if (field.type == FieldValue::Type::Boolean)
+                SetIntField(L, tableIndex, field.name.c_str(), field.boolValue ? 1 : 0);
         }
     }
 
@@ -1620,9 +1904,8 @@ namespace
         if (!FindFirstEmptyRecordIndex(recController, appendIdx))
         {
             if (ShouldLogPark(req.key))
-                LogDebug("[EquipDevelop] PARKED key=%s: the develop record array "
-                    "has no empty slot left - it will page into the R&D "
-                    "window when one frees.\n", req.key.c_str());
+                LogDebug("[EquipDevelop] PARKED key=%s: no empty develop record "
+                         "slot - pages in when one frees\n", req.key.c_str());
             ParkKeyForPaging(req.key);
             return false;
         }
@@ -1631,10 +1914,9 @@ namespace
             static std::atomic<std::uint32_t> s_HoleLogged{ 0xFFFFFFFFu };
             if (s_HoleLogged.exchange(appendIdx,
                                       std::memory_order_relaxed) != appendIdx)
-                LogDebug("[EquipDevelop] inject held: first empty develop row %u "
-                    "is inside the vanilla band (native table still "
-                    "populating) - pending registrations retry on later "
-                    "passes\n", appendIdx);
+                LogDebug("[EquipDevelop] inject held: first empty develop row %u is "
+                         "inside the vanilla band (native table still populating) - "
+                         "pending registrations retry later\n", appendIdx);
             return false;
         }
 
@@ -1681,10 +1963,9 @@ namespace
                 if (total > kMenuRootRenderCap)
                 {
                     if (ShouldLogPark(req.key))
-                        LogDebug("[EquipDevelop] PARKED key=%s: its R&D tab "
-                            "(equipDevelopTypeID=%d) already holds %d top-level "
-                            "rows of the menu's %d - it will page into the "
-                            "develop window automatically on later menu opens.\n",
+                        LogDebug("[EquipDevelop] PARKED key=%s: R&D tab %d already "
+                                 "holds %d top-level rows of the menu's %d - pages "
+                                 "in on later menu opens\n",
                             req.key.c_str(), devType,
                             nativeRoots + static_cast<int>(rootSet.size()),
                             kMenuRootRenderCap);
@@ -1701,11 +1982,9 @@ namespace
                     if (static_cast<int>(rows.size()) >= kMenuRootRenderCap)
                     {
                         if (ShouldLogPark(req.key))
-                            LogDebug("[EquipDevelop] PARKED key=%s: its R&D tab "
-                                "(equipDevelopTypeID=%d) already renders %d "
-                                "rows of the menu grid's %d - it will page "
-                                "into the develop window automatically on "
-                                "later menu opens.\n",
+                            LogDebug("[EquipDevelop] PARKED key=%s: R&D tab %d "
+                                     "already renders %d rows of the grid's %d - "
+                                     "pages in on later menu opens\n",
                                 req.key.c_str(), devType,
                                 static_cast<int>(rows.size()),
                                 kMenuRootRenderCap);
@@ -1729,10 +2008,9 @@ namespace
             if (!alreadyMember && fam.memberCount >= kMenuFamilyCap)
             {
                 if (ShouldLogPark(req.key))
-                    LogDebug("[EquipDevelop] PARKED key=%s: the develop chain of "
-                        "baseEquipDevelopId=%u already has %d members (menu "
-                        "ceiling %d per chain) - it will page into the develop "
-                        "window automatically on later menu opens.\n",
+                    LogDebug("[EquipDevelop] PARKED key=%s: the chain of "
+                             "baseEquipDevelopId=%u already has %d members (menu "
+                             "ceiling %d) - pages in on later menu opens\n",
                         req.key.c_str(), baseDevelopId, fam.memberCount,
                         kMenuFamilyCap - 1);
                 ParkKeyForPaging(req.key);
@@ -1744,15 +2022,15 @@ namespace
                 if (fam.parentGrade >= kMaxGrade)
                 {
                     if (ShouldLogPark(req.key))
-                        LogDebug("[EquipDevelop] PARKED key=%s: parent (developId=%u) "
-                            "is already grade %d - a child's grade must exceed "
-                            "its parent's and no higher grade exists.\n",
+                        LogDebug("[EquipDevelop] PARKED key=%s: parent developId=%u "
+                                 "is already grade %d - a child's grade must exceed "
+                                 "its parent's and none is higher\n",
                             req.key.c_str(), baseDevelopId, fam.parentGrade);
                     ParkKeyForPaging(req.key);
                     return false;
                 }
                 LogDebug("[EquipDevelop] key=%s: grade %d does not exceed parent "
-                    "grade %d - raised to %d (chain grades must ascend).\n",
+                         "grade %d - raised to %d (chain grades must ascend)\n",
                     req.key.c_str(), finalGrade, fam.parentGrade,
                     fam.parentGrade + 1);
                 finalGrade = fam.parentGrade + 1;
@@ -1771,10 +2049,9 @@ namespace
                 }
                 if (ShouldLogPark(req.key))
                     LogDebug("[EquipDevelop] PARKED key=%s: parent developId=%u is "
-                        "not resolvable yet (parent parked, or native develop "
-                        "data not captured: flowJoin=%zu constEdges=%zu) - it "
-                        "will page into the develop window once the parent is "
-                        "present.\n",
+                             "not resolvable yet (parent parked, or native develop "
+                             "data not captured: flowJoin=%zu constEdges=%zu) - "
+                             "pages in once the parent is present\n",
                         req.key.c_str(), baseDevelopId, joinCount, edgeCount);
                 ParkKeyForPaging(req.key);
                 return false;
@@ -1824,17 +2101,17 @@ namespace
                     ordinal = requestedOrdinal;
                 else if (requestedOrdinal >= 1 && ordinal <= kMaxSideGrade)
                     LogDebug("[EquipDevelop] key=%s: requested branch %d under "
-                        "baseEquipDevelopId=%u is at or below an existing "
-                        "branch - moved to branch %d.\n",
+                             "baseEquipDevelopId=%u is at or below an existing "
+                             "branch - moved to branch %d\n",
                         req.key.c_str(), requestedOrdinal, baseDevelopId,
                         ordinal);
                 if (ordinal > kMaxSideGrade)
                 {
                     if (ShouldLogPark(req.key))
                         LogDebug("[EquipDevelop] PARKED key=%s: parent developId=%u "
-                            "already carries %d branch chains (the record packs "
-                            "the branch ordinal in 3 bits) - it will page into "
-                            "the develop window when one frees.\n",
+                                 "already carries %d branch chains (the record "
+                                 "packs the branch ordinal in 3 bits) - pages in "
+                                 "when one frees\n",
                             req.key.c_str(), baseDevelopId, kMaxSideGrade);
                     ParkKeyForPaging(req.key);
                     return false;
@@ -1845,10 +2122,9 @@ namespace
                 {
                     if (ShouldLogPark(req.key))
                         LogDebug("[EquipDevelop] PARKED key=%s: branch %d under "
-                            "baseEquipDevelopId=%u computes to an occupied "
-                            "cell (grade %d, row %d) - family data is "
-                            "irregular; it will page into the develop window "
-                            "on later menu opens.\n",
+                                 "baseEquipDevelopId=%u computes to an occupied "
+                                 "cell (grade %d, row %d) - family data is "
+                                 "irregular; pages in later\n",
                             req.key.c_str(), ordinal, baseDevelopId,
                             col0, row);
                     ParkKeyForPaging(req.key);
@@ -1875,12 +2151,10 @@ namespace
                     if (static_cast<int>(rows.size()) >= kMenuRootRenderCap)
                     {
                         if (ShouldLogPark(req.key))
-                            LogDebug("[EquipDevelop] PARKED key=%s: its R&D tab "
-                                "(equipDevelopTypeID=%d) already renders %d "
-                                "rows of the menu grid's %d and this item "
-                                "would open a new branch row - it will page "
-                                "into the develop window automatically on "
-                                "later menu opens.\n",
+                            LogDebug("[EquipDevelop] PARKED key=%s: R&D tab %d "
+                                     "already renders %d rows of the grid's %d and "
+                                     "this would open a new branch row - pages in "
+                                     "on later menu opens\n",
                                 req.key.c_str(), devType,
                                 static_cast<int>(rows.size()),
                                 kMenuRootRenderCap);
@@ -1894,8 +2168,8 @@ namespace
             if (moved)
             {
                 LogDebug("[EquipDevelop] key=%s: placed under baseEquipDevelopId=%u "
-                    "at grade %d (column), branch %d (row %d); parent grade %d, "
-                    "requested grade %d.\n",
+                         "at grade %d (column), branch %d (row %d); parent grade "
+                         "%d, requested %d\n",
                     req.key.c_str(), baseDevelopId, finalGrade, finalOrdinal,
                     finalSide, fam.parentGrade, requestedGrade);
             }
@@ -1911,9 +2185,9 @@ namespace
         if (appendIdx != flowIndex)
         {
             if (flowIndex != 0)
-                LogDebug("[EquipDevelop] key=%s: develop record lands at row %u "
-                    "(bookkept row was %u) - flow row follows the record and "
-                    "the bookkeeping is re-synced.\n",
+                LogDebug("[EquipDevelop] key=%s: develop record landed at row %u "
+                         "(bookkept %u) - flow row follows the record, bookkeeping "
+                         "re-synced\n",
                     req.key.c_str(), appendIdx, flowIndex);
             flowIndex = appendIdx;
         }
@@ -1921,6 +2195,10 @@ namespace
         g_Deps.LuaSetTop(L, 0);
         BuildConstRowTable(L, developId, req.constFields);
         g_OrigRegCstDev(L);
+        equip::InvalidateDevelopLookupIndex();
+        ProbeResultRankLimitBit(static_cast<std::uint16_t>(flowIndex),
+                                static_cast<std::uint16_t>(developId),
+                                req.constFields);
         ObserveDevelopId(developId);
 
         for (const FieldValue& f : req.constFields)
@@ -1959,7 +2237,23 @@ namespace
         const int flowRowIndex = g_Deps.GetLuaTop(L);
         SetIntField(L, flowRowIndex, "p62", 0);
         SetIntField(L, flowRowIndex, "p72", 0);
-        SetIntField(L, flowRowIndex, "p74", 0);
+        const bool fobAllowedRow =
+            uniquedefaultoutfit::IsDefaultOutfitKey(req.key.c_str())
+            || uniquedefaultoutfit::IsRegisteringFobAllowedRow();
+        if (!fobAllowedRow)
+            SetIntField(L, flowRowIndex, "p74", 0);
+        else
+        {
+            static int s_fobRowLogged = 0;
+            if (s_fobRowLogged < 4)
+            {
+                ++s_fobRowLogged;
+                Log("[EquipDevelop] '%s' keeps isFobAvailable - it is a unique "
+                    "character's own default-outfit row, which declares that "
+                    "character's stock parts and fpk\n",
+                    req.key.c_str());
+            }
+        }
 
         int storedP51 = persistedP51;
         if (storedP51 < 0)             storedP51 = 0;
@@ -1987,18 +2281,17 @@ namespace
                 if (FindRecordIndexByDevelopId(recController, developId,
                                                actualIdx))
                 {
-                    Log("[EquipDevelop] WARN key=%s: develop record landed at "
-                        "row %u instead of the bookkept row %u - bookkeeping "
-                        "resynced to the real row\n",
+                    Log("[EquipDevelop] WARN key=%s: develop record landed at row "
+                        "%u instead of the bookkept %u - bookkeeping resynced\n",
                         req.key.c_str(), actualIdx, flowIndex);
                     flowIndex = actualIdx;
                 }
                 else
                 {
-                    Log("[EquipDevelop] WARN key=%s: develop record not found "
-                        "after registration (row %u holds developId %u) - the "
-                        "native register landed it on the reserved sentinel "
-                        "row; the key stays pending and retries later\n",
+                    Log("[EquipDevelop] WARN key=%s: develop record not found after "
+                        "registration (row %u holds developId %u) - the native "
+                        "register hit the reserved sentinel row; the key stays "
+                        "pending\n",
                         req.key.c_str(), flowIndex, landedDev);
                     g_Deps.LuaSetTop(L, 0);
                     return false;
@@ -2016,7 +2309,7 @@ namespace
             RefreshDynamicGatesImpl();
 #ifdef _DEBUG
             LogDebug("[EquipDevelop] bluePrintId dynamic gate key=%s flowIndex=%u "
-                "(predicate re-evaluated each R&D menu build)\n",
+                     "(re-evaluated each R&D menu build)\n",
                 req.key.c_str(), flowIndex);
 #endif
         }
@@ -2024,6 +2317,41 @@ namespace
         {
             for (const FieldValue& f : req.constFields)
             {
+                if (f.type == FieldValue::Type::String && f.name == "p05"
+                    && !f.stringValue.empty())
+                {
+                    const std::int32_t bpId = bluePrint::Register(f.stringValue.c_str());
+                    if (bpId <= 0)
+                    {
+                        Log("[EquipDevelop] key=%s: blueprint '%s' could not be allocated - "
+                            "the row is left permanently visible instead of blueprint-gated\n",
+                            req.key.c_str(), f.stringValue.c_str());
+                        break;
+                    }
+                    RegisterBluePrintGate(flowIndex, f.stringValue);
+                    outfit::SetDevelopHidden(flowIndex, !bluePrint::Has(bpId));
+                    break;
+                }
+                if (f.type == FieldValue::Type::Number && f.name == "p05")
+                {
+                    const std::int32_t slot = bluePrint::SlotFromPublicId(f.numberValue);
+                    if (slot <= 0)
+                        break;
+
+                    const std::string key = bluePrint::KeyFromSlot(slot);
+                    if (key.empty())
+                    {
+                        Log("[EquipDevelop] key=%s: bluePrintId %d is a custom id with no "
+                            "registered key this session - the row is left permanently visible "
+                            "instead of blueprint-gated\n",
+                            req.key.c_str(), f.numberValue);
+                        break;
+                    }
+
+                    RegisterBluePrintGate(flowIndex, key);
+                    outfit::SetDevelopHidden(flowIndex, !bluePrint::Has(slot));
+                    break;
+                }
                 if (f.type == FieldValue::Type::Boolean && f.name == "p05")
                 {
                     outfit::SetDevelopHidden(flowIndex, !f.boolValue);
@@ -2096,9 +2424,8 @@ namespace
                     && !s_StallLogged.exchange(true,
                                                std::memory_order_relaxed))
                     LogDebug("[EquipDevelop] %zu pending develop registration(s) "
-                        "held: rows cannot be injected yet (native table "
-                        "still populating or no room below the custom "
-                        "band)\n", g_PendingRequests.size());
+                             "held: no injectable row yet (native table populating "
+                             "or no room below the custom band)\n", g_PendingRequests.size());
                 return;
             }
 
@@ -2123,9 +2450,31 @@ namespace
                 return developed;
             });
         if (developedCount > 102)
-            Log("[EquipDevelop] WARNING: %zu DEVELOPED custom items exceed "
-                "the 102-slot record band - the overflow will page and lose "
-                "equip-list visibility while parked.\n", developedCount);
+            Log("[EquipDevelop] WARNING: %zu DEVELOPED custom items exceed the "
+                "102-slot record band - the overflow pages and loses equip-list "
+                "visibility while parked\n", developedCount);
+
+        {
+            std::vector<int> weaponEquipIds;
+            TppEquip_GetCustomWeaponEquipIds(weaponEquipIds);
+            for (const PendingDevelopRequest& req : work)
+            {
+                std::int32_t rowEquipId = 0;
+                for (const FieldValue& f : req.constFields)
+                {
+                    if (f.type == FieldValue::Type::Number && f.name == "p01")
+                    {
+                        rowEquipId = f.numberValue;
+                        break;
+                    }
+                }
+                if (rowEquipId > 0
+                    && std::binary_search(weaponEquipIds.begin(),
+                                          weaponEquipIds.end(), rowEquipId))
+                    V_FrameWorkState::SetRowKind(
+                        req.key.c_str(), V_FrameWorkState::kRowKindWeapon);
+            }
+        }
 
         std::vector<std::string> completedKeys;
 
@@ -2135,7 +2484,12 @@ namespace
             std::uint16_t flowIndex = 0;
 
             if (InjectReservedDevelopPair(L, req, &developId, &flowIndex))
+            {
                 completedKeys.push_back(req.key);
+                equip::AssertDevelopRowAnnounced(
+                    static_cast<std::int32_t>(developId),
+                    static_cast<std::int32_t>(flowIndex));
+            }
         }
 
         std::size_t leftover = 0;
@@ -2178,8 +2532,8 @@ namespace
                 || !FindFirstEmptyRecordIndex(controller, firstEmpty))
                 firstEmpty = 0xFFFF;
             LogDebug("[EquipDevelop] %zu develop registration(s) still pending "
-                "after a flush pass (first empty row %u; 0xFFFF = none) - "
-                "they retry on later registrations and menu opens\n",
+                     "after a flush (first empty row %u; 0xFFFF = none) - they "
+                     "retry on later registrations and menu opens\n",
                 leftover, firstEmpty);
         }
     }
@@ -2251,7 +2605,8 @@ namespace
                 }
 
                 if (EquipDevelopAdd::IsManagedFlowIndex(
-                        static_cast<std::uint16_t>(flowIndex)))
+                        static_cast<std::uint16_t>(flowIndex))
+                    && !uniquedefaultoutfit::IsRegisteringFobAllowedRow())
                 {
                     SetIntField(L, 1, "p74", 0);
 #ifdef _DEBUG
@@ -2429,8 +2784,7 @@ namespace EquipDevelopAdd
                 static_cast<std::uint16_t>(dev32), constFields);
             if (g_MenuCapRefusalLogged.insert(key).second)
                 LogDebug("[EquipDevelop] PARKED key=%s (developId %d): no free "
-                    "develop record slot right now - it will page into the "
-                    "R&D window automatically on later menu opens.\n",
+                         "develop record slot - pages in on later menu opens\n",
                     key.c_str(), dev32);
             g_Deps.PushLuaNumber(L, static_cast<float>(dev32));
             return 1;
@@ -2498,8 +2852,7 @@ namespace EquipDevelopAdd
                 == g_GradeByDevelopId.end())
             {
                 LogDebug("[EquipDevelop] SwapDevelopRow refused: outKey=%s has a "
-                    "reserved slot but no materialized record - not "
-                    "swappable.\n", outKey.c_str());
+                         "reserved slot but no materialized record\n", outKey.c_str());
                 return false;
             }
             auto itIn = g_KeyRegistry.find(inKey);
@@ -2513,8 +2866,8 @@ namespace EquipDevelopAdd
             if (itReq == g_RequestByKey.end())
             {
                 LogDebug("[EquipDevelop] SwapDevelopRow refused: inKey=%s has no "
-                    "retained registration (it must have called "
-                    "AddToEquipDevelopTable this session).\n", inKey.c_str());
+                         "retained registration (it must call "
+                         "AddToEquipDevelopTable this session)\n", inKey.c_str());
                 return false;
             }
             outDev = itOut->second.developId;
@@ -2553,8 +2906,8 @@ namespace EquipDevelopAdd
             if (!FindRecordIndexByDevelopId(controller, outDev, trueIdx))
             {
                 LogDebug("[EquipDevelop] SwapDevelopRow: outKey=%s (developId %u) "
-                    "has no develop record in the band despite being marked "
-                    "live at row %u - healing it to parked.\n",
+                         "is marked live at row %u but has no record in the band - "
+                         "healed to parked\n",
                     outKey.c_str(), outDev, outIdx);
                 RemoveDynamicGatesForFlowIndex(outIdx);
                 ForgetCustomRootMembership(outDev);
@@ -2586,9 +2939,9 @@ namespace EquipDevelopAdd
 
         if (EquipDevelop_IsDevelopTimerActive(outIdx))
         {
-            LogDebug("[EquipDevelop] SwapDevelopRow refused: an R&D development is "
-                "in flight on outKey=%s (flow row %u) - complete or cancel it "
-                "first.\n", outKey.c_str(), outIdx);
+            LogDebug("[EquipDevelop] SwapDevelopRow refused: a development is in "
+                     "flight on outKey=%s (flow row %u) - finish or cancel it "
+                     "first\n", outKey.c_str(), outIdx);
             return false;
         }
 
@@ -2597,8 +2950,8 @@ namespace EquipDevelopAdd
             if (HasResidentChildren_NoLock(outDev))
             {
                 LogDebug("[EquipDevelop] SwapDevelopRow refused: outKey=%s "
-                    "(developId %u) still has live chain members under it - "
-                    "page those out first.\n", outKey.c_str(), outDev);
+                         "(developId %u) still has live chain members - page those "
+                         "out first\n", outKey.c_str(), outDev);
                 return false;
             }
         }
@@ -2660,8 +3013,8 @@ namespace EquipDevelopAdd
             }
             else
                 LogDebug("[EquipDevelop] SwapDevelopRow CRITICAL: slot %u is now "
-                    "EMPTY mid-band - custom rows above it will not show until "
-                    "the game is restarted.\n", outIdx);
+                         "EMPTY mid-band - custom rows above it stay hidden until "
+                         "restart\n", outIdx);
             return false;
         }
 
@@ -2670,9 +3023,9 @@ namespace EquipDevelopAdd
             if (ReadRecordDevelopId(controller, outIdx, landed)
                 && landed != inDev)
                 LogDebug("[EquipDevelop] SwapDevelopRow CRITICAL: slot %u holds "
-                    "developId %u after injecting %u - the const registration "
-                    "landed in a different slot (an empty record exists below "
-                    "%u). Restart the game before developing anything.\n",
+                         "developId %u after injecting %u - the const registration "
+                         "landed elsewhere (an empty record exists below %u); "
+                         "restart before developing\n",
                     outIdx, landed, inDev, outIdx);
         }
 
@@ -3149,8 +3502,7 @@ namespace EquipDevelopAdd
         {
             outfit::InvalidateEquipVisibilityCache();
             LogDebug("[EquipDevelop] develop-window rotation: paged %d row(s) in "
-                "(%zu key(s) still parked - they follow on later R&D "
-                "opens).\n", swapped, parkedLeft);
+                     "(%zu key(s) still parked)\n", swapped, parkedLeft);
             void* controller = EquipDevelop_ResolveDevelopController();
             if (controller)
             {
@@ -3214,8 +3566,8 @@ namespace EquipDevelopAdd
         if (luaTid != 0 && GetCurrentThreadId() != luaTid
             && !g_RotateDeferLogged.exchange(true))
             LogDebug("[EquipDevelop] develop-window rotation requested off the Lua "
-                "thread (menu-build tid %lu, Lua owner %lu) - deferred to the "
-                "game-thread pump.\n",
+                     "thread (menu tid %lu, Lua owner %lu) - deferred to the "
+                     "game-thread pump\n",
                 GetCurrentThreadId(), luaTid);
         TryRunPendingRotation();
     }
@@ -3260,6 +3612,60 @@ namespace EquipDevelopAdd
                 }
             }
         }
+    }
+
+    bool QueueNativeDevelopRequest(const char* key,
+                                   const NativeDevelopNumber* constNums,
+                                   std::size_t constNumCount,
+                                   const NativeDevelopString* constStrs,
+                                   std::size_t constStrCount,
+                                   const NativeDevelopNumber* flowNums,
+                                   std::size_t flowNumCount)
+    {
+        if (!key || !key[0]) return false;
+
+        std::vector<FieldValue> constFields;
+        std::vector<FieldValue> flowFields;
+
+        for (std::size_t i = 0; i < constNumCount; ++i)
+        {
+            FieldValue f;
+            f.name = constNums[i].name;
+            f.type = FieldValue::Type::Number;
+            f.numberValue = constNums[i].value;
+            constFields.push_back(f);
+        }
+        for (std::size_t i = 0; i < constStrCount; ++i)
+        {
+            if (!constStrs[i].value) continue;
+            FieldValue f;
+            f.name = constStrs[i].name;
+            f.type = FieldValue::Type::String;
+            f.stringValue = constStrs[i].value;
+            constFields.push_back(f);
+        }
+        for (std::size_t i = 0; i < flowNumCount; ++i)
+        {
+            FieldValue f;
+            f.name = flowNums[i].name;
+            f.type = FieldValue::Type::Number;
+            f.numberValue = flowNums[i].value;
+            flowFields.push_back(f);
+        }
+
+        std::uint16_t developId = 0;
+        std::uint16_t flowIndex  = 0;
+        bool          created    = false;
+        if (!GetOrCreateIdsForKey(key, developId, flowIndex, created))
+        {
+            Log("[EquipDevelop] '%s' could not reserve a develop id, so its row "
+                "stays out of the pending queue and the item never reaches the "
+                "develop table\n", key);
+            return false;
+        }
+
+        QueueOrUpdatePendingRequest(key, constFields, flowFields, false);
+        return true;
     }
 
     bool TryGetFlowIndexForDevelopId(std::uint16_t developId, std::uint16_t& outFlowIndex)

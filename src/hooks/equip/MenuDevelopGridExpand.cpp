@@ -9,8 +9,12 @@
 
 #include "AddressSet.h"
 #include "DevelopArrayGrow.h"
+#include "V_FrameWorkState.h"
+
+#include <unordered_map>
 #include "HookUtils.h"
 #include "MenuPerf.h"
+#include "MissionCodeGuard.h"
 #include "EquipDevelop_AddToEquipDevelopTable.h"
 #include "EquipDevelop_SetEquipUndeveloped.h"
 #include "../outfit/CustomHeadRegistry.h"
@@ -134,9 +138,18 @@ namespace
             return;
 
         g_RailSeen[g_RailSeenCount++] = cell;
-        LogDebug("[RailProbe] row=%u draws a rail to parentRow=%u "
-            "(a=%d b=%d, parent %s the tab grid)\n",
-            cell, parent, a, b,
+
+        const std::uint16_t devId =
+            reinterpret_cast<BaseIdFn>(VtMethod(prov, 0x128))(prov, cell);
+        const std::uint8_t damageType =
+            static_cast<std::uint8_t>(
+                reinterpret_cast<GradeFn>(VtMethod(prov, 0x500))(prov, cell));
+
+        LogDebug("[RailProbe] row=%u developId=%u damageType=%u draws a rail "
+            "to parentRow=%u (a=%d b=%d, parent %s the tab grid) - damageType "
+            "0 or 5 hides the corner chip, 1 renders DMG\n",
+            cell, static_cast<unsigned>(devId),
+            static_cast<unsigned>(damageType), parent, a, b,
             RailGridHasRow(parent) ? "IS on" : "is NOT on");
     }
 #endif
@@ -331,11 +344,10 @@ namespace
                         LogDebug("[MenuDevelopGrid] record flow=%u: %s\n",
                             rows[r], hex);
                     }
-                    LogDebug("[MenuDevelopGrid] flow 507/512 are VANILLA lone "
-                        "grade-3 rows, 948/949 are custom outfit rows with "
-                        "the same grid shape - any field that differs is why "
-                        "the tree draws a parent rail for one and not the "
-                        "other\n");
+                    LogDebug("[MenuDevelopGrid] flows 507/512 are vanilla lone "
+                             "grade-3 rows, 948/949 are custom rows with the same "
+                             "grid shape - any differing field is why one draws a "
+                             "parent rail\n");
                 }
             }
         }
@@ -351,6 +363,90 @@ namespace
         char  result = 0;
         bool  valid = false;
     };
+#ifdef _DEBUG
+    constexpr std::size_t kDevelopRecordArrayOffset = 0x8;
+    constexpr std::size_t kDevelopRecordStride      = 0x68;
+    constexpr int         kBadgeProbeMaxLines       = 32;
+
+    int g_BadgeProbeLines = 0;
+
+    bool SafeReadBadgeProbeRecord(void* controller, std::uint16_t idx,
+                                  std::uint8_t& latchByte, std::uint8_t& fobByte)
+    {
+        __try
+        {
+            const std::uint8_t* rec =
+                reinterpret_cast<const std::uint8_t*>(controller)
+                + kDevelopRecordArrayOffset
+                + static_cast<std::size_t>(idx) * kDevelopRecordStride;
+            latchByte = rec[0x15];
+            fobByte   = rec[0x58];
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    }
+
+    void LogBadgeProbeRow(void* prov, std::uint32_t typeId, std::uint16_t idx,
+                          char c1, char c2, char c3)
+    {
+        if (g_BadgeProbeLines >= kBadgeProbeMaxLines)
+            return;
+        ++g_BadgeProbeLines;
+        std::uint8_t flags = 0;
+        const bool haveFlags = equip::DevFlagsTryReadByte(prov, idx, flags);
+        std::uint8_t latchByte = 0;
+        std::uint8_t fobByte   = 0;
+        const bool haveRec = SafeReadBadgeProbeRecord(prov, idx, latchByte, fobByte);
+        LogDebug("[BadgeProbe] counted typeId=%u idx=%u developed(vt1c8)=%d "
+                 "reqMet(vt1b8)=%d isNew(vt250)=%d flags=%s0x%02X rec15=%s0x%02X "
+                 "latchBit4=%d rec58=0x%02X fobBit7=%d fobSuppress=%d - this row is what the ready-to-develop badge is counting\n",
+            typeId, static_cast<unsigned>(idx),
+            c1 ? 1 : 0, c2 ? 1 : 0, c3 ? 1 : 0,
+            haveFlags ? "" : "unreadable:", static_cast<unsigned>(flags),
+            haveRec ? "" : "unreadable:", static_cast<unsigned>(latchByte),
+            haveRec ? ((latchByte >> 4) & 1) : -1,
+            static_cast<unsigned>(fobByte),
+            haveRec ? ((fobByte >> 7) & 1) : -1,
+            EquipDevelop_IsFobListSuppressActive() ? 1 : 0);
+    }
+#endif
+
+    constexpr DWORD kManagedDevelopedTtlMs = 500;
+
+    std::unordered_map<std::int32_t, bool> g_ManagedDeveloped;
+    DWORD                                  g_ManagedDevelopedTick = 0;
+    bool                                   g_ManagedDevelopedValid = false;
+
+    void RefreshManagedDevelopedMap()
+    {
+        const DWORD now = GetTickCount();
+        if (g_ManagedDevelopedValid && (now - g_ManagedDevelopedTick) < kManagedDevelopedTtlMs)
+            return;
+        g_ManagedDeveloped.clear();
+        V_FrameWorkState::ForEachManagedDevelop(
+            [](std::int32_t developId, bool developed, bool)
+            {
+                g_ManagedDeveloped[developId] = developed;
+            });
+        g_ManagedDevelopedTick  = now;
+        g_ManagedDevelopedValid = true;
+    }
+
+    bool ManagedRowIsDeveloped(std::uint16_t idx, bool& developed)
+    {
+        if (idx < equip::FirstCustomFlowIndex())
+            return false;
+        std::uint32_t developId = 0;
+        if (!equip::TryReadRowDevelopId(idx, developId) || developId == 0)
+            return false;
+        RefreshManagedDevelopedMap();
+        const auto it = g_ManagedDeveloped.find(static_cast<std::int32_t>(developId));
+        if (it == g_ManagedDeveloped.end())
+            return false;
+        developed = it->second;
+        return true;
+    }
+
     constexpr DWORD kBadgeCacheTtlMs = 500;
     BadgeCacheEntry g_BadgeCache[256];
 
@@ -360,6 +456,13 @@ namespace
     {
         equip::MenuPerfScope _perf(equip::kPerf_CountBadge);
         EquipDevelopAdd::PumpDevelopMenuWork();
+        if (!MissionCodeGuard::ShouldBypassHooks()
+            && !EquipDevelop_IsFobListSuppressActive()
+            && EquipDevelop_DrainIfRestorePending())
+        {
+            for (BadgeCacheEntry& entry : g_BadgeCache)
+                entry.valid = false;
+        }
         BadgeCacheEntry* cache =
             (typeId < 256) ? &g_BadgeCache[typeId] : nullptr;
         if (cache && cache->valid
@@ -390,9 +493,16 @@ namespace
         {
             if (!equip::IsValidFlowIndex(idx))
                 return;
-            const char c1 = reinterpret_cast<FlagFn>(vt[0x1c8 / 8])(prov, idx);
+            char c1 = reinterpret_cast<FlagFn>(vt[0x1c8 / 8])(prov, idx);
             const char c2 = reinterpret_cast<FlagFn>(vt[0x1b8 / 8])(prov, idx);
             const char c3 = reinterpret_cast<FlagFn>(vt[0x250 / 8])(prov, idx);
+            if (c1 == 0)
+            {
+                bool managedDeveloped = false;
+                if (ManagedRowIsDeveloped(idx, managedDeveloped)
+                    && managedDeveloped)
+                    c1 = 1;
+            }
             if (c3 != 0)
             {
                 ++*developable;
@@ -400,11 +510,17 @@ namespace
                 {
                     ++*newDevelopable;
                     ++*developed;
+#ifdef _DEBUG
+                    LogBadgeProbeRow(prov, typeId, idx, c1, c2, c3);
+#endif
                 }
             }
             else if (c1 == 0 && c2 != 0)
             {
                 ++*developed;
+#ifdef _DEBUG
+                LogBadgeProbeRow(prov, typeId, idx, c1, c2, c3);
+#endif
             }
         };
 
@@ -729,8 +845,8 @@ namespace
                             GridAt(g));
                     }
                 LogDebug("[MenuDevelopGrid] visible window tab=%u topRow=%d "
-                    "topCol=%d:%s (1024 = empty cell; >= 922 = a custom "
-                    "V_FrameWork row, < 922 = vanilla)\n",
+                         "topCol=%d:%s (1024 = empty; >= 922 = custom row, < 922 = "
+                         "vanilla)\n",
                     At<std::uint32_t>(self, 0x2144), topRow, topCol, buf);
             }
         }
@@ -946,11 +1062,10 @@ namespace equip
         equip::DevelopLookupTakeCounters(findCalls, findIndexed, findBuilds,
                                          findStale);
         if (any)
-            LogDebug("[MenuPerf] last 5s: %s| develop visibility predicate %llu "
-                "calls, %llu served from the per-fill cache | row lookups %llu "
-                "calls, %llu served from the developId/equipId index (%llu "
-                "index rebuilds, %llu stale hits re-verified); an unindexed "
-                "lookup is a full %u-record linear scan\n",
+            LogDebug("[MenuPerf] last 5s: %s| visibility predicate %llu calls, %llu "
+                     "from the per-fill cache | row lookups %llu calls, %llu from "
+                     "the developId/equipId index (%llu rebuilds, %llu stale "
+                     "re-verified); an unindexed lookup is a full %u-record scan\n",
                 line, visCalls, visHits, findCalls, findIndexed, findBuilds,
                 findStale, equip::NativeFlowBound());
     }
@@ -1013,9 +1128,8 @@ namespace equip
             if (rail && !CreateAndEnableHook(
                     rail, reinterpret_cast<void*>(&hkRailBuild),
                     reinterpret_cast<void**>(&g_OrigRailBuild)))
-                Log("[MenuDevelopGrid] connector-rail hook install FAILED - "
-                    "parentless develop rows will draw a dangling rail through "
-                    "the empty cells beside them\n");
+                Log("[MenuDevelopGrid] connector-rail hook FAILED - parentless rows "
+                    "draw a dangling rail through the empty cells beside them\n");
         }
 
         g_MenuGridExpanded = okFill && okCopy && okBadge && okFillFlat

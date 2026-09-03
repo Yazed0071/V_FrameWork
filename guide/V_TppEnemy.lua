@@ -30,21 +30,6 @@ end
 function this.Messages()
     return Tpp.StrCode32Table {
         GameObject = {
-            {
-                msg = "ChangePhase",
-                func = function(gameObjectId, phaseName)
-	                local closestCp= InfMain.GetClosestCp{vars.playerPosX,vars.playerPosY,vars.playerPosZ}
-	                local cp = GameObject.GetGameObjectId( closestCp )
-
-                    if gameObjectId == cp then
-                        if phaseName >= TppGameObject.PHASE_CAUTION then
-                            SendCommand({ type = "TppSoldier2" }, { id = "SetUseConcernedHoldupRecovery", enable = true })
-                        else
-                            SendCommand({ type = "TppSoldier2" }, { id = "SetUseConcernedHoldupRecovery", enable = false })
-                        end
-                    end
-                end,
-            },
         },
     }
 end

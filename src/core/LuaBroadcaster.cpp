@@ -210,9 +210,9 @@ namespace
             if (s_skipLines < kMaxHazardLogLines)
             {
                 ++s_skipLines;
-                LogDebug("[LuaBroadcast] dropped category=%s msg=%s frameFree=%d physicalFree=%d "
-                    "needed=%d - pushing here would run past the running Lua function's "
-                    "ci->top and corrupt the VM, so this message is dropped instead.\n",
+                LogDebug("[LuaBroadcast] dropped category=%s msg=%s frameFree=%d "
+                         "physicalFree=%d needed=%d - pushing here would run past "
+                         "the running Lua function's ci->top and corrupt the VM\n",
                     category, msg, room.frameFree, room.physicalFree, kBroadcastPushSlots);
             }
             return false;
@@ -368,10 +368,10 @@ static void EmitInline(const char* category,
         if (s_loggedDepth < 12)
         {
             ++s_loggedDepth;
-            LogDebug("[LuaBroadcast] re-entrant dispatch depth>=8: DROPPING category=%s msg=%s to "
-                "break a message-recursion loop - a receiver of a prior message re-triggered an "
-                "emit that led back here. If this is a WalkMan message, a walkman event is "
-                "feeding itself (tape-finish auto-advance).\n",
+            LogDebug("[LuaBroadcast] re-entrant dispatch depth>=8: DROPPING "
+                     "category=%s msg=%s to break a message-recursion loop - a "
+                     "receiver re-triggered an emit that led back here (for a "
+                     "WalkMan message, a tape-finish auto-advance feeding itself)\n",
                 category, msg);
         }
         return;
@@ -382,9 +382,8 @@ static void EmitInline(const char* category,
     if (traceWalk && s_walkTrace < 40)
     {
         ++s_walkTrace;
-        LogDebug("[LuaBroadcast] dispatch BEGIN %s.%s depth=%d - if no matching 'dispatch END' "
-            "follows, TppMain.OnMessage for this walkman message hung (freeze is inside the "
-            "Lua dispatch / a receiver)\n",
+        LogDebug("[LuaBroadcast] dispatch BEGIN %s.%s depth=%d - no matching "
+                 "'dispatch END' means TppMain.OnMessage hung inside a receiver\n",
             category, msg, s_dispatchDepth);
     }
 #endif

@@ -206,9 +206,8 @@ bool Install_EnhanceLangIdUnlimited()
                             reinterpret_cast<void**>(&g_origMsg));
 
     g_ready = true;
-    LogDebug("[EnhanceLangId] unlimited enhance lang IDs armed (cap %u custom; "
-        "custom langPowerUpInfo IDs auto-register on lookup, served to the R&D "
-        "develop menu and weapon-parts screen)\n", kCustomMax);
+    LogDebug("[EnhanceLangId] unlimited enhance lang IDs armed (cap %u custom; they "
+             "auto-register on lookup for the R&D and weapon-parts screens)\n", kCustomMax);
     return true;
 }
 

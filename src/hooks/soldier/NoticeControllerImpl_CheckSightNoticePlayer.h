@@ -4,11 +4,7 @@
 
 namespace SoldierNoticeIgnore
 {
-    constexpr std::uint8_t kPlayer       = 1u << 0;
-    constexpr std::uint8_t kHostage      = 1u << 2;
-    constexpr std::uint8_t kNoticeObject = 1u << 3;
-    constexpr std::uint8_t kCBox         = 1u << 4;
-    constexpr std::uint8_t kNoise        = 1u << 5;
+    constexpr std::uint8_t kPlayer = 1u << 0;
 }
 
 bool Install_CheckSightNoticePlayer_Hook();

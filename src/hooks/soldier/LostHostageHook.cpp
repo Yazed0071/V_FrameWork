@@ -10,6 +10,8 @@
 
 #include "HookUtils.h"
 #include "log.h"
+#include "PlayerAlertPhase.h"
+#include "HostageGender.h"
 #include "MissionCodeGuard.h"
 #include "LostHostageHook.h"
 #include "NoticeControllerImpl_CheckSightNoticePlayer.h"
@@ -57,8 +59,8 @@ struct TrackedHostage
     std::uint16_t objectId = 0xFFFFu;
     int           type = HOSTAGE_MALE;
     int           nameId = -1;
-    bool          playerTookIt = false;
     std::uint32_t customLostLabel = 0;
+    std::uint32_t customLostLabelTaken = 0;
 };
 
 struct PendingReport
@@ -67,11 +69,11 @@ struct PendingReport
     std::uint32_t  soldierIndex = 0xFFFFFFFFu;
     std::uint16_t  hostageObjId = 0xFFFFu;
     int            hostageType = -1;
-    bool           playerTookIt = false;
     int            source = SOURCE_NONE;
     int            slotIndex = -1;
     std::uint16_t  noticeObjId = 0xFFFFu;
     std::uint32_t  customLostLabel = 0;
+    std::uint32_t  customLostLabelTaken = 0;
 };
 
 
@@ -283,11 +285,11 @@ static PendingReport BuildPendingReport(std::uint32_t soldierIndex,
     r.soldierIndex = soldierIndex;
     r.hostageObjId = hostage.objectId;
     r.hostageType = hostage.type;
-    r.playerTookIt = hostage.playerTookIt;
     r.source = SOURCE_NOTICE;
     r.slotIndex = slotIndex;
     r.noticeObjId = noticeObjId;
     r.customLostLabel = hostage.customLostLabel;
+    r.customLostLabelTaken = hostage.customLostLabelTaken;
     return r;
 }
 
@@ -413,9 +415,21 @@ static std::uint32_t __fastcall hkConvertRadioTypeToSpeechLabel(std::uint8_t rad
 
         if (hasReport)
         {
-            const std::uint32_t overrideLabel = (report.customLostLabel != 0)
-                ? report.customLostLabel
-                : PickSpeechLabel(report.hostageType, report.playerTookIt);
+            const bool playerTookIt =
+                PlayerAlertPhase::IsAtOrAbove(PlayerAlertPhase::kCaution);
+
+            const int nativeGender = HostageGender::Read(report.hostageObjId);
+            const int hostageType  = (nativeGender != HostageGender::kUnknown)
+                ? nativeGender
+                : report.hostageType;
+
+            const std::uint32_t customLabel = playerTookIt
+                ? report.customLostLabelTaken
+                : report.customLostLabel;
+
+            const std::uint32_t overrideLabel = (customLabel != 0)
+                ? customLabel
+                : PickSpeechLabel(hostageType, playerTookIt);
 
             if (overrideLabel)
             {
@@ -428,7 +442,9 @@ static std::uint32_t __fastcall hkConvertRadioTypeToSpeechLabel(std::uint8_t rad
 }
 
 
-void Add_LostHostageTrap(std::uint32_t gameObjectId, int hostageType, std::uint32_t customLostLabel)
+void Add_LostHostageTrap(std::uint32_t gameObjectId, int hostageType,
+                         std::uint32_t customLostLabel,
+                         std::uint32_t customLostLabelTaken)
 {
     if (hostageType < HOSTAGE_MALE || hostageType > HOSTAGE_CHILD)
     {
@@ -444,14 +460,14 @@ void Add_LostHostageTrap(std::uint32_t gameObjectId, int hostageType, std::uint3
     h.objectId = rawId;
     h.type = hostageType;
     h.nameId = nameId;
-    h.playerTookIt = false;
     h.customLostLabel = customLostLabel;
+    h.customLostLabelTaken =
+        (customLostLabelTaken != 0) ? customLostLabelTaken : customLostLabel;
 
     std::lock_guard<std::mutex> lock(g_Mutex);
 
     const auto existing = g_HostagesByObjectId.find(rawId);
     if (existing != g_HostagesByObjectId.end())
-        h.playerTookIt = existing->second.playerTookIt;
 
     g_HostagesByObjectId[rawId] = h;
     if (nameId != -1)
@@ -488,35 +504,6 @@ void Clear_LostHostagesTrap()
     g_SelectedReport = {};
 }
 
-void PlayerTookHostage(std::uint32_t gameObjectId, bool playerTookIt)
-{
-    const std::uint16_t rawId = static_cast<std::uint16_t>(gameObjectId);
-
-    std::lock_guard<std::mutex> lock(g_Mutex);
-
-    auto it = g_HostagesByObjectId.find(rawId);
-    if (it == g_HostagesByObjectId.end())
-    {
-        LogDebug("[LostHostage] PlayerTookHostage: objectId=0x%08X not tracked\n", gameObjectId);
-        return;
-    }
-
-    it->second.playerTookIt = playerTookIt;
-
-    const int nameId = it->second.nameId;
-    if (nameId != -1)
-    {
-        auto itName = g_HostagesByNameId.find(nameId);
-        if (itName != g_HostagesByNameId.end())
-            itName->second.playerTookIt = playerTookIt;
-    }
-
-    for (auto& kv : g_PendingBySoldier)
-        if (kv.second.hostageObjId == rawId) kv.second.playerTookIt = playerTookIt;
-
-    if (g_SelectedReport.active && g_SelectedReport.hostageObjId == rawId)
-        g_SelectedReport.playerTookIt = playerTookIt;
-}
 
 bool Install_LostHostage_Hooks()
 {
@@ -540,6 +527,7 @@ bool Install_LostHostage_Hooks()
 
     const bool okConvert = CreateAndEnableHook(addrConvert, reinterpret_cast<void*>(&hkConvertRadioTypeToSpeechLabel), reinterpret_cast<void**>(&g_OrigConvertLabel));
     const bool okNotice = CreateAndEnableHook(addrNotice, reinterpret_cast<void*>(&hkAddNoticeInfo), reinterpret_cast<void**>(&g_OrigAddNoticeInfo));
+
     const bool okRadio = CreateAndEnableHook(addrRadio, reinterpret_cast<void*>(&hkStateRadioRequest), reinterpret_cast<void**>(&g_OrigRadioRequest));
 
 #ifdef _DEBUG

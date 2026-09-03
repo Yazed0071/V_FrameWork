@@ -370,11 +370,11 @@ namespace
         {
             if (at[i] != kOrig[i])
             {
-                LogDebug("[TppPickable] item-window bound patch REFUSED at 0x%llX: expected "
-                    "CMP EBX,0x209 (81 FB 09 02 00 00) but found %02X %02X %02X %02X "
-                    "%02X %02X - another module detoured these bytes or the address is "
-                    "wrong for this build; item equipIds below 0x1C2 keep crashing on "
-                    "drop/pickup\n",
+                LogDebug("[TppPickable] item-window bound patch REFUSED at 0x%llX: "
+                         "expected CMP EBX,0x209 but found %02X %02X %02X %02X %02X "
+                         "%02X - another module detoured it or the address is "
+                         "wrong; item equipIds below 0x1C2 keep crashing on "
+                         "drop/pickup\n",
                     static_cast<unsigned long long>(site),
                     at[0], at[1], at[2], at[3], at[4], at[5]);
                 return false;
@@ -387,9 +387,9 @@ namespace
         std::uint8_t* t = static_cast<std::uint8_t*>(AllocThunkNear(site, 64));
         if (!t)
         {
-            LogDebug("[TppPickable] item-window bound patch REFUSED: no executable page "
-                "within rel32 range of 0x%llX - item equipIds below 0x1C2 keep crashing "
-                "on drop/pickup\n", static_cast<unsigned long long>(site));
+            LogDebug("[TppPickable] item-window bound patch REFUSED: no executable "
+                     "page within rel32 of 0x%llX - item equipIds below 0x1C2 keep "
+                     "crashing on drop/pickup\n", static_cast<unsigned long long>(site));
             return false;
         }
 
@@ -412,9 +412,9 @@ namespace
         if (relIn > INT32_MAX || relIn < INT32_MIN)
         {
             VirtualFree(t, 0, MEM_RELEASE);
-            LogDebug("[TppPickable] item-window bound patch REFUSED: thunk is out of rel32 "
-                "range of 0x%llX - item equipIds below 0x1C2 keep crashing on "
-                "drop/pickup\n", static_cast<unsigned long long>(site));
+            LogDebug("[TppPickable] item-window bound patch REFUSED: thunk out of "
+                     "rel32 range of 0x%llX - item equipIds below 0x1C2 keep "
+                     "crashing on drop/pickup\n", static_cast<unsigned long long>(site));
             return false;
         }
 
@@ -422,8 +422,9 @@ namespace
         if (!VirtualProtect(at, 6, PAGE_EXECUTE_READWRITE, &old))
         {
             VirtualFree(t, 0, MEM_RELEASE);
-            Log("[TppPickable] item-window bound patch REFUSED: VirtualProtect failed at "
-                "0x%llX - item equipIds below 0x1C2 keep crashing on drop/pickup\n",
+            Log("[TppPickable] item-window bound patch REFUSED: VirtualProtect "
+                "failed at 0x%llX - item equipIds below 0x1C2 keep crashing on "
+                "drop/pickup\n",
                 static_cast<unsigned long long>(site));
             return false;
         }
@@ -446,7 +447,7 @@ bool Install_TppPickableHooks()
 
     InstallItemWindowBoundPatch();
 
-    void* target = reinterpret_cast<void*>(gAddr.CopyAndAdjustInfo);
+    void* target = ResolveGameAddress(gAddr.CopyAndAdjustInfo);
 
     if (MH_CreateHook(
         target,
@@ -478,7 +479,7 @@ bool Uninstall_TppPickableHooks()
     if (!g_TppPickableHooksInstalled)
         return true;
 
-    void* target = reinterpret_cast<void*>(gAddr.CopyAndAdjustInfo);
+    void* target = ResolveGameAddress(gAddr.CopyAndAdjustInfo);
 
     MH_DisableHook(target);
     MH_RemoveHook(target);

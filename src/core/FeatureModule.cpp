@@ -99,8 +99,8 @@ bool FeatureModuleRegistry::InstallAll(HMODULE hGame)
     const std::unordered_set<std::string>& disabled = DisabledModuleNames();
     if (!disabled.empty())
         Log("[FeatureModule] disabled_modules.txt lists %zu module(s) to skip this "
-            "boot; every skipped module is reported below as SKIPPED. Delete the file "
-            "or prefix a line with # to bring a module back.\n",
+            "boot (each reported below as SKIPPED); delete the file or prefix a "
+            "line with # to restore one\n",
             disabled.size());
 
     for (IFeatureModule* module : m_Modules)

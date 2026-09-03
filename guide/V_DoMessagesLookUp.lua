@@ -33,6 +33,7 @@ this.DEBUG_strCode32List={
   "OffBinocularsMode",
   "OnPlayerLockPickStart",
   "OnPlayerLockPickEnd",
+  "OnPickUpCollection",
   "Subtitles",
   "SubtitlesEventMessage",
   "BarrierDamage",
@@ -214,6 +215,12 @@ this.signatureTypes={
     {argName="gimmickId",argType="number"},
     {argName="doorSide",argType="number"},
   },
+  OnPickUpCollection={
+    {argName="playerIndex",argType="gameId"},
+    {argName="resourceId",argType="number"},
+    {argName="resourceType",argType="resourceType"},
+    {argName="langId",argType="str32"},
+  },
   SubtitlesEventMessage={
     {argName="message",argType="str32"},
   },
@@ -267,6 +274,7 @@ this.messageSignatures={
     OffBinocularsMode=this.signatureTypes.OffBinocularsMode,
     OnPlayerLockPickStart=this.signatureTypes.OnPlayerLockPickStart,
     OnPlayerLockPickEnd=this.signatureTypes.OnPlayerLockPickEnd,
+    OnPickUpCollection=this.signatureTypes.OnPickUpCollection,
     BarrierDamage=this.signatureTypes.BarrierDamage,
     partsTypeChange=this.signatureTypes.PartsTypeChange,
   },
@@ -516,6 +524,7 @@ function this.RefreshLookups()
   InfLookup.signatureTypes.OffBinocularsMode=this.signatureTypes.OffBinocularsMode
   InfLookup.signatureTypes.OnPlayerLockPickStart=this.signatureTypes.OnPlayerLockPickStart
   InfLookup.signatureTypes.OnPlayerLockPickEnd=this.signatureTypes.OnPlayerLockPickEnd
+  InfLookup.signatureTypes.OnPickUpCollection=this.signatureTypes.OnPickUpCollection
   InfLookup.signatureTypes.SubtitlesEventMessage=this.signatureTypes.SubtitlesEventMessage
   InfLookup.signatureTypes.BarrierDamage=this.signatureTypes.BarrierDamage
   InfLookup.signatureTypes.StopWalkMan=this.signatureTypes.StopWalkMan
@@ -541,6 +550,7 @@ function this.RefreshLookups()
   InfLookup.messageSignatures.Player.OffBinocularsMode=this.signatureTypes.OffBinocularsMode
   InfLookup.messageSignatures.Player.OnPlayerLockPickStart=this.signatureTypes.OnPlayerLockPickStart
   InfLookup.messageSignatures.Player.OnPlayerLockPickEnd=this.signatureTypes.OnPlayerLockPickEnd
+  InfLookup.messageSignatures.Player.OnPickUpCollection=this.signatureTypes.OnPickUpCollection
   InfLookup.messageSignatures.Player.BarrierDamage=this.signatureTypes.BarrierDamage
   InfLookup.messageSignatures.Player.partsTypeChange=this.signatureTypes.PartsTypeChange
   InfLookup.messageSignatures.UI.TimeCigaretteUi=this.signatureTypes.TimeCigaretteUi

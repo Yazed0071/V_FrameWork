@@ -1,4 +1,6 @@
-#include "pch.h"
+﻿#include "pch.h"
+
+#include "../outfit/AdditionalMotionTable_GetMtarPathId.h"
 #include "DeployGuard.h"
 #include "EquipPartParams.h"
 
@@ -51,7 +53,46 @@ namespace
         std::map<std::string, int> nameToId;
         int space = -1;
         std::uint8_t* origBuf = nullptr;
+        bool persistLoaded = false;
+        std::set<int> persistReserved;
     };
+
+    static const char* PartPersistTag(const char* poolName)
+    {
+        if (!poolName)                                     return nullptr;
+        if (std::strcmp(poolName, "magazine") == 0)        return "AM";
+        if (std::strcmp(poolName, "stock") == 0)           return "SK";
+        if (std::strcmp(poolName, "muzzleOption") == 0)    return "MO";
+        if (std::strcmp(poolName, "sight") == 0)           return "ST";
+        if (std::strcmp(poolName, "barrel") == 0)          return "BA";
+        if (std::strcmp(poolName, "underBarrel") == 0)     return "UB";
+        if (std::strcmp(poolName, "option") == 0)          return "LTLS";
+        if (std::strcmp(poolName, "bullet") == 0)          return "BL";
+        if (std::strcmp(poolName, "receiverBuffer") == 0)  return "RC";
+        return nullptr;
+    }
+
+    static PartBuffer* g_PartPersistLoadTarget = nullptr;
+
+    static void PartPersistReserveCb(const char* name, std::int32_t value)
+    {
+        static_cast<void>(name);
+        if (g_PartPersistLoadTarget && value > 0)
+            g_PartPersistLoadTarget->persistReserved.insert(static_cast<int>(value));
+    }
+
+    static void EnsurePartPersistLoaded(PartBuffer& pb)
+    {
+        if (pb.persistLoaded)
+            return;
+        pb.persistLoaded = true;
+        if (const char* tag = PartPersistTag(pb.name))
+        {
+            g_PartPersistLoadTarget = &pb;
+            V_FrameWorkState::ForEachPersistedConstant(tag, &PartPersistReserveCb);
+            g_PartPersistLoadTarget = nullptr;
+        }
+    }
 
     static PartBuffer g_Magazine = { "magazine", 0x20, 8, 191, 255, {}, false, 192, {}, kVanillaSpace_Magazine };
     static PartBuffer g_Stock    = { "stock",    0x40, 2, 42,  255, {}, false, 43,  {}, kVanillaSpace_Stock };
@@ -267,13 +308,9 @@ namespace
                     break;
                 used += n;
             }
-            LogDebug("[EquipParam] supply ammo-count table healed: %d cached copy(ies) "
-                "of the STOCK magazine buffer %p still lived in the equip-system "
-                "objects (%s) - the supply refill reads its per-item amount as "
-                "magazineTable[GetRootParameterId2(itemEquipId)].totalCarry through "
-                "one of those, so custom ammoIds %d..%d indexed past its %d rows and "
-                "an ammo supply granted garbage/0. Repointed to the live shadow %p "
-                "(identical vanilla rows + the custom ones).\n",
+            LogDebug("[EquipParam] supply ammo-count healed: %d stale copy(ies) of "
+                     "stock magazine buf %p in %s; custom ammoIds %d..%d were past "
+                     "its %d rows -> repointed to shadow %p\n",
                 nHits, static_cast<void*>(from), where,
                 g_Magazine.stockCount + 1, g_Magazine.maxId, g_Magazine.stockCount,
                 static_cast<void*>(to));
@@ -282,12 +319,9 @@ namespace
 
         const int attempt = g_SupplyMagAttempts.fetch_add(1) + 1;
         if (attempt == 1 || attempt == 8 || attempt == 64)
-            LogDebug("[EquipParam] supply ammo-count scan (attempt %d): no cached copy "
-                "of the stock magazine buffer %p found in app=%p equipSystem=%p "
-                "equipSystem+0x10=%p (windows 0x%zX). Live values: [es+0xa0]=%p "
-                "[es+0x10+0xa0]=%p. If the objects are still null the scan simply ran "
-                "before they were built and retries; if they are live and nothing "
-                "matched, the supply path caches the table somewhere else.\n",
+            LogDebug("[EquipParam] supply ammo-count scan (attempt %d): stock "
+                     "magazine buf %p not cached in app=%p es=%p es+0x10=%p (window "
+                     "0x%zX); live [es+0xa0]=%p [es+0x10+0xa0]=%p - retrying\n",
                 attempt, static_cast<void*>(from), static_cast<void*>(app),
                 static_cast<void*>(es), static_cast<void*>(po), kSupplyScanWindow,
                 ReadPtrAtOffsetSEH(es, 0xa0), ReadPtrAtOffsetSEH(po, 0xa0));
@@ -319,9 +353,8 @@ namespace
         const int id = g_WideNext[pb.space]++;
         pb.nameToId[name] = id;
         g_WideParts[pb.space][id];
-        LogDebug("[EquipParam] '%s' -> %s id %d (WIDE: the engine byte lane is nearly "
-            "full, so this part lives past it; a lane byte is bound the first time "
-            "a weapon references it)\n",
+        LogDebug("[EquipParam] '%s' -> %s id %d (WIDE: past the engine byte lane; "
+                 "lane bound on first weapon reference)\n",
             name, pb.name, id);
         return id;
     }
@@ -334,14 +367,30 @@ namespace
             if (!PartIdWiden_Install())
                 return;
             EquipParam_EnableWidePartIds(65535);
-            Log("[PartIdWiden] armed before the first custom part id was handed out. "
-                "It used to install with GunBasicInject, which runs after Lua has "
-                "already registered every part, so each custom receiver was given a "
-                "WIDE id past the engine's byte lane, truncated there, and had to be "
-                "papered over with its motion donor - the weapon then resolved the "
-                "DONOR receiver for its parameters while everything else stayed "
-                "correct.\n");
+            Log("[PartIdWiden] armed before the first custom part id was handed "
+                "out\n");
         });
+    }
+
+    static bool PartIdTakenThisSession(const PartBuffer& pb, int id)
+    {
+        for (const auto& kv : pb.nameToId)
+            if (kv.second == id)
+                return true;
+        return false;
+    }
+
+    static bool PartIdUsable(const PartBuffer& pb, int id)
+    {
+        if (id <= pb.stockCount || id > pb.maxId)
+            return false;
+        if (PartIdWiden_IsActive() && pb.space == kVanillaSpace_Option
+            && (id & 0xFF) == 6)
+            return false;
+        if (pb.space >= 0 && pb.space < kVanillaSpace_Count
+            && g_WideParts[pb.space].count(id) != 0)
+            return false;
+        return !PartIdTakenThisSession(pb, id);
     }
 
     static int AllocatePartSlot(PartBuffer& pb, const char* name)
@@ -358,23 +407,63 @@ namespace
         if (!EnsurePartShadow(pb))
             return 0;
 
+        EnsurePartPersistLoaded(pb);
+        const char* const persistTag = PartPersistTag(pb.name);
+        if (persistTag)
+        {
+            const int persisted =
+                V_FrameWorkState::GetPersistedConstant(persistTag, name);
+            if (persisted > 0 && PartIdUsable(pb, persisted))
+            {
+                pb.persistReserved.erase(persisted);
+                pb.nameToId[name] = persisted;
+                return persisted;
+            }
+            if (persisted > 0)
+                LogDebug("[EquipParam] persisted %s id %d for '%s' is no longer "
+                         "free - reallocating; anything that stored the old id "
+                         "now names a different part\n",
+                    pb.name, persisted, name);
+        }
+
         if (pb.nextId <= pb.stockCount)
         {
-            LogDebug("[EquipParam] %s allocator floor was %d, at or below the %d stock rows - "
-                "raised to %d; a custom part id inside the stock range overwrites a vanilla "
-                "part and breaks every vanilla weapon built on it\n",
+            LogDebug("[EquipParam] %s allocator floor %d <= %d stock rows - raised "
+                     "to %d; a custom id inside the stock range overwrites a "
+                     "vanilla part\n",
                 pb.name, pb.nextId, pb.stockCount, pb.stockCount + 1);
             pb.nextId = pb.stockCount + 1;
         }
 
         if (!PartIdWiden_IsActive()
             && pb.nextId > pb.maxId - kAliasReserve && pb.space >= 0)
-            return AllocateWidePartId(pb, name);
-
-        if (PartIdWiden_IsActive() && pb.space == kVanillaSpace_Option)
         {
-            while (pb.nextId <= pb.maxId && (pb.nextId & 0xFF) == 6)
+            const int wide = AllocateWidePartId(pb, name);
+            if (wide > 0 && persistTag)
+                V_FrameWorkState::SetPersistedConstant(persistTag, name, wide);
+            return wide;
+        }
+
+        while (pb.nextId <= pb.maxId)
+        {
+            if (PartIdWiden_IsActive() && pb.space == kVanillaSpace_Option
+                && (pb.nextId & 0xFF) == 6)
+            {
                 ++pb.nextId;
+                continue;
+            }
+            if (pb.space >= 0 && pb.space < kVanillaSpace_Count
+                && g_WideParts[pb.space].count(pb.nextId) != 0)
+            {
+                ++pb.nextId;
+                continue;
+            }
+            if (pb.persistReserved.count(pb.nextId) != 0)
+            {
+                ++pb.nextId;
+                continue;
+            }
+            break;
         }
 
         if (pb.nextId > pb.maxId)
@@ -386,6 +475,8 @@ namespace
 
         const int id = pb.nextId++;
         pb.nameToId[name] = id;
+        if (persistTag)
+            V_FrameWorkState::SetPersistedConstant(persistTag, name, id);
         LogDebug("[EquipParam] '%s' -> %s id %d (shadow slot)\n", name, pb.name, id);
         return id;
     }
@@ -912,9 +1003,8 @@ namespace
             return;
         if (gAddr.WeaponSystem_DefineWeaponFireSound == 0)
         {
-            LogDebug("[EquipParam] SetReceiver: %s suppressed-sound override needs the "
-                "fire-sound hook, unavailable on this build - vanilla suppressed "
-                "sound kept\n", field);
+            LogDebug("[EquipParam] SetReceiver: %s suppressed-sound needs the "
+                     "fire-sound hook (absent on this build) - vanilla sound kept\n", field);
             return;
         }
         {
@@ -940,8 +1030,8 @@ namespace
         if (gAddr.WeaponSystem_DefineWeaponFireSound == 0)
         {
             if (isEvent || text.size() > 7)
-                LogDebug("[EquipParam] SetReceiver: %s '%s' needs the fire-sound override, "
-                    "unavailable on this build - falling back to the 7-char row\n",
+                LogDebug("[EquipParam] SetReceiver: %s '%s' needs the fire-sound "
+                         "override (absent on this build) - using the 7-char row\n",
                     field, text.c_str());
             return;
         }
@@ -950,8 +1040,8 @@ namespace
             g_FireSoundByRow[idx] = FireSoundSpec{ text, mSeg, isEvent };
         }
         if (isEvent)
-            LogDebug("[EquipParam] SetReceiver: %s fire-sound event='%s' (played verbatim; "
-                "the suppressed sound stays vanilla unless supEvent/sup is given)\n",
+            LogDebug("[EquipParam] SetReceiver: %s fire-sound event='%s' (verbatim; "
+                     "suppressed stays vanilla unless supEvent given)\n",
                 field, text.c_str());
         else
             LogDebug("[EquipParam] SetReceiver: %s fire-sound override root='%s' _m=%s\n",
@@ -985,11 +1075,9 @@ namespace
             return;
         if (InitShadowSEH(loc, pb.shadow.data(),
                           static_cast<size_t>(pb.stockCount) * pb.stride) == 1)
-            LogDebug("[EquipParam] %s shadow re-established: an equip-table reload re-pointed "
-                "it to a fresh stock buffer, orphaning our custom rows - the reloaded "
-                "weapon's receiver/part params were reading as zero (single-shot, wrong "
-                "fire rate, null fire-sound root); stock rows re-synced, custom rows "
-                "preserved\n", pb.name);
+            LogDebug("[EquipParam] %s shadow re-established: an equip-table reload "
+                     "re-pointed it to a fresh stock buffer, so custom rows were "
+                     "reading as zero\n", pb.name);
     }
 
     static bool RestampRcvRowSEH(std::uint8_t* dst, const std::uint8_t* src,
@@ -1038,13 +1126,10 @@ namespace
         if (repaired && !s_warned)
         {
             s_warned = true;
-            Log("[EquipParam] WARNING: %d claimed receiver lane row(s) had been "
-                "overwritten with vanilla data (first: lane %d) - an equip-table "
-                "reload re-parses the receiver buffer IN PLACE, so the pointer "
-                "never moves and the relocation guard cannot see it; every lane "
-                "reclaimed from the vanilla 1..%d range loses its baseIdx/sysIdx "
-                "and the weapon fires with the vanilla receiver's fire rate and "
-                "fire mode. Rows re-asserted before this gunInfo build.\n",
+            Log("[EquipParam] WARNING: %d claimed receiver lane(s) overwritten by "
+                "an in-place equip-table reload (first lane %d, vanilla range "
+                "1..%d) - those weapons fired with the vanilla receiver; rows "
+                "re-asserted\n",
                 repaired, firstLane, kReceiverCapacity);
         }
     }
@@ -1286,6 +1371,254 @@ namespace
                 : PartCode_DonorPartType(6, sightId, g_SightTypeExt);
         }
         return g_OrigGetSightType ? g_OrigGetSightType(self, sightId) : 0;
+    }
+
+    static const int kUiSightVanillaMax = 24;
+
+    static constexpr std::uint8_t kUiSightTypePrologue[5] =
+        { 0xFF, 0xCA, 0x83, 0xFA, 0x17 };
+
+    using GetUiSightType_t = unsigned int(__fastcall*)(void* self, unsigned int sightId);
+    static const std::ptrdiff_t kUiSightShownTypeOffset = 0x764;
+
+    struct SightOverlayName
+    {
+        const char*  name;
+        unsigned int overlayId;
+    };
+
+    static const unsigned int kVanillaSightOverlayId[kUiSightVanillaMax] =
+    {
+        0x03, 0x0D, 0x14, 0x04, 0x05, 0x19, 0x0C, 0x11,
+        0x0E, 0x0B, 0x13, 0x0A, 0x07, 0x10, 0x02, 0x09,
+        0x06, 0x12, 0x01, 0x0F, 0x15, 0x17, 0x18, 0x16,
+    };
+
+    static const SightOverlayName kSightOverlayNames[] =
+    {
+        { "st00",    1 }, { "st01",    2 }, { "st02",    3 }, { "st03_0",  4 },
+        { "st03_1",  5 }, { "st04",    6 }, { "st05",    7 }, { "st07",    9 },
+        { "st08_0", 10 }, { "st08_1", 11 }, { "st09",   12 }, { "st10",   13 },
+        { "st11",   14 }, { "st12",   15 }, { "st13",   16 }, { "st14",   17 },
+        { "st15",   18 }, { "st16",   19 }, { "st17",   20 }, { "ms00",   21 },
+        { "ms01",   22 }, { "ms02",   23 }, { "ms03",   24 }, { "ar02",   25 },
+    };
+
+    static const unsigned int kSubjectiveIdCount = 39;
+
+    using SightWindowCreate_t = void(__fastcall*)(void* self, void* ctx, void* out);
+    using SightWindowDelete_t = void(__fastcall*)(void* self, void* handles);
+
+    static GetUiSightType_t   g_OrigGetUiSightTypeBySightId = nullptr;
+    static SightWindowCreate_t g_OrigSightWindowCreate = nullptr;
+    static SightWindowDelete_t g_OrigSightWindowDelete = nullptr;
+    static std::uint8_t       g_UiSightDonor[kPartTypeExtCount];
+    static volatile std::uint8_t  g_SubjectiveWindowLive[kSubjectiveIdCount];
+    static volatile unsigned int  g_SubjectiveWindowNewest = 0;
+    static volatile unsigned int  g_SubjectiveWindowPrev   = 0;
+    static volatile unsigned int  g_VanillaAskOverlay      = 0;
+
+    static unsigned int ReadSightFactoryIdSEH(const void* self)
+    {
+        __try
+        {
+            return *reinterpret_cast<const std::uint32_t*>(
+                static_cast<const std::uint8_t*>(self) + 8);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return 0;
+        }
+    }
+
+    static void __fastcall hkSightWindowCreate(void* self, void* ctx, void* out)
+    {
+        if (g_OrigSightWindowCreate)
+            g_OrigSightWindowCreate(self, ctx, out);
+        const unsigned int id = ReadSightFactoryIdSEH(self);
+        if (id != 0 && id < kSubjectiveIdCount && g_SubjectiveWindowNewest != id)
+        {
+            g_SubjectiveWindowLive[id] = 1;
+            g_SubjectiveWindowPrev     = g_SubjectiveWindowNewest;
+            g_SubjectiveWindowNewest   = id;
+        }
+    }
+
+    static void __fastcall hkSightWindowDelete(void* self, void* handles)
+    {
+        const unsigned int id = ReadSightFactoryIdSEH(self);
+        if (id != 0 && id < kSubjectiveIdCount)
+        {
+            g_SubjectiveWindowLive[id] = 0;
+            if (g_SubjectiveWindowNewest == id)
+            {
+                g_SubjectiveWindowNewest = g_SubjectiveWindowPrev;
+                g_SubjectiveWindowPrev   = 0;
+            }
+            else if (g_SubjectiveWindowPrev == id)
+                g_SubjectiveWindowPrev = 0;
+        }
+        if (g_OrigSightWindowDelete)
+            g_OrigSightWindowDelete(self, handles);
+    }
+
+    static bool IsSubjectiveWindowLive(unsigned int id)
+    {
+        return id != 0 && id < kSubjectiveIdCount && g_SubjectiveWindowLive[id] != 0;
+    }
+
+    static unsigned int PickLiveSubjectiveId(unsigned int preferred)
+    {
+        if (IsSubjectiveWindowLive(preferred))
+            return preferred;
+        const unsigned int taken  = g_VanillaAskOverlay;
+        const unsigned int newest = g_SubjectiveWindowNewest;
+        const unsigned int prev   = g_SubjectiveWindowPrev;
+        if (IsSubjectiveWindowLive(newest) && newest != taken)
+            return newest;
+        if (IsSubjectiveWindowLive(prev) && prev != taken)
+            return prev;
+        if (IsSubjectiveWindowLive(newest))
+            return newest;
+        return 0;
+    }
+    static unsigned int     g_UiSightLastAsk   = 0xFFFFFFFF;
+    static unsigned int     g_UiSightLastShown = 0xFFFFFFFF;
+
+    static unsigned int ReadShownUiSightTypeSEH(const void* self)
+    {
+        __try
+        {
+            return *reinterpret_cast<const unsigned int*>(
+                static_cast<const std::uint8_t*>(self) + kUiSightShownTypeOffset);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return 0xFFFFFFFF;
+        }
+    }
+
+    static bool ReadVanillaSightUiSEH(const std::uint8_t* buf, int scopeId,
+                                      int& outScopeUi, int& outMagnification)
+    {
+        __try
+        {
+            const std::uint8_t* p = buf + static_cast<size_t>(scopeId - 1) * 5;
+            int top = p[0];
+            if (p[1] > top)
+                top = p[1];
+            if (p[2] > top)
+                top = p[2];
+            outMagnification = top;
+            outScopeUi       = p[3];
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
+    static int PickVanillaSightForScopeUi(int scopeUiId, int magnification)
+    {
+        const std::uint8_t* buf = PartCurrentBuf(g_Sight);
+        if (!buf)
+            return 0;
+        int best = 0;
+        int bestDelta = 0;
+        for (int id = 1; id <= kUiSightVanillaMax; ++id)
+        {
+            int ui = 0;
+            int mag = 0;
+            if (!ReadVanillaSightUiSEH(buf, id, ui, mag) || ui != scopeUiId)
+                continue;
+            const int delta = mag > magnification ? mag - magnification
+                                                  : magnification - mag;
+            if (best == 0 || delta < bestDelta)
+            {
+                best = id;
+                bestDelta = delta;
+            }
+        }
+        return best;
+    }
+
+    static const char* SightOverlayNameForId(unsigned int overlayId)
+    {
+        for (const SightOverlayName& entry : kSightOverlayNames)
+        {
+            if (entry.overlayId == overlayId)
+                return entry.name;
+        }
+        return nullptr;
+    }
+
+    static void BindCustomSightScopeUi(int scopeId, int scopeUiId,
+                                       int zoom1, int zoom2, int zoom3)
+    {
+        if (scopeId <= kUiSightVanillaMax || scopeId >= kPartTypeExtCount)
+            return;
+        int magnification = zoom1;
+        if (zoom2 > magnification)
+            magnification = zoom2;
+        if (zoom3 > magnification)
+            magnification = zoom3;
+        const int donor = scopeUiId != 0
+            ? PickVanillaSightForScopeUi(scopeUiId, magnification)
+            : 0;
+        g_UiSightDonor[scopeId] = static_cast<std::uint8_t>(donor);
+        if (scopeUiId != 0 && donor == 0)
+            Log("[EquipParam] WARNING: sight %d asks for scopeUiId=%d but no "
+                "vanilla sight 1..%d declares that scope UI, so there is no "
+                "overlay to borrow - this sight aims with no scope UI\n",
+                scopeId, scopeUiId, kUiSightVanillaMax);
+        else if (donor != 0)
+        {
+            const unsigned int overlayId = kVanillaSightOverlayId[donor - 1];
+            const char* art = SightOverlayNameForId(overlayId);
+            LogDebug("[EquipParam] sight %d (scopeUiId=%d, top magnification %d) uses "
+                     "subjective id %u - its sight part must ship sight_%s.fox2 and "
+                     "UI_wpscope_%s.uilb or no scope overlay window will exist\n",
+                scopeId, scopeUiId, magnification, overlayId,
+                art ? art : "?", art ? art : "?");
+        }
+    }
+
+    static unsigned int __fastcall hkGetUiSightTypeBySightId(void* self,
+                                                            unsigned int sightId)
+    {
+        if (!g_OrigGetUiSightTypeBySightId)
+            return 0;
+        if (sightId != 0 && sightId <= static_cast<unsigned int>(kUiSightVanillaMax))
+        {
+            const unsigned int vanilla = g_OrigGetUiSightTypeBySightId(self, sightId);
+            g_VanillaAskOverlay = vanilla;
+            return vanilla;
+        }
+        if (sightId > static_cast<unsigned int>(kUiSightVanillaMax)
+            && sightId < kPartTypeExtCount)
+        {
+            const unsigned int donor = g_UiSightDonor[sightId];
+            const unsigned int computed = donor != 0
+                ? g_OrigGetUiSightTypeBySightId(self, donor)
+                : 0;
+            const unsigned int live = PickLiveSubjectiveId(computed);
+            const unsigned int uiSightType = live != 0 ? live : computed;
+            if (uiSightType != 0 && live == 0
+                && (sightId != g_UiSightLastAsk
+                    || uiSightType != g_UiSightLastShown))
+            {
+                g_UiSightLastAsk   = sightId;
+                g_UiSightLastShown = uiSightType;
+                Log("[EquipParam] WARNING: custom sight %u asks for subjective id %u but "
+                    "no scope overlay window is registered under any id - its sight part "
+                    "ships no sight entry-data, so the scope draws nothing\n",
+                    sightId, uiSightType);
+            }
+            if (uiSightType != 0)
+                return uiSightType;
+        }
+        return g_OrigGetUiSightTypeBySightId(self, sightId);
     }
 
     static bool CopyPartTypeExt(std::uint8_t* ext, bool& ready,
@@ -1831,7 +2164,8 @@ int __cdecl l_SetOption(lua_State* L)
     int optionId = 0;
     if (!ReadNamedInt(L, 1, "optionId", optionId) || optionId <= 0)
     {
-        LogDebug("[EquipParam] SetOption: missing/invalid optionId (declare one via V_TppEquip.DeclareLTLS)\n");
+        LogDebug("[EquipParam] SetOption: missing/invalid optionId (declare via "
+                 "V_TppEquip.DeclareLTLS)\n");
         return 0;
     }
 
@@ -1898,7 +2232,8 @@ int __cdecl l_SetUnderBarrel(lua_State* L)
     int underBarrelId = 0;
     if (!ReadNamedInt(L, 1, "underBarrelId", underBarrelId) || underBarrelId <= 0)
     {
-        LogDebug("[EquipParam] SetUnderBarrel: missing/invalid underBarrelId (declare one via V_TppEquip.DeclareUBs)\n");
+        LogDebug("[EquipParam] SetUnderBarrel: missing/invalid underBarrelId "
+                 "(declare via V_TppEquip.DeclareUBs)\n");
         return 0;
     }
 
@@ -1910,9 +2245,8 @@ int __cdecl l_SetUnderBarrel(lua_State* L)
 
     if (!hasReceiver || receiverId <= 0)
     {
-        LogDebug("[EquipParam] SetUnderBarrel underBarrelId=%d: requires a receiverId (the underbarrel is a "
-            "sub-weapon - its receiverId picks its firing behavior from the receiver buffer, magazineId "
-            "its ammo). Row rejected.\n", underBarrelId);
+        LogDebug("[EquipParam] SetUnderBarrel underBarrelId=%d: needs a receiverId "
+                 "(it is a sub-weapon) - row rejected\n", underBarrelId);
         return 0;
     }
 
@@ -1927,8 +2261,8 @@ int __cdecl l_SetUnderBarrel(lua_State* L)
     magazineId = ResolvePartByteLocked(kVanillaSpace_Magazine, magazineId);
     if (receiverId <= 0)
     {
-        LogDebug("[EquipParam] SetUnderBarrel underBarrelId=%d: its receiver could not "
-            "bind an engine lane byte - row rejected\n", underBarrelId);
+        LogDebug("[EquipParam] SetUnderBarrel underBarrelId=%d: receiver could not "
+                 "bind an engine lane byte - row rejected\n", underBarrelId);
         return 0;
     }
 
@@ -2019,17 +2353,15 @@ int __cdecl l_SetUnderBarrel(lua_State* L)
         }
         if (ubType != 0 && typeApplied)
         {
-            LogDebug("[ChimeraMotion] underBarrelId=%d animation type %d inherited from vanilla "
-                "underBarrel %d (%s) - the grenade-launcher motion set now loads for weapons "
-                "carrying this under-barrel.\n",
+            LogDebug("[ChimeraMotion] underBarrelId=%d anim type %d inherited from "
+                     "vanilla UB %d (%s)\n",
                 underBarrelId, ubType, donor, how);
         }
         else
         {
-            LogDebug("[ChimeraMotion] underBarrelId=%d has NO animation type - the engine's type table "
-                "only covers vanilla ids 1..%d, so a custom id contributes no motion and the parent "
-                "weapon's own animations play instead. Set motionFrom=<vanilla UB id> on this "
-                "under-barrel, or give its receiver a motionFrom that matches one.\n",
+            LogDebug("[ChimeraMotion] underBarrelId=%d has NO anim type (engine "
+                     "table covers only 1..%d) - no motion; set motionFrom=<vanilla "
+                     "UB id>\n",
                 underBarrelId, g_UnderBarrel.stockCount);
         }
     }
@@ -2055,7 +2387,8 @@ int __cdecl l_SetBarrel(lua_State* L)
     int barrelId = 0;
     if (!ReadNamedInt(L, 1, "barrelId", barrelId) || barrelId <= 0)
     {
-        LogDebug("[EquipParam] SetBarrel: missing/invalid barrelId (declare one via V_TppEquip.DeclareBAs)\n");
+        LogDebug("[EquipParam] SetBarrel: missing/invalid barrelId (declare via "
+                 "V_TppEquip.DeclareBAs)\n");
         return 0;
     }
 
@@ -2075,14 +2408,14 @@ int __cdecl l_SetBarrel(lua_State* L)
 
     if (baseKind == 1 && (base < 0 || base > 255))
     {
-        LogDebug("[EquipParam] SetBarrel barrelId=%d: base=%d out of range [0,255] - the barrel "
-            "ballistics/range index (barrelParamSetsBase curve) is a full byte. Masked.\n",
+        LogDebug("[EquipParam] SetBarrel barrelId=%d: base=%d out of the [0,255] "
+                 "byte range - masked\n",
             barrelId, base);
     }
     if (barrelLength < 0 || barrelLength > 15)
     {
-        LogDebug("[EquipParam] SetBarrel barrelId=%d: barrelLength=%d out of range [0,15] - "
-            "BarrelLengthType is a 4-bit field. Masked.\n", barrelId, barrelLength);
+        LogDebug("[EquipParam] SetBarrel barrelId=%d: barrelLength=%d out of the "
+                 "[0,15] 4-bit range - masked\n", barrelId, barrelLength);
     }
 
     std::lock_guard<std::recursive_mutex> lock(g_Mutex);
@@ -2154,11 +2487,11 @@ int __cdecl l_SetBarrel(lua_State* L)
             }
         }
         if (baseCurve[1] > 2.555)
-            LogDebug("[EquipParam] SetBarrel barrelId=%d: unk2 clamped to 2.55 - no "
-                "known engine consumer to post-scale\n", barrelId);
+            LogDebug("[EquipParam] SetBarrel barrelId=%d: unk2 clamped to 2.55 (no "
+                     "engine consumer to post-scale)\n", barrelId);
         if (baseCurve[6] > 2.555)
-            LogDebug("[EquipParam] SetBarrel barrelId=%d: percentOverride clamped to "
-                "2.55 - GunInfo+0x83 is a byte\n", barrelId);
+            LogDebug("[EquipParam] SetBarrel barrelId=%d: percentOverride clamped "
+                     "to 2.55 (GunInfo+0x83 is a byte)\n", barrelId);
 
         const int idx = AllocateRefPoolRow(g_BarrelBase);
         if (idx >= 0)
@@ -2171,9 +2504,8 @@ int __cdecl l_SetBarrel(lua_State* L)
                 {
                     g_BarrelOverflow[barrelId] = idx;
                     base = 0;
-                    LogDebug("[EquipParam] SetBarrel barrelId=%d: curve row %d is past "
-                        "the 254-slot direct window - served through the overflow "
-                        "swap at gun setup\n", barrelId, idx);
+                    LogDebug("[EquipParam] SetBarrel barrelId=%d: curve row %d past "
+                             "the 254-slot window - served via overflow swap\n", barrelId, idx);
                     if (barrelId <= g_Barrel.stockCount)
                         EquipParam_VanillaForceTaint(kVanillaSpace_Barrel, barrelId,
                             "overflow curve rows the pre-image diff cannot see");
@@ -2186,10 +2518,10 @@ int __cdecl l_SetBarrel(lua_State* L)
                 if (wantExtra)
                 {
                     g_BarrelExtraMult[barrelId] = ex;
-                    LogDebug("[EquipParam] SetBarrel barrelId=%d: multiplier(s) above "
-                        "the 2.55x byte ceiling - remainder applied at gun setup "
-                        "(fireRate x%.2f aim x%.2f range x%.2f rangeUI x%.2f "
-                        "spreadMax x%.2f)\n", barrelId,
+                    LogDebug("[EquipParam] SetBarrel barrelId=%d: multipliers over "
+                             "the 2.55x byte ceiling - remainder applied at gun "
+                             "setup (fireRate x%.2f aim x%.2f range x%.2f rangeUI "
+                             "x%.2f spreadMax x%.2f)\n", barrelId,
                         ex.rem[0], ex.rem[2], ex.rem[3], ex.rem[4], ex.rem[5]);
                     if (barrelId <= g_Barrel.stockCount)
                         EquipParam_VanillaForceTaint(kVanillaSpace_Barrel, barrelId,
@@ -2204,8 +2536,8 @@ int __cdecl l_SetBarrel(lua_State* L)
         else
         {
             g_BarrelExtraMult.erase(barrelId);
-            LogDebug("[EquipParam] SetBarrel barrelId=%d: could not append custom "
-                "barrelParamSetsBase curve - any >2.55x request dropped\n",
+            LogDebug("[EquipParam] SetBarrel barrelId=%d: could not append a custom "
+                     "barrelParamSetsBase curve - >2.55x dropped\n",
                 barrelId);
         }
     }
@@ -2262,21 +2594,20 @@ int __cdecl l_SetMagazine(lua_State* L)
     ReadNamedInt(L, 1, "bulletId", bulletId);
 
     if (capacity < 0 || capacity > 0x3FF)
-        LogDebug("[EquipParam] SetMagazine ammoId=%d: capacity=%d exceeds the "
-            "native 10-bit field (max 1023) - clamped to the field range\n",
+        LogDebug("[EquipParam] SetMagazine ammoId=%d: capacity=%d over the 10-bit "
+                 "field (max 1023) - clamped\n",
             ammoId, capacity);
     if (totalCarry > 0x3FFF)
-        LogDebug("[EquipParam] SetMagazine ammoId=%d: totalCarry=%d exceeds the "
-            "native 14-bit field (max 16383) - clamped; use 0 for the "
-            "unlimited-carry sentinel\n",
+        LogDebug("[EquipParam] SetMagazine ammoId=%d: totalCarry=%d over the 14-bit "
+                 "field (max 16383) - clamped; 0 = unlimited\n",
             ammoId, totalCarry);
     if (eqpAmmoId < 0 || eqpAmmoId > 0xFFFF)
-        LogDebug("[EquipParam] SetMagazine ammoId=%d: equipAmmoId=%d exceeds the "
-            "native field (0..65535) and wraps to %d\n",
+        LogDebug("[EquipParam] SetMagazine ammoId=%d: equipAmmoId=%d over 65535 - "
+                 "wraps to %d\n",
             ammoId, eqpAmmoId, eqpAmmoId & 0xFFFF);
     if (bulletId < 0 || bulletId > 0xFF)
-        LogDebug("[EquipParam] SetMagazine ammoId=%d: bulletId=%d exceeds the "
-            "native byte field (0..255) and wraps to %d\n",
+        LogDebug("[EquipParam] SetMagazine ammoId=%d: bulletId=%d over the byte "
+                 "field - wraps to %d\n",
             ammoId, bulletId, bulletId & 0xFF);
 
     std::lock_guard<std::recursive_mutex> lock(g_Mutex);
@@ -2349,7 +2680,8 @@ int __cdecl l_SetBullet(lua_State* L)
     int bulletId = 0;
     if (!ReadNamedInt(L, 1, "bulletId", bulletId) || bulletId <= 0)
     {
-        LogDebug("[EquipParam] SetBullet: missing/invalid bulletId (declare one via V_TppEquip.DeclareBLs)\n");
+        LogDebug("[EquipParam] SetBullet: missing/invalid bulletId (declare via "
+                 "V_TppEquip.DeclareBLs)\n");
         return 0;
     }
 
@@ -2384,8 +2716,8 @@ int __cdecl l_SetBullet(lua_State* L)
             if (idx >= 0 && idx <= 255)
                 u8v[2] = idx;
             else
-                LogDebug("[EquipParam] SetBullet: bulletTrailEffect path '%s' not registered "
-                    "(trail list unavailable or index>255)\n", trailPath.c_str());
+                LogDebug("[EquipParam] SetBullet: bulletTrailEffect '%s' not "
+                         "registered (list unavailable or index>255)\n", trailPath.c_str());
         }
     }
     ReadNamedInt(L, 1, "unk09", u8v[3]);
@@ -2398,9 +2730,8 @@ int __cdecl l_SetBullet(lua_State* L)
     auto warnWidth = [&](const char* name, int v, int maxV)
     {
         if (v < 0 || v > maxV)
-            LogDebug("[EquipParam] SetBullet bulletId=%d: %s=%d exceeds the native "
-                "field (0..%d) and wraps to %d in the engine row - clamp or "
-                "rescale the value\n",
+            LogDebug("[EquipParam] SetBullet bulletId=%d: %s=%d over the native "
+                     "field (0..%d) - wraps to %d\n",
                 bulletId, name, v, maxV, v & maxV);
     };
     warnWidth("bulletSpeed",    u16v[0], 0xFFFF);
@@ -2445,9 +2776,8 @@ int __cdecl l_SetBullet(lua_State* L)
                 {
                     g_BulletBaseOverflow[bulletId] = idx;
                     u8v[0] = 0;
-                    LogDebug("[EquipParam] SetBullet bulletId=%d: falloff row %d is past "
-                        "the 254-slot direct window - served through the overflow "
-                        "swap at fire time\n", bulletId, idx);
+                    LogDebug("[EquipParam] SetBullet bulletId=%d: falloff row %d "
+                             "past the 254-slot window - served via overflow swap\n", bulletId, idx);
                     if (bulletId <= g_Bullet.stockCount)
                         EquipParam_VanillaForceTaint(kVanillaSpace_Bullet, bulletId,
                             "overflow falloff rows the pre-image diff cannot see");
@@ -2482,9 +2812,9 @@ int __cdecl l_SetBullet(lua_State* L)
                 if (idx > kPoolDirectMax)
                 {
                     u8v[1] = 0;
-                    LogDebug("[EquipParam] SetBullet bulletId=%d: NPC falloff row %d is "
-                        "past the direct window and NPC-fired shots cannot use the "
-                        "overflow swap - NPC shots fall back to curve 0\n",
+                    LogDebug("[EquipParam] SetBullet bulletId=%d: NPC falloff row "
+                             "%d past the direct window and NPC shots cannot use "
+                             "the overflow swap - falling back to curve 0\n",
                         bulletId, idx);
                 }
                 else
@@ -2495,7 +2825,8 @@ int __cdecl l_SetBullet(lua_State* L)
         }
         else
         {
-            LogDebug("[EquipParam] SetBullet bulletId=%d: could not append custom npcBulletParamSetsBase curve\n",
+            LogDebug("[EquipParam] SetBullet bulletId=%d: could not append a custom "
+                     "npcBulletParamSetsBase curve\n",
                 bulletId);
         }
     }
@@ -2768,6 +3099,9 @@ int __cdecl l_SetSight(lua_State* L)
     if (wideRow)
         SyncWideRowToAlias(g_Sight, scopeId);
 
+    BindCustomSightScopeUi(scopeId, Clamp(scopeUiId, 0, 255), Clamp(zoom1, 0, 255),
+                           Clamp(zoom2, 0, 255), Clamp(zoom3, 0, 255));
+
 #ifdef _DEBUG
     LogDebug("[EquipParam] SetSight scopeId=%d zoom=%d/%d/%d ui=%d flags=0x%02X -> native slot\n",
         scopeId, zoom1, zoom2, zoom3, scopeUiId, flags);
@@ -2793,11 +3127,9 @@ static bool BuildReferencedReceiverIds(std::set<int>& out)
     {
         static std::atomic<int> s_thinLogged{ 0 };
         if (s_thinLogged.fetch_add(1) < 4)
-            LogDebug("[EquipParam] receiver lane reclaim SKIPPED: the gunBasic table names only "
-                "%d distinct receivers, far fewer than vanilla's - the table is not "
-                "populated yet, so every unnamed row would look free and reclaiming one "
-                "would steal a receiver a vanilla weapon still uses. Falling back to "
-                "zero-row lanes only\n",
+            LogDebug("[EquipParam] receiver lane reclaim SKIPPED: gunBasic names "
+                     "only %d receivers, so the table is not populated yet and "
+                     "reclaiming would steal a live one. Zero-row lanes only\n",
                 static_cast<int>(out.size()));
         out.clear();
         return false;
@@ -2873,12 +3205,8 @@ static int AllocateReceiverLaneSlot(const char* logLabel)
         g_RcvClaimed.insert(receiverId);
         if (receiverId >= 0 && receiverId < 256)
             g_LaneIsCustomRcv[receiverId].store(true, std::memory_order_relaxed);
-        LogDebug("[EquipParam] '%s' -> receiverId %d (RECLAIMED: every zero row was taken, so "
-            "this non-zero vanilla receiver row was claimed instead - no weapon in the "
-            "%d-row gunBasic table references it, so overwriting it changes no gun that "
-            "can be equipped. If a vanilla weapon's recoil/fire-mode looks wrong after "
-            "this, that receiver was reached by something outside gunBasic and this id "
-            "must be excluded)\n",
+        LogDebug("[EquipParam] '%s' -> receiverId %d (RECLAIMED: no zero rows left; "
+                 "no weapon in the %d-row gunBasic table references it)\n",
             logLabel, receiverId, kGunBasicScanMaxId);
         return receiverId;
     }
@@ -2895,6 +3223,8 @@ int EquipParam_AllocateReceiverSlotForName(const char* name)
     auto it = g_RcvNameToId.find(name);
     if (it != g_RcvNameToId.end())
         return it->second;
+
+    EnsurePartIdWidenArmed();
 
     if (PartIdWiden_IsActive())
     {
@@ -2943,7 +3273,8 @@ int __cdecl l_SetReceiver(lua_State* L)
     int receiverId = 0;
     if (!ReadNamedInt(L, 1, "receiverId", receiverId) || receiverId <= 0)
     {
-        LogDebug("[EquipParam] SetReceiver: missing/invalid receiverId (declare one via V_TppEquip.DeclareRCs)\n");
+        LogDebug("[EquipParam] SetReceiver: missing/invalid receiverId (declare via "
+                 "V_TppEquip.DeclareRCs)\n");
         return 0;
     }
 
@@ -3001,18 +3332,18 @@ int __cdecl l_SetReceiver(lua_State* L)
         {
             int e = 0, r = 0, t = 0;
             if (ReadSysTriadSEH(sysPool, sys, &e, &r, &t))
-                LogDebug("[EquipParam] SetReceiver receiverId=%d: resolved "
-                    "receiverParamSetsSystem eqpType=%d reticleUiId=%d triggerId=%d "
-                    "(triggerId 0 = single-shot; symbolic TppEquip.TRIGGER_*/RETICLE_UI_* "
-                    "are undeclared -> nil -> 0. Use literal numbers.)\n",
+                LogDebug("[EquipParam] SetReceiver receiverId=%d: "
+                         "receiverParamSetsSystem eqpType=%d reticleUiId=%d "
+                         "triggerId=%d (0 = single-shot; "
+                         "TppEquip.TRIGGER_*/RETICLE_UI_* are nil - use literals)\n",
                     receiverId, e, r, t);
             int di = 0, de = 0, dr = 0, dt = 0;
             if (hasMotionFrom && motionFrom > 0 && motionFrom <= kReceiverMaxId
                 && ReadReceiverSysIndexSEH(rbuf, motionFrom, &di)
                 && ReadSysTriadSEH(sysPool, di, &de, &dr, &dt))
-                LogDebug("[EquipParam] SetReceiver receiverId=%d: motionFrom donor RC=%d "
-                    "uses eqpType=%d reticleUiId=%d triggerId=%d - copy these literal "
-                    "numbers into receiverParamSetsSystem for matching fire-mode/reticle\n",
+                LogDebug("[EquipParam] SetReceiver receiverId=%d: motionFrom donor "
+                         "RC=%d uses eqpType=%d reticleUiId=%d triggerId=%d - copy "
+                         "these into receiverParamSetsSystem to match\n",
                     receiverId, motionFrom, de, dr, dt);
         }
     }
@@ -3021,9 +3352,9 @@ int __cdecl l_SetReceiver(lua_State* L)
         return 0;
     if (base < 0 || wob < 0 || sys < 0 || snd < 0)
     {
-        LogDebug("[EquipParam] SetReceiver receiverId=%d: requires receiverParamSetsBase + "
-            "receiverParamSetsWobbling + receiverParamSetsSystem + receiverParamSetsSound; "
-            "each is a game index (number) or a {custom values} table\n", receiverId);
+        LogDebug("[EquipParam] SetReceiver receiverId=%d: needs "
+                 "receiverParamSetsBase/Wobbling/System/Sound (each a game index or "
+                 "a {values} table)\n", receiverId);
         return 0;
     }
 
@@ -3039,26 +3370,26 @@ int __cdecl l_SetReceiver(lua_State* L)
                 for (int c = 0; c < 7 && donorRoot[c]; ++c)
                     label[c] = donorRoot[c];
                 WriteSndRowSEH(sndPool, snd, label);
-                LogDebug("[EquipParam] SetReceiver receiverId=%d: sound root inherited from "
-                    "motionFrom=%d -> '%s'; whichever of event/supEvent you omit plays "
-                    "that donor's vanilla sound\n",
+                LogDebug("[EquipParam] SetReceiver receiverId=%d: sound root from "
+                         "motionFrom=%d -> '%s'; whichever of event/supEvent you "
+                         "omit plays the donor's sound\n",
                     receiverId, motionFrom, label);
             }
             else
             {
-                LogDebug("[EquipParam] SetReceiver receiverId=%d: receiverParamSetsSound gave "
-                    "an explicit event but no root to fall back on - set motionFrom=<vanilla "
-                    "RC> to inherit one, or add name=\"<root>\", or give both event and "
-                    "supEvent. The side you omitted has no sound.\n", receiverId);
+                LogDebug("[EquipParam] SetReceiver receiverId=%d: "
+                         "receiverParamSetsSound has an event but no root - the "
+                         "omitted side is silent; set motionFrom, name=\"<root>\", "
+                         "or both events\n", receiverId);
             }
         }
     }
     if (!hasAttack)
     {
         attackId = 0;
-        LogDebug("[EquipParam] SetReceiver receiverId=%d: no valid attackId (nil?) - writing receiver "
-            "with attackId=0 so the weapon still aims/fires (but deals ATK_Push/0 damage). Set "
-            "attackId to a vanilla TppDamage.ATK_ value for real damage.\n", receiverId);
+        LogDebug("[EquipParam] SetReceiver receiverId=%d: no valid attackId - "
+                 "written as 0, so it fires for ATK_Push/0 damage; set a "
+                 "TppDamage.ATK_ value\n", receiverId);
     }
 
     {
@@ -3070,9 +3401,9 @@ int __cdecl l_SetReceiver(lua_State* L)
         if (of.idx[0] >= 0 || of.idx[1] >= 0 || of.idx[2] >= 0 || of.idx[3] >= 0)
         {
             g_RcvOverflow[receiverId] = of;
-            LogDebug("[EquipParam] SetReceiver receiverId=%d: pool row(s) past the "
-                "254-slot direct window (base=%d wob=%d sys=%d snd=%d) - served "
-                "through the overflow swap at gun setup\n",
+            LogDebug("[EquipParam] SetReceiver receiverId=%d: pool rows past the "
+                     "254-slot window (base=%d wob=%d sys=%d snd=%d) - served via "
+                     "overflow swap\n",
                 receiverId, base, wob, sys, snd);
             if (receiverId <= kReceiverCapacity && !g_RcvClaimed.count(receiverId))
                 EquipParam_VanillaForceTaint(kVanillaSpace_Receiver, receiverId,
@@ -3112,10 +3443,9 @@ int __cdecl l_SetReceiver(lua_State* L)
         {
             motionType = g_RcvTypeExt[motionFrom];
             if (motionType == 0)
-                Log("[EquipParam] SetReceiver receiverId=%d: WARNING motionFrom=%d has "
-                    "motion type 0 (not a holdable gun's receiver) - without a valid type "
-                    "the engine invalidates the weapon on draw; pick the receiver of a "
-                    "real vanilla gun\n", receiverId, motionFrom);
+                Log("[EquipParam] SetReceiver receiverId=%d: WARNING motionFrom=%d "
+                    "has motion type 0 (not a holdable gun) - the engine "
+                    "invalidates the weapon on draw\n", receiverId, motionFrom);
             else if (wideRow)
             {
                 WidePartState* w = WideStateFor(kVanillaSpace_Receiver, receiverId);
@@ -3142,8 +3472,8 @@ int __cdecl l_SetReceiver(lua_State* L)
     if (motionType < 0)
     {
         motionType = 0;
-        LogDebug("[EquipParam] SetReceiver receiverId=%d: no motionFrom - animation defaulted to "
-            "type 0; set motionFrom=<vanilla RC> for proper animations\n", receiverId);
+        LogDebug("[EquipParam] SetReceiver receiverId=%d: no motionFrom - anim type "
+                 "defaulted to 0; set motionFrom=<vanilla RC>\n", receiverId);
     }
     if (wideRow)
     {
@@ -3232,9 +3562,8 @@ namespace
             alias = pb->nextId++;
         if (!alias)
         {
-            LogDebug("[EquipParam] WIDE %s id %d cannot bind: every engine lane byte for "
-                "this part type is already active this session - the referencing "
-                "weapon gets part 0\n", pb ? pb->name : "part", id);
+            LogDebug("[EquipParam] WIDE %s id %d cannot bind: every engine lane "
+                     "byte for this type is active - the weapon gets part 0\n", pb ? pb->name : "part", id);
             return 0;
         }
         w->alias = alias;
@@ -3282,8 +3611,7 @@ namespace
         }
 
         LogDebug("[EquipParam] WIDE %s id %d -> engine lane byte %d (bound on first "
-            "weapon reference; row content and motion wiring applied at the lane "
-            "slot)\n",
+                 "weapon reference)\n",
             pb ? pb->name : "part", id, alias);
         return alias;
     }
@@ -3313,7 +3641,8 @@ bool Install_MotionLoader_ReceiverTypeHook()
         Log("[EquipParam] GetReceiverType hook Install -> FAIL (target=%p)\n", target);
 #ifdef _DEBUG
     else
-        LogDebug("[EquipParam] GetReceiverType hook Install -> OK (target=%p, extended type table ready=%d)\n",
+        LogDebug("[EquipParam] GetReceiverType hook: OK target=%p "
+                 "extendedTypeTable=%d\n",
             target, g_RcvTypeExtReady ? 1 : 0);
 #endif
     return ok;
@@ -3349,10 +3678,9 @@ namespace
         void* target = ResolveGameAddress(s.fnAddr);
         if (!target)
         {
-            LogDebug("[EquipParam] Get%sType address not set for this build - custom %s ids "
-                "past %d keep reading whatever byte follows the engine's %d-entry table, "
-                "so they report a garbage animation type and their motion layer binds to "
-                "nothing\n", s.label, s.label, s.stock, s.rows);
+            LogDebug("[EquipParam] Get%sType address not set for this build - "
+                     "custom %s ids past %d read past the engine's %d-entry table "
+                     "and report a garbage anim type\n", s.label, s.label, s.stock, s.rows);
             return true;
         }
 
@@ -3362,9 +3690,9 @@ namespace
                 s.label, target);
 #ifdef _DEBUG
         else
-            LogDebug("[EquipParam] Get%sType hook Install -> OK (target=%p, extended type table "
-                "ready=%d; the engine's own table holds %d rows for stock ids 0..%d and has "
-                "no bounds check, so a custom %s read past it as a raw byte)\n",
+            LogDebug("[EquipParam] Get%sType hook: OK target=%p "
+                     "extendedTypeTable=%d (engine table holds %d rows for ids "
+                     "0..%d, unbounded, so a custom %s read past it)\n",
                 s.label, target, *s.ready ? 1 : 0, s.rows, s.stock, s.label);
 #endif
         return ok;
@@ -3452,6 +3780,91 @@ void Uninstall_MotionLoader_SightTypeHook()
     g_SightTypeExtReady = false;
 }
 
+static void InstallSightWindowObservers()
+{
+    void* create = ResolveGameAddress(gAddr.SightCommonFactory_CreateWindow);
+    void* del    = ResolveGameAddress(gAddr.SightCommonFactory_DeleteWindow);
+    if (!create || !del)
+    {
+        LogDebug("[EquipParam] SightCommonFactory addresses not set for this build - a "
+                 "custom sight keeps borrowing the scope overlay its magnification picks "
+                 "instead of the one its own sight entry-data registers\n");
+        return;
+    }
+    if (!CreateAndEnableHook(create, &hkSightWindowCreate,
+            reinterpret_cast<void**>(&g_OrigSightWindowCreate)))
+        Log("[EquipParam] SightCommonFactory::CreateWindow hook Install -> FAIL "
+            "(target=%p) - custom sights cannot see which scope overlay their own "
+            "entry-data registered\n", create);
+    if (!CreateAndEnableHook(del, &hkSightWindowDelete,
+            reinterpret_cast<void**>(&g_OrigSightWindowDelete)))
+        Log("[EquipParam] SightCommonFactory::DeleteWindow hook Install -> FAIL "
+            "(target=%p) - a torn-down scope overlay stays marked live and a custom "
+            "sight can answer with a dead window\n", del);
+}
+
+bool Install_UiController_UiSightTypeHook()
+{
+    void* target = ResolveGameAddress(gAddr.UiControllerImpl_GetUiSightTypeBySightId);
+    if (!target)
+    {
+        LogDebug("[EquipParam] GetUiSightTypeBySightId address not set for this "
+                 "build - the engine picks a scope UI for sight ids 1..%d only, "
+                 "so every custom sight aims with no scope UI\n",
+            kUiSightVanillaMax);
+        return true;
+    }
+
+    __try
+    {
+        if (std::memcmp(target, kUiSightTypePrologue,
+                        sizeof(kUiSightTypePrologue)) != 0)
+        {
+            Log("[EquipParam] GetUiSightTypeBySightId prologue mismatch at %p - the "
+                "function moved or has not been materialised yet, so the hook is "
+                "skipped and custom sights aim with no scope UI rather than risk "
+                "a detour over the wrong code\n", target);
+            return true;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        Log("[EquipParam] GetUiSightTypeBySightId at %p is unreadable - the hook is "
+            "skipped and custom sights aim with no scope UI\n", target);
+        return true;
+    }
+
+    const bool ok = CreateAndEnableHook(
+        target, &hkGetUiSightTypeBySightId,
+        reinterpret_cast<void**>(&g_OrigGetUiSightTypeBySightId));
+    InstallSightWindowObservers();
+    if (!ok)
+        Log("[EquipParam] GetUiSightTypeBySightId hook Install -> FAIL (target=%p) "
+            "- custom sights aim with no scope UI\n", target);
+#ifdef _DEBUG
+    else
+        LogDebug("[EquipParam] GetUiSightTypeBySightId hook: OK target=%p (the "
+                 "engine switch answers sight ids 1..%d and returns 0 for every "
+                 "id past it, and 0 means draw no scope UI at all)\n",
+            target, kUiSightVanillaMax);
+#endif
+    return ok;
+}
+
+void Uninstall_UiController_UiSightTypeHook()
+{
+    if (gAddr.SightCommonFactory_CreateWindow)
+        DisableAndRemoveHook(ResolveGameAddress(gAddr.SightCommonFactory_CreateWindow));
+    if (gAddr.SightCommonFactory_DeleteWindow)
+        DisableAndRemoveHook(ResolveGameAddress(gAddr.SightCommonFactory_DeleteWindow));
+    g_OrigSightWindowCreate = nullptr;
+    g_OrigSightWindowDelete = nullptr;
+    if (gAddr.UiControllerImpl_GetUiSightTypeBySightId)
+        DisableAndRemoveHook(
+            ResolveGameAddress(gAddr.UiControllerImpl_GetUiSightTypeBySightId));
+    g_OrigGetUiSightTypeBySightId = nullptr;
+}
+
 bool Install_MotionLoader_UnderBarrelTypeHook()
 {
     EnsureUbTypeExt();
@@ -3459,8 +3872,8 @@ bool Install_MotionLoader_UnderBarrelTypeHook()
     void* target = ResolveGameAddress(gAddr.MotionLoaderImpl_GetUnderBarrelType);
     if (!target)
     {
-        LogDebug("[EquipParam] GetUnderBarrelType address not set for this build - custom under-barrels "
-            "will contribute no animation set\n");
+        LogDebug("[EquipParam] GetUnderBarrelType address not set - custom "
+                 "under-barrels contribute no animation\n");
         return true;
     }
 
@@ -3471,9 +3884,8 @@ bool Install_MotionLoader_UnderBarrelTypeHook()
         Log("[EquipParam] GetUnderBarrelType hook Install -> FAIL (target=%p)\n", target);
 #ifdef _DEBUG
     else
-        LogDebug("[EquipParam] GetUnderBarrelType hook Install -> OK (target=%p, extended type table ready=%d; "
-            "the engine's own table stops at vanilla id %d, so custom under-barrels read past it "
-            "and load no motion without this)\n",
+        LogDebug("[EquipParam] GetUnderBarrelType hook: OK target=%p "
+                 "extendedTypeTable=%d (engine table stops at vanilla id %d)\n",
             target, g_UbTypeExtReady ? 1 : 0, g_UnderBarrel.stockCount);
 #endif
     return ok;
@@ -3516,9 +3928,9 @@ namespace
             if (now - lastMs > 2000)
             {
                 lastMs = now;
-                LogDebug("[EquipParam] GetAttackIdByEquipId guarded a crash: equipId=%d "
-                    "resolves to an empty gunBasic row (module missing SetGunBasic "
-                    "for that weapon?) - returning attackId 0\n", equipId);
+                LogDebug("[EquipParam] GetAttackIdByEquipId guarded a crash: "
+                         "equipId=%d has an empty gunBasic row (missing "
+                         "SetGunBasic?) - attackId 0\n", equipId);
             }
             return 0;
         }
@@ -3722,11 +4134,9 @@ namespace
             if (now - lastMs > 2000)
             {
                 lastMs = now;
-                LogDebug("[EquipParam] SetUpGunInfoFromGunPartsDesc guarded a crash: "
-                    "equipId=%u desc(rc=%d ba=%d ub=%d) - the original faulted "
-                    "mid-setup (likely an out-of-range base/wob/sys pool sub-index "
-                    "for this receiver); GunInfo left partial and its fire-sound root "
-                    "NULL, which the DefineWeaponFireSound guard now neutralizes\n",
+                LogDebug("[EquipParam] SetUpGunInfoFromGunPartsDesc guarded a "
+                         "crash: equipId=%u rc=%d ba=%d ub=%d - GunInfo left "
+                         "partial with a NULL fire-sound root\n",
                     equipId, ReadByteAtSEH(desc, 0), ReadByteAtSEH(desc, 1),
                     ReadByteAtSEH(desc, 10));
             }
@@ -3894,9 +4304,8 @@ namespace
             if (now - lastMs > 2000)
             {
                 lastMs = now;
-                LogDebug("[EquipParam] equipId=%u has no gunBasic row - substituted a safe "
-                    "vanilla weapon for setup so it renders as a harmless dummy instead "
-                    "of crashing. Fix: give this weapon a valid SetGunBasic.\n", equipId);
+                LogDebug("[EquipParam] equipId=%u has no gunBasic row - substituted "
+                         "a safe vanilla weapon; give it a valid SetGunBasic\n", equipId);
             }
         }
 
@@ -3918,7 +4327,7 @@ namespace
                 if (it != g_BarrelExtraMult.end()
                     && ApplyBarrelExtraSEH(gunInfo, it->second) != 1)
                     LogDebug("[EquipParam] barrel extra multiplier: GunInfo write "
-                        "faulted for barrelId=%d - engine base values kept\n", ba);
+                             "faulted for barrelId=%d - engine base values kept\n", ba);
             }
         }
 
@@ -3944,10 +4353,8 @@ namespace
                     && ReadByteAtSEH(gunInfo, 0x7a) == (rc & 0xFF)
                     && WriteByteAtSEH(gunInfo, 0x7a, static_cast<std::uint8_t>(rowVal)) == 1
                     && shouldLog(rc))
-                    LogDebug("[ChimeraMotion] receiverId=%d part-motion row redirected to donor "
-                        "receiverId=%d - the custom receiver has no row in the 233-entry "
-                        "part-motion table, so its bolt/slide reads the donor's populated "
-                        "row instead of a blank one.\n",
+                    LogDebug("[ChimeraMotion] receiverId=%d part-motion row -> "
+                             "donor receiverId=%d (no row in the 233-entry table)\n",
                         rc, rowVal);
             }
 
@@ -3958,8 +4365,9 @@ namespace
                     && ReadByteAtSEH(gunInfo, 0x7b) == (ubRc & 0xFF)
                     && WriteByteAtSEH(gunInfo, 0x7b, static_cast<std::uint8_t>(it->second)) == 1
                     && shouldLog(0x10000 + ubRc))
-                    LogDebug("[ChimeraMotion] under-barrel receiverId=%d part-motion row redirected "
-                        "to donor receiverId=%d (second weapon block, gunInfo+0x7b).\n",
+                    LogDebug("[ChimeraMotion] under-barrel receiverId=%d "
+                             "part-motion row -> donor receiverId=%d "
+                             "(gunInfo+0x7b)\n",
                         ubRc, it->second);
             }
 
@@ -3969,11 +4377,10 @@ namespace
                     && WriteByteAtSEH(gunInfo, 0x7a, 1) == 1;
                 static std::atomic<int> guarded{ 0 };
                 if (guarded.fetch_add(1, std::memory_order_relaxed) < 8)
-                    Log("[EquipParam] equipId=%u receiverId=%d left gunInfo+0x7a at 0 (%s). "
-                        "That byte is the receiver row the engine's weapon-camera setup "
-                        "feeds to receiverParamSetsBase, and it dereferences the row with "
-                        "no zero check, so 0 there is an access violation on weapon draw. "
-                        "Give the receiver a motionFrom so it inherits a real row.\n",
+                    Log("[EquipParam] equipId=%u receiverId=%d left gunInfo+0x7a at "
+                        "0 (%s) - the weapon-camera setup dereferences that "
+                        "receiver row with no zero check, so this is an AV on draw; "
+                        "give the receiver a motionFrom\n",
                         equipId, rc,
                         stamped ? "a wide receiver id cannot fit that one-byte field and no "
                             "donor was declared - stamped vanilla receiver 1"
@@ -4000,15 +4407,11 @@ namespace
                     | (static_cast<unsigned>(ReadByteAtSEH(gunInfo, 0x8a)) << 16)
                     | (static_cast<unsigned>(ReadByteAtSEH(gunInfo, 0x8b)) << 24);
                 const int trig = (trigWord >> 10) & 0x7;
-                LogDebug("[ChimeraMotion] rowbytes eq=%u rc=%d ub=%d ubRc=%d opt2=%d "
-                    "gunInfo+0x74..0x7f: "
-                    "%02X %02X %02X %02X | mt=%02X %02X row=%02X %02X | hw=%02X %02X %02X %02X "
-                    "|| fireRate(+0x68)=%d trigger(+0x88 bits10-12)=%d [+0x88 word=0x%08X] "
-                    "|| engineDesc: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X "
-                    "(fireRate is rpm*10; a full-auto AR ~ 6000. trigger 0=single/semi, "
-                    "non-0=auto/burst - this is the LIVE value the fire FSM reads. engineDesc is "
-                    "the game's OWN 12-byte parts desc before substitution: byte 10 is the "
-                    "under-barrel/foregrip, bytes 8 and 9 are the two light/laser slots)\n",
+                LogDebug("[ChimeraMotion] rowbytes eq=%u rc=%d ub=%d ubRc=%d "
+                         "opt2=%d | +0x74: %02X %02X %02X %02X | mt=%02X %02X "
+                         "row=%02X %02X | hw=%02X %02X %02X %02X | fireRate=%d "
+                         "trigger=%d [+0x88=0x%08X] | engineDesc: %02X %02X %02X "
+                         "%02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
                     equipId, rc, ub, ubRc, opt2,
                     b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11],
                     fr, trig, trigWord,
@@ -4479,9 +4882,9 @@ namespace
                 isNew = seen.insert({ eq, payload[1] }).second;
         }
         if (isNew)
-            LogDebug("[WeaponKey] motionEntry %s eq=%u slot node=%016llX -> path=%016llX%s\n"
-                "             argBlk=%016llX binder=%016llX user=%016llX chunk=%016llX\n"
-                "             node[0..23]= %s\n",
+            LogDebug("[WeaponKey] motionEntry %s eq=%u node=%016llX -> "
+                     "path=%016llX%s argBlk=%016llX binder=%016llX user=%016llX "
+                     "chunk=%016llX node[0..23]=%s\n",
                 which, eq, payload[1], path, malformed ? "  <<< MALFORMED" : "",
                 payload[0], payload[2], payload[3], payload[4], nodeHex);
     }
@@ -4587,11 +4990,10 @@ namespace
                         logIt = logged.insert(v).second;
                 }
                 if (logIt)
-                    LogDebug("[WeaponKey] control port %u holds %016llX, which carries no PathId type "
-                        "code - this blend layer was never bound to a clip. The usual cause is a "
-                        "part id past the end of one of MotionLoaderImpl's type tables, so that "
-                        "part contributed no mtar; check the [ChimeraMotion] lines for a part "
-                        "reporting no animation type.\n",
+                    LogDebug("[WeaponKey] control port %u holds %016llX with no "
+                             "PathId type code - blend layer never bound to a clip; "
+                             "usually a part id past a MotionLoaderImpl type "
+                             "table\n",
                         index, v);
             }
         }
@@ -4730,10 +5132,9 @@ namespace
         if (g_LanePinned[receiverId])
             return;
         if (g_LaneProbeLogged.fetch_add(1, std::memory_order_relaxed) < 24)
-            LogDebug("[LaneProbe] receiver lane %u read while NO gunInfo in the "
-                "template pool references it - evicting that lane at this "
-                "moment would have handed this caller another weapon's "
-                "receiver\n", receiverId);
+            LogDebug("[LaneProbe] receiver lane %u read while no resident gunInfo "
+                     "references it - evicting it now would hand this caller "
+                     "another weapon's receiver\n", receiverId);
     }
 
     static bool ZeroRcvLaneSEH(std::uint8_t* buf, int alias)
@@ -4836,10 +5237,9 @@ namespace
             if (now - lastMs > 2000)
             {
                 lastMs = now;
-                Log("[LaneWindow] WARNING: equipId %u (weaponId %d) needed a part "
-                    "lane and none could be bound - every lane is held by a "
-                    "resident gunInfo. This weapon builds with no receiver this "
-                    "time and resolves once another weapon leaves the pool.\n",
+                Log("[LaneWindow] WARNING: equipId %u (weaponId %d) found no free "
+                    "part lane - every lane is held by a resident gunInfo; it "
+                    "builds with no receiver until one frees\n",
                     equipId, sub);
             }
         }
@@ -5488,32 +5888,27 @@ namespace
                 }
             }
             if (s_siteCount > 0)
-                Log("[WeaponKey] motion-entry index site located by pattern scan: %d "
-                    "match(es), first at 0x%llX. The address this used to be hardcoded "
-                    "to holds an unrelated function in this build, which is why the "
-                    "shadow never armed and every custom weapon came back with an "
-                    "empty motion archive.\n",
+                Log("[WeaponKey] motion-entry index site found by pattern scan: %d "
+                    "match(es), first 0x%llX (the old hardcoded address holds an "
+                    "unrelated function on this build)\n",
                     s_siteCount, static_cast<unsigned long long>(s_sites[0]));
         }
 
         if (s_siteCount == 0)
         {
             if (attempt == kMaxAttempts)
-                Log("[WeaponKey] motion-entry shadow NOT armed after %d attempts: no "
-                    "executable section held the equipId-to-slot pattern (cmp esi,0x7C "
-                    "/ lea ecx,[rsi-0x400] / cmp ecx,0x4F). That band decrypts lazily "
-                    "so early misses are normal, but never matching means this build "
-                    "computes the index differently: the engine keeps its 205-slot "
-                    "table and every custom weapon outside equipIds 1-124 / 1024-1103 "
-                    "resolves no motion entry, which is why such a weapon has no anim "
-                    "control in hand.\n", kMaxAttempts);
+                Log("[WeaponKey] motion-entry shadow NOT armed after %d attempts: "
+                    "no section held the equipId-to-slot pattern, so this build "
+                    "computes the index differently and custom weapons outside "
+                    "equipIds 1-124/1024-1103 resolve no motion entry\n", kMaxAttempts);
             return;
         }
 
         const std::uintptr_t site = s_sites[0];
 
         const std::size_t bytes = 8 + static_cast<std::size_t>(kMotionShadowRows) * 8;
-        void* shadow = AllocateMotionShadowNear(site, bytes);
+        void* shadow = VirtualAlloc(nullptr, bytes,
+                                    MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
         if (!shadow)
         {
             attempts = kMaxAttempts + 1;
@@ -5530,12 +5925,10 @@ namespace
         {
             VirtualFree(shadow, 0, MEM_RELEASE);
             if (attempt == kMaxAttempts)
-                Log("[WeaponKey] motion-entry shadow NOT armed: the engine's own table at "
-                    "%p still held only %d live entries after %d attempts. That code "
-                    "loads its base from [rdi+0x70], so this address is only believed to "
-                    "be the same table - seeding the shadow from the wrong base would "
-                    "have left VANILLA weapons with no motion entry either. The engine "
-                    "table is left exactly as it was.\n",
+                Log("[WeaponKey] motion-entry shadow NOT armed: engine table at %p "
+                    "still held only %d live entries after %d attempts - the base "
+                    "is only presumed correct and seeding from the wrong one would "
+                    "break vanilla motion too; table left untouched\n",
                     static_cast<void*>(orig), migrated, kMaxAttempts);
             return;
         }
@@ -5567,13 +5960,9 @@ namespace
 
         g_MotionShadow = shadow;
         g_MotionShadowActive.store(true, std::memory_order_release);
-        Log("[WeaponKey] motion-entry shadow armed at %p across %d site(s): the engine "
-            "weapon-motion entry table had 205 slots reachable only by equipIds 1-124 "
-            "and 1024-1103, so a custom weapon at any other equipId resolved no entry "
-            "and Realize built no anim control for it. It is now a %u-entry table "
-            "indexed by equipId directly, and the lookup reads it absolutely so it "
-            "cannot depend on when the engine registered the original. %d vanilla "
-            "entries were carried over first, so stock weapons keep their motion.\n",
+        Log("[WeaponKey] motion-entry shadow armed at %p across %d site(s): the "
+            "205-slot table (equipIds 1-124/1024-1103 only) is now a %u-entry table "
+            "indexed by equipId; %d vanilla entries carried over\n",
             shadow, patched, kMotionShadowRows, migrated);
     }
 
@@ -5651,12 +6040,9 @@ namespace
         if (!fn)
             return;
         g_EquipDataProvider.store(provider, std::memory_order_relaxed);
-        LogDebug("[WeaponKey] entry->mtar resolution armed: EquipDataSystemImpl "
-            "provider=%p vtbl=%p findByPathId(vtbl+0x10)=%p - this variant "
-            "fetches its own fox::Block, unlike the vtbl+0x28 form which "
-            "takes the block as a THIRD argument and was previously called "
-            "with two (searching whatever stale block the last call left in "
-            "R8, faulting inside fox::Block::GetFileForPathId)\n",
+        LogDebug("[WeaponKey] entry->mtar resolution armed: provider=%p vtbl=%p "
+                 "findByPathId(vtbl+0x10)=%p (this variant fetches its own "
+                 "fox::Block; the +0x28 form needs it as a third arg)\n",
             provider, vt, fn);
     }
 
@@ -5667,10 +6053,9 @@ namespace
         {
             static std::atomic<bool> s_Warned{ false };
             if (!s_Warned.exchange(true))
-                LogDebug("[WeaponKey] entry->mtar resolution is OFF until the "
-                    "EquipDataSystemImpl provider is seen (first weapon "
-                    "Realize): cross-family clip fallback and mtar "
-                    "identification report not-found until then\n");
+                LogDebug("[WeaponKey] entry->mtar resolution OFF until the "
+                         "EquipDataSystemImpl provider is seen (first weapon "
+                         "Realize)\n");
             return nullptr;
         }
         __try
@@ -5745,7 +6130,20 @@ namespace
 
     static void* __fastcall hkGetAnimFile(void* mtar, unsigned long long clip)
     {
-        void* r = g_OrigGetAnimFile(mtar, clip);
+        void* swap = outfit::RedirectMotionMtarForClip(mtar);
+        void* r = g_OrigGetAnimFile(swap ? swap : mtar, clip);
+        if (!r && swap)
+        {
+            r = g_OrigGetAnimFile(mtar, clip);
+#ifdef _DEBUG
+            static std::atomic<int> s_missed{ 0 };
+            if (r && s_missed.fetch_add(1, std::memory_order_relaxed) < 16)
+                LogDebug("[EquipParam] clip %016llX is absent from the "
+                         "re-pointed archive %p, so the original %p served "
+                         "it instead\n",
+                    clip, swap, mtar);
+#endif
+        }
         if (r || !mtar)
             return r;
         static thread_local int depth = 0;
@@ -5766,11 +6164,8 @@ namespace
             isNew = logged.size() < 64 && logged.insert(clip).second;
         }
         if (isNew)
-            LogDebug("[WeaponKey] cross-family clip lookup: clip %016llX is not in the "
-                "requesting motion archive - served from registered family archive "
-                "%016llX (the DLL merges every archive a weapon's rows imply at "
-                "lookup time, so mixed-family weapons play all their clips with "
-                "nothing extra shipped)\n",
+            LogDebug("[WeaponKey] cross-family clip %016llX not in the requesting "
+                     "archive - served from family archive %016llX\n",
                 clip, from);
 #else
         (void)from;
@@ -5846,10 +6241,9 @@ namespace
                     isNewN = loggedN.size() < 32 && loggedN.insert(k).second;
                 }
                 if (isNewN)
-                    LogDebug("[WeaponKey] clip-set SKIPPED - model[slot] is null ctl=%p slot=%u "
-                        "clip=%016llX (this part's fmdl did not load; SetMotionData would deref a "
-                        "null model and crash - the weapon has a missing/bad .parts model for this "
-                        "slot)\n",
+                    LogDebug("[WeaponKey] clip-set SKIPPED, model[slot] null: "
+                             "ctl=%p slot=%u clip=%016llX - this part's fmdl did "
+                             "not load\n",
                         ctl, slot, clip);
 #endif
                 return 0;
@@ -5911,11 +6305,8 @@ namespace
                     isNew = logged.size() < 64 && logged.insert(clip).second;
                 }
                 if (isNew)
-                    LogDebug("[WeaponKey] clip archive fallback: clip %016llX was not in the "
-                        "control's bound motion archive - rebound to registered family "
-                        "archive %016llX and SET (a weapon can carry parts from several "
-                        "animation families; each clip now plays from the archive that "
-                        "actually contains it)\n",
+                    LogDebug("[WeaponKey] clip %016llX not in the control's bound "
+                             "archive - rebound to family archive %016llX and set\n",
                         clip, cands[i]);
 #endif
                 return r2;
@@ -6039,12 +6430,10 @@ namespace
                     first = suppressLogged.insert(eq).second;
                 }
                 if (first)
-                    LogDebug("[WeaponKey] main-magazine hide SUPPRESSED: eq=%u is playing "
-                        "a cross-family clip (%016llX, an under-barrel action) and the "
-                        "engine's reload handler asked to hide the weapon's OWN "
-                        "magazine - on a mixed-family weapon that request belongs to "
-                        "the attachment, not the rifle mag; hides during the weapon's "
-                        "own reload still pass through\n",
+                    LogDebug("[WeaponKey] main-magazine hide SUPPRESSED: eq=%u is "
+                             "playing a cross-family clip (%016llX, an under-barrel "
+                             "action) - that hide belongs to the attachment, not "
+                             "the rifle mag\n",
                         eq, clip);
                 return;
             }
@@ -6106,11 +6495,9 @@ namespace
         if (g_PartsSlotNullLogged.fetch_add(1, std::memory_order_relaxed) >= 24)
             return;
         void* mdlArr = ReadPtrAtSEH(self, 0x58);
-        LogDebug("[EquipParam] parts-slot model MISSING: %s ctl=%p slot=%u models=%p - "
-            "the engine asked to configure this part slot but nothing is loaded "
-            "there, so the setter is skipped and the part renders nothing. A weapon "
-            "reporting this on slot 0 has no visible model on the body or in hand; "
-            "its .parts/fpk never resolved.\n",
+        LogDebug("[EquipParam] parts-slot model MISSING: %s ctl=%p slot=%u "
+                 "models=%p - setter skipped, part renders nothing (its .parts/fpk "
+                 "never resolved)\n",
             label, self, index, mdlArr);
     }
 
@@ -6181,9 +6568,8 @@ namespace
             {
                 g_PartsSlotGuardAddrs[i] = target;
 #ifdef _DEBUG
-                LogDebug("[EquipParam] parts-slot model guard Install -> OK (%s target=%p; skips the "
-                    "setter when model[slot] is null so a weapon with an unloaded part model "
-                    "degrades instead of crashing)\n", defs[i].label, target);
+                LogDebug("[EquipParam] parts-slot model guard: OK %s target=%p "
+                         "(skips the setter when model[slot] is null)\n", defs[i].label, target);
 #endif
             }
             else
@@ -6232,9 +6618,8 @@ namespace
         g_ClipFallbackVtbl = vtbl;
         g_ClipFallbackSlot = slot;
 #ifdef _DEBUG
-        LogDebug("[WeaponKey] clip archive fallback armed (SetMotionDataByPath vtbl+0x1B0; "
-            "a clip missing from a control's bound motion archive is served from any "
-            "registered custom family archive that contains it)\n");
+        LogDebug("[WeaponKey] clip archive fallback armed (SetMotionDataByPath "
+                 "vtbl+0x1B0)\n");
 #endif
     }
 
@@ -6380,11 +6765,9 @@ namespace
 #ifdef _DEBUG
                 static std::atomic<bool> logged{ false };
                 if (!logged.exchange(true))
-                    LogDebug("[WeaponKey] chimera package table captured at parse: %zu "
-                        "pack names (the game's own list of every mountable chimera "
-                        "part pack - the family mount gate compares against these, "
-                        "so only packs the chimera system itself would load are "
-                        "ever appended to a loadout)\n",
+                    LogDebug("[WeaponKey] chimera package table captured at parse: "
+                             "%zu pack names (the family mount gate compares "
+                             "against these)\n",
                         count);
 #else
                 (void)count;
@@ -6613,12 +6996,9 @@ namespace
                 g_MotionResidency[eq].familyPack = ph;
             }
             else
-                Log("[WeaponKey] WARNING: custom eq=%u animation family '%s' has "
-                    "no receiver pack in the game's chimera package table - its "
-                    "archives are registered as clip-fallback candidates but "
-                    "nothing mounts them, so a clip this weapon's own archive "
-                    "lacks (typically the reload) stays refused and the parts "
-                    "freeze for that action\n",
+                Log("[WeaponKey] WARNING: custom eq=%u family '%s' has no receiver "
+                    "pack in the chimera package table - nothing mounts its "
+                    "archives, so clips it lacks (typically reload) stay refused\n",
                     eq, root.c_str());
         }
     }
@@ -6793,8 +7173,9 @@ namespace
                             (!known || check == reinterpret_cast<std::uint64_t>(known))
                                 ? 1 : -1;
                         if (hasherValidated < 0)
-                            LogDebug("[WeaponKey] MotionEntry synth disabled: engine path hash "
-                                "%016llX does not match the known ar00 entry %p\n",
+                            LogDebug("[WeaponKey] MotionEntry synth disabled: "
+                                     "engine path hash %016llX != known ar00 entry "
+                                     "%p\n",
                                 check, known);
                     }
                     if (hasherValidated > 0)
@@ -6827,19 +7208,17 @@ namespace
                                         g_MotionResidency[eq].familyPack = ph;
                                     }
                                     else if (first)
-                                        LogDebug("[WeaponKey] MotionEntry synth eq=%u: family "
-                                            "'%s' has no receiver pack in the game's "
-                                            "chimera package table - the entry is written "
-                                            "but nothing mounts its mtar; clips will stay "
-                                            "refused unless another pack carries it\n",
+                                        LogDebug("[WeaponKey] MotionEntry synth "
+                                                 "eq=%u: family '%s' has no "
+                                                 "receiver pack - entry written but "
+                                                 "nothing mounts its mtar\n",
                                             eq, cusRoot.c_str());
                                 }
                                 if (first)
-                                    LogDebug("[WeaponKey] MotionEntry synthesized: custom eq=%u "
-                                        "family='%s' -> %s (no vanilla weapon registers this "
-                                        "animation family; entry hashed with the engine's own "
-                                        "path hasher, mounted via the pack the game's chimera "
-                                        "package table names for the family)\n",
+                                    LogDebug("[WeaponKey] MotionEntry synthesized: "
+                                             "custom eq=%u family='%s' -> %s (no "
+                                             "vanilla weapon registers this "
+                                             "family)\n",
                                         eq, cusRoot.c_str(), p.c_str());
                             }
                             break;
@@ -6850,11 +7229,10 @@ namespace
                 }
                 if (first)
                 {
-                    LogDebug("[WeaponKey] MotionEntry NO DONOR for custom eq=%u (subId=%d rc=%d "
-                        "resolved=%d motionType=%d family='%s') - no vanilla weapon shares "
-                        "this receiver family; register SetWeaponHandling{...familyFrom="
-                        "<vanilla equipId>} or V_TppEquip.SetAssembleMotion{equipId=..., "
-                        "copyFrom=...} to pick its animation clip set\n",
+                    LogDebug("[WeaponKey] MotionEntry NO DONOR for custom eq=%u "
+                             "(subId=%d rc=%d resolved=%d motionType=%d "
+                             "family='%s') - set familyFrom=<vanilla equipId> or "
+                             "V_TppEquip.SetAssembleMotion{copyFrom=...}\n",
                         eq, subId, rcRaw, rcRes, ctype,
                         cusRoot.empty() ? "?" : cusRoot.c_str());
 #ifdef _DEBUG
@@ -6892,11 +7270,9 @@ namespace
                     plan.donorPack = GetNativeRowPackHash(donor);
                     g_RemapEntryEq[reinterpret_cast<std::uint64_t>(donorEntry)] = eq;
                 }
-                LogDebug("[WeaponKey] MotionEntry alias: custom eq=%u -> donor eq=%u entry=%p "
-                    "(the per-equipId weapon-motion mtar entry was empty; without it Realize "
-                    "creates NO anim control - no clip-driven bolt/parts animation and the "
-                    "default-pose stomp. Aliasing the donor's entry makes Realize build the "
-                    "real SimpleControl, the same path vanilla weapons use)\n",
+                LogDebug("[WeaponKey] MotionEntry alias: custom eq=%u -> donor "
+                         "eq=%u entry=%p (its own entry was empty, so Realize would "
+                         "build no anim control)\n",
                     eq, donor, donorEntry);
             }
         }
@@ -7042,9 +7418,8 @@ namespace
                 (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)f.QuadPart;
             if (ms < 16.0)
                 return;
-            LogDebug("[WeaponKey] %s for eq=%u blocked the calling thread for %.0f ms "
-                "- a weapon realize that lands mid-gameplay stutters by that "
-                "much\n", what, eq, ms);
+            LogDebug("[WeaponKey] %s for eq=%u blocked the calling thread for %.0f "
+                     "ms\n", what, eq, ms);
         }
     };
 
@@ -7174,27 +7549,21 @@ namespace
         {
             if (plan.donorEq)
                 Log("[WeaponKey] motion pack mount: custom eq=%u -> donor eq=%u "
-                    "(donor family packages + donor EQP pack %016llX%s) + families "
-                    "[%s] appended to the engine's own loadout package list - every "
-                    "part family the engine maps for this weapon gets its chimera "
-                    "archive mounted, so each part's clips are resident regardless of "
-                    "which family they come from\n",
+                    "(donor families + EQP pack %016llX%s) + families [%s] appended "
+                    "to the loadout package list\n",
                     equipId, plan.donorEq, plan.donorPack,
                     plan.donorPack ? (donorPackOk ? " OK" : " FAIL") : "",
                     familyList.empty() ? "-" : familyList.c_str());
             else if (engineEntry)
-                LogDebug("[WeaponKey] motion pack mount: custom eq=%u -> receiver family "
-                    "'%s' (engine motion map): entry = receiver/%s_default.mtar "
-                    "%016llX via collectible/chimera fpk %016llX + families [%s] "
-                    "mounted (the engine derives this weapon's clip NAMES from its "
-                    "receiver row, so the receiver family's default mtar is the one "
-                    "file guaranteed to contain them)\n",
+                LogDebug("[WeaponKey] motion pack mount: custom eq=%u receiver "
+                         "family '%s' -> receiver/%s_default.mtar %016llX via "
+                         "chimera fpk %016llX + families [%s] (clip names come from "
+                         "the receiver row)\n",
                     equipId, engineRoot.c_str(), engineRoot.c_str(), engineEntry,
                     engineFpk, familyList.empty() ? "-" : familyList.c_str());
             else
-                Log("[WeaponKey] motion pack mount: custom eq=%u families [%s] "
-                    "family pack %016llX%s appended to the engine's own loadout "
-                    "package list\n",
+                Log("[WeaponKey] motion pack mount: custom eq=%u families [%s] pack "
+                    "%016llX%s appended to the loadout package list\n",
                     equipId, familyList.empty() ? "-" : familyList.c_str(),
                     plan.familyPack,
                     plan.familyPack ? (familyPackOk ? " OK" : " FAIL") : "");
@@ -7345,8 +7714,8 @@ namespace
             int& n = cnt[(static_cast<unsigned long long>(info.eq) << 8) | (slot & 0xFF)];
             ++n;
             if (n <= 10)
-                LogDebug("[WeaponKey] BoltBone WRITE ctl=%p slot=%llu boneIdx=%llu eq=%u pose=%p "
-                    "pos=(%.5f %.5f %.5f) (matrix landed in the model's local pose buffer)\n",
+                LogDebug("[WeaponKey] BoltBone WRITE ctl=%p slot=%llu boneIdx=%llu "
+                         "eq=%u pose=%p pos=(%.5f %.5f %.5f)\n",
                     ctl, slot, boneIdx, info.eq, addr,
                     haveNow ? now[0] : 0.0f, haveNow ? now[1] : 0.0f, haveNow ? now[2] : 0.0f);
         }
@@ -7364,9 +7733,9 @@ namespace
                 if (nr < 40)
                 {
                     ++nr;
-                    LogDebug("[WeaponKey] CYL-ENGINE-ROT eq=96 bone2 engine-row0=(%.4f %.4f %.4f) "
-                        "row1=(%.4f %.4f %.4f) Zang=%.1fdeg (sweeps => vanilla clip already spins the "
-                        "cylinder; ~constant => only the DLL does)\n",
+                    LogDebug("[WeaponKey] CYL-ENGINE-ROT eq=96 bone2 row0=(%.4f "
+                             "%.4f %.4f) row1=(%.4f %.4f %.4f) Zang=%.1fdeg (sweeps "
+                             "= the vanilla clip already spins it)\n",
                         mm[0], mm[1], mm[2], mm[4], mm[5], mm[6], ang);
                 }
             }
@@ -7427,10 +7796,9 @@ namespace
                     int& n = cntB[(static_cast<unsigned long long>(info.eq) << 8) | ch];
                     ++n;
                     if (n <= 12)
-                        LogDebug("[WeaponKey] BoltBridge eq=%u ch=%llu chimIdx=%d "
-                            "(mirrored the engine-computed bolt matrix into the player-rig "
-                            "chimera model - if the bolt now MOVES on screen, the rendered "
-                            "in-hand model is the chimera instance and this bridge is the fix)\n",
+                        LogDebug("[WeaponKey] BoltBridge eq=%u ch=%llu chimIdx=%d - "
+                                 "engine bolt matrix mirrored into the player-rig "
+                                 "chimera model\n",
                             info.eq, ch, cidx);
                 }
             }
@@ -7472,8 +7840,8 @@ namespace
         int& n = cnt[(ch << 40) | ((part & 0xFF) << 32) | (hash & 0xffffffffull)];
         ++n;
         if (n <= 6)
-            LogDebug("[WeaponKey] ChimBone GET-IDX ch=%llu part=%llu hash=%08llX -> %lld "
-                "(the PLAYER-RIG bolt path - only equipIds 871-876 ever reach this)\n",
+            LogDebug("[WeaponKey] ChimBone GET-IDX ch=%llu part=%llu hash=%08llX -> "
+                     "%lld (player-rig path; only equipIds 871-876 reach it)\n",
                 ch, part & 0xFF, hash & 0xffffffffull,
                 static_cast<long long>(static_cast<int>(r)));
         return r;
@@ -7520,10 +7888,9 @@ namespace
         vtbl[0x188 / 8] = reinterpret_cast<void*>(&hkChimSet);
         VirtualProtect(&vtbl[0x170 / 8], sizeof(void*) * 4, oldProt, &oldProt);
         g_ChimVtbl = vtbl;
-        LogDebug("[WeaponKey] chimera bolt probes armed: iface=%p vtbl=%p GET-IDX(+0x170)=%p "
-            "SET(+0x188)=%p (this is ChimeraSystemImpl - the path the 871-876 player builds "
-            "use; comparing its live calls against the standalone controller shows what the "
-            "custom weapon is missing)\n",
+        LogDebug("[WeaponKey] chimera bolt probes armed: iface=%p vtbl=%p "
+                 "GET-IDX(+0x170)=%p SET(+0x188)=%p (ChimeraSystemImpl, the 871-876 "
+                 "player path)\n",
             iface, vtbl, idxFn, setFn);
     }
 
@@ -7584,9 +7951,9 @@ namespace
         int& n = cnt[caller];
         ++n;
         if (n <= 8)
-            LogDebug("[WeaponKey] BoltReapply eq=%u model=%p boneIdx=%llu ctl=%p after %s "
-                "(stomp caller=%p) - post-stomp rest captured as baseline, then the last "
-                "engine-computed bolt matrix re-applied for render\n",
+            LogDebug("[WeaponKey] BoltReapply eq=%u model=%p boneIdx=%llu ctl=%p "
+                     "after %s (stomp caller=%p) - rest captured, last bolt matrix "
+                     "re-applied\n",
                 s.eq, model, s.boneIdx, ctl, fromFn, caller);
     }
 
@@ -7668,9 +8035,9 @@ namespace
         {
             const unsigned long long clip =
                 reinterpret_cast<unsigned long long>(ReadPtrAtSEH(desc, 8));
-            LogDebug("[WeaponKey] SetMotionData ctl=%p slot=%u eq=%u clip=%016llX -> %s "
-                "flag=0x%02X (REFUSED with flag bit2 set = the control's motion mtar "
-                "never finished streaming - its data is not in any loaded pack)\n",
+            LogDebug("[WeaponKey] SetMotionData ctl=%p slot=%u eq=%u clip=%016llX "
+                     "-> %s flag=0x%02X (REFUSED with bit2 = the control's mtar "
+                     "never finished streaming)\n",
                 ctl, slot, EqForCtl(ctl), clip, r ? "SET" : "REFUSED",
                 SlotLockFlag(ctl, slot));
         }
@@ -7702,8 +8069,8 @@ namespace
         void* outer = slots ? ReadPtrAtSEH(slots, static_cast<size_t>(slot) * 8) : nullptr;
         if (!outer)
         {
-            LogDebug("[WeaponKey] clip forensics ctl=%p slot=%u clip=%016llX: NO SimpleControl "
-                "bound for the slot - Realize never attached clip playback here\n",
+            LogDebug("[WeaponKey] clip forensics ctl=%p slot=%u clip=%016llX: no "
+                     "SimpleControl bound for the slot\n",
                 ctl, slot, clip);
             return;
         }
@@ -7712,9 +8079,8 @@ namespace
         void* mtar = ReadPtrAtSEH(inner, 0x80);
         if (!mtar)
         {
-            LogDebug("[WeaponKey] clip forensics ctl=%p slot=%u clip=%016llX: SimpleControl "
-                "%p has NO MtarFile bound (inner+0x80 empty) - the control exists but "
-                "carries no motion archive\n",
+            LogDebug("[WeaponKey] clip forensics ctl=%p slot=%u clip=%016llX: "
+                     "SimpleControl %p has no MtarFile (inner+0x80 empty)\n",
                 ctl, slot, clip, outer);
             return;
         }
@@ -7771,12 +8137,11 @@ namespace
                 boneB = (ReadByteAtSEH(ctxB, 0x58) & 0xFF)
                         | ((ReadByteAtSEH(ctxB, 0x59) & 0xFF) << 8);
         }
-        LogDebug("[WeaponKey] clip forensics ctl=%p slot=%u eq=%u clip=%016llX result=%s: "
-            "bound mtar=%p [%s] dir=%p entries=%d dirFlags=0x%04X | GetAnimFile -> %p "
-            "(%s) trackData=%p head=%d | model=%p boneCapA=%d boneCapB=%d (mtar identity "
-            "names which archive the control actually searches; GetAnimFile NULL = the "
-            "clip name is not in that archive; non-NULL with REFUSED = the downstream "
-            "track-vs-bone guard rejected it)\n",
+        LogDebug("[WeaponKey] clip forensics ctl=%p slot=%u eq=%u clip=%016llX "
+                 "result=%s: mtar=%p [%s] dir=%p entries=%d dirFlags=0x%04X | "
+                 "GetAnimFile=%p (%s) trackData=%p head=%d | model=%p boneCapA=%d "
+                 "boneCapB=%d (NULL = clip not in that archive; non-NULL + REFUSED "
+                 "= the track-vs-bone guard)\n",
             ctl, slot, EqForCtl(ctl), clip, result ? "SET" : "REFUSED",
             mtar, ident, dir, dirCount, dirFlags, af,
             (reinterpret_cast<uintptr_t>(af) == 1) ? "FAULT" : (af ? "FOUND" : "MISS"),
@@ -7869,10 +8234,8 @@ namespace
                     VirtualProtect(&vtbl[lo],
                                    sizeof(void*) * static_cast<size_t>(hi - lo + 1),
                                    prot, &prot);
-                    LogDebug("[WeaponKey] clip-set probes armed: SetMotionData slot +0x%X, "
-                        "SetMotionDataByPath slot +0x%X (logs every weapon clip the "
-                        "engine sets on a parts control - vanilla vs custom comparison "
-                        "shows whether the custom weapon's states ever set clips)\n",
+                    LogDebug("[WeaponKey] clip-set probes armed: SetMotionData "
+                             "+0x%X, SetMotionDataByPath +0x%X\n",
                         g_SetMotionDataSlot * 8, g_SetMotionByPathSlot * 8);
                 }
             }
@@ -7881,10 +8244,10 @@ namespace
                     "found in vtbl scan: %d/%d)\n",
                     g_SetMotionDataSlot, g_SetMotionByPathSlot);
         }
-        LogDebug("[WeaponKey] bolt-bone vtable probes armed: vtbl=%p GET-IDX(+0x140)=%p "
-            "WRITE(+0x168)=%p PutMotionAll(+0x200)=%p PutMotion(+0x210)=%p (PutMotion "
-            "default-poses any slot whose model has no anim control - the custom weapon's "
-            "case - so the bolt matrix is re-applied right after every such stomp)\n",
+        LogDebug("[WeaponKey] bolt-bone probes armed: vtbl=%p GET-IDX(+0x140)=%p "
+                 "WRITE(+0x168)=%p PutMotionAll(+0x200)=%p PutMotion(+0x210)=%p "
+                 "(PutMotion default-poses slots with no anim control, so the bolt "
+                 "matrix is re-applied after each stomp)\n",
             vtbl, idxFn, writeFn, putAllFn, putFn);
     }
 #endif
@@ -7951,12 +8314,11 @@ namespace
             {
                 ++n;
                 last = packed;
-                LogDebug("[WeaponKey] CYLINDER-DIAG eq=%u obj=%p | rec6[e8]=%04X (isCyl=%u vis6-11=%02X) | "
-                    "rec6[c8]=%04X (vis=%02X) | ammoRow +0xB=%02X +0xC=%02X (show 0x20 %s) - e8 is "
-                    "what the reader+positioner read; c8 is what SetAmmoToCylinder writes. During a "
-                    "loaded cylinder: e8 vis!=0 => rounds should place; e8 vis=0 while c8 vis!=0 => "
-                    "load state landing in a record the reader never reads (the desync); both 0 => "
-                    "SetAmmoToCylinder never populated it (dispatch/type gate)\n",
+                LogDebug("[WeaponKey] CYLINDER-DIAG eq=%u obj=%p | rec6[e8]=%04X "
+                         "(isCyl=%u vis6-11=%02X) | rec6[c8]=%04X (vis=%02X) | "
+                         "ammoRow +0xB=%02X +0xC=%02X (show 0x20 %s) - e8 is read, "
+                         "c8 is written; e8=0 with c8!=0 is the load-state desync, "
+                         "both 0 = SetAmmoToCylinder never ran\n",
                     eq, self,
                     e6, e6 & 1u, (e6 >> 6) & 0x3Fu,
                     c6, (c6 >> 6) & 0x3Fu,
@@ -7971,10 +8333,9 @@ namespace
             int& n = cntA[eq];
             ++n;
             if (n <= 6)
-                LogDebug("[WeaponKey] reader ACTIVE eq=%u obj=%p state=%04X (the reader is "
-                    "servicing this object while its bolt state is non-idle - if this "
-                    "line never appears for an equip whose DoFire obj armed the state, "
-                    "the two are different objects and the armed one is never updated)\n",
+                LogDebug("[WeaponKey] reader ACTIVE eq=%u obj=%p state=%04X - if "
+                         "this never appears for the equip whose DoFire armed the "
+                         "state, they are different objects\n",
                     eq, self, pre10[0]);
         }
         const unsigned long long r = g_OrigPostPutMotion(self, b, c, d);
@@ -7990,9 +8351,8 @@ namespace
             if (np < 4)
             {
                 ++np;
-                LogDebug("[WeaponKey] CYL-MESH eq=%u ammo=%u -> showing %u of %d hidden round meshes "
-                    "(round meshes are the hidden-by-default ones, flag 0xFF; first `ammo` shown, rest "
-                    "hidden - so the loaded count is exact and empties as you fire)\n",
+                LogDebug("[WeaponKey] CYL-MESH eq=%u ammo=%u -> showing %u of %d "
+                         "hidden round meshes (first ammo shown, rest hidden)\n",
                     t_meshEq, t_cylAmmo,
                     (t_cylAmmo > (unsigned)t_roundCount ? (unsigned)t_roundCount : t_cylAmmo),
                     t_roundCount);
@@ -8010,10 +8370,9 @@ namespace
                 bool amoPresent = false;
                 for (int i = 0; i < t_meshCount; ++i)
                     if (t_meshHash[i] == 0x4E943DFCu) amoPresent = true;
-                LogDebug("[WeaponKey] CYL-MESHDUMP eq=%u meshCount=%d MESH_AMO(0x4E943DFC)present=%d - the "
-                    "cylinder round mesh is named per-model (no universal hash); its 32-bit name-hash "
-                    "is one of these. Identify it (usually a mesh whose flag differs from the body "
-                    "meshes / your fmdl's ammo mesh) and I drive THAT hash by ammo:\n",
+                LogDebug("[WeaponKey] CYL-MESHDUMP eq=%u meshCount=%d "
+                         "MESH_AMO(0x4E943DFC)present=%d - the round mesh is named "
+                         "per-model; its hash is one of:\n",
                     t_meshEq, t_meshCount, amoPresent ? 1 : 0);
                 for (int i = 0; i < t_meshCount; ++i)
                     LogDebug("[WeaponKey]   mesh[%02d] hash=%08X flagA=%02X flagB=%02X\n",
@@ -8036,9 +8395,8 @@ namespace
                     int& n = cnt[(eq << 4) | static_cast<unsigned>(s)];
                     ++n;
                     if (n <= 12)
-                        LogDebug("[WeaponKey] BOLT PASS eq=%u slot=%d obj=%p rec4 %04X->%04X state "
-                            "%04X->%04X (the reader received and consumed a bolt/slide request "
-                            "for this weapon)\n",
+                        LogDebug("[WeaponKey] BOLT PASS eq=%u slot=%d obj=%p rec4 "
+                                 "%04X->%04X state %04X->%04X\n",
                             eq, s, self, pre4[s], post4, pre10[s], post10);
                 }
             }
@@ -8308,9 +8666,9 @@ namespace
 #ifdef _DEBUG
             static std::atomic<int> budget{ 8 };
             if (budget.fetch_sub(1) > 0)
-                LogDebug("[WeaponKey] PartsCtlCreateSlot FAULTED (caught) ctl=%p slot=%u info=%p - a part "
-                    "could not build its control (missing/bad model asset); slot left uncreated to "
-                    "avoid a hard crash. The weapon has an unloaded .parts/fpk.\n",
+                LogDebug("[WeaponKey] PartsCtlCreateSlot FAULTED (caught) ctl=%p "
+                         "slot=%u info=%p - missing/bad model asset; slot left "
+                         "uncreated\n",
                     ctl, slot, info);
 #endif
             return;
@@ -8327,9 +8685,9 @@ namespace
 #ifdef _DEBUG
         static std::atomic<int> probeBudget{ 40 };
         if (idx >= 0 && probeBudget.fetch_sub(1) > 0)
-            LogDebug("[WeaponKey] partsCtl create probe ctl=%p slot=%u idx=%d mtar=%p "
-                "mtarTracks=%d modelBoneCap=%d (a line with tracks-1 > cap is the "
-                "pairing the track guard refuses and the remap rebuild targets)\n",
+            LogDebug("[WeaponKey] partsCtl create probe ctl=%p slot=%u idx=%d "
+                     "mtar=%p mtarTracks=%d modelBoneCap=%d (tracks-1 > cap is what "
+                     "the track guard refuses)\n",
                 ctl, slot, idx, mtar, need, cap);
 #endif
         if (idx < 0 || !mtar)
@@ -8361,8 +8719,8 @@ namespace
         }
         if (idx != static_cast<int>(slot))
         {
-            LogDebug("[WeaponKey] remap control: eq=%u slot=%u SKIPPED (engine placed the "
-                "control at index %d, pool addressing would not match)\n",
+            LogDebug("[WeaponKey] remap control eq=%u slot=%u SKIPPED: engine "
+                     "placed it at index %d, pool addressing would not match\n",
                 eq, slot, idx);
             return;
         }
@@ -8382,11 +8740,9 @@ namespace
         if (rc == 0)
         {
 #ifdef _DEBUG
-            LogDebug("[WeaponKey] remap control: eq=%u slot=%u rebuilt with the skeleton-"
-                "remap variant (size=%u poolStride=%u mtarTracks=%d modelBoneCap=%d) - "
-                "clips now bind to this weapon's bones by NAME, so chimera-rig clips "
-                "with more tracks than the model has bones drive the bones that exist "
-                "instead of being refused whole\n",
+            LogDebug("[WeaponKey] remap control eq=%u slot=%u rebuilt as the "
+                     "skeleton-remap variant (size=%u poolStride=%u mtarTracks=%d "
+                     "modelBoneCap=%d) - clips now bind by bone name\n",
                 eq, slot, size, stride, need, cap);
             void* pool = ReadPtrAtSEH(ctl, 0x68);
             const int strideQ = ReadDwordAtSEH2(ctl, 0x70);
@@ -8418,12 +8774,9 @@ namespace
                                               w == 0xFFFF ? -1 : w);
                     }
                     LogDebug("[WeaponKey] remap table eq=%u: %d clip tracks, %d "
-                        "UNMAPPED (track order:%s) - each -1 is a chimera-rig "
-                        "bone the weapon model does not carry (for a revolver "
-                        "these are typically the cylinder BULLET bones, which "
-                        "is why loaded rounds never appear); adding bones with "
-                        "the chimera family's names to the fmdl makes those "
-                        "tracks bind\n",
+                             "UNMAPPED (order:%s) - each -1 is a chimera-rig bone "
+                             "this model lacks (on a revolver, typically the "
+                             "cylinder BULLET bones)\n",
                         eq, need, miss, buf);
                 }
             }
@@ -8432,13 +8785,12 @@ namespace
         else if (rc == 1)
             ;
         else if (rc == -5)
-            LogDebug("[WeaponKey] remap control: eq=%u slot=%u NOT rebuilt - remap variant "
-                "needs %u bytes but the controller pool slot is %u; original control "
-                "kept\n",
+            LogDebug("[WeaponKey] remap control eq=%u slot=%u NOT rebuilt: needs %u "
+                     "bytes, pool slot is %u - original kept\n",
                 eq, slot, size, stride);
         else
-            Log("[WeaponKey] remap control: eq=%u slot=%u rebuild failed rc=%d "
-                "(size=%u poolStride=%u) - original control %s\n",
+            Log("[WeaponKey] remap control eq=%u slot=%u rebuild failed rc=%d "
+                "(size=%u poolStride=%u) - original %s\n",
                 eq, slot, rc, size, stride,
                 (rc == -7) ? "recreated without remap" : "left as-is");
     }
@@ -8475,9 +8827,9 @@ namespace
                          & 0x7FF;
             static std::atomic<int> failBudget{ 64 };
             if (failEq != 0 && failBudget.fetch_sub(1) > 0)
-                Log("[WeaponKey] Realize RETURNED 0 for eq=%u slot=%u - no realized equip "
-                    "object was built, so there is no weapon model to put in the hand. "
-                    "self=%p args=%u,%u desc=%p bytes(+78..7d)=%02X %02X %02X %02X %02X "
+                Log("[WeaponKey] Realize RETURNED 0 for eq=%u slot=%u - no realized "
+                    "equip object, so no weapon model for the hand. self=%p "
+                    "args=%u,%u desc=%p bytes(+78..7d)=%02X %02X %02X %02X %02X "
                     "%02X\n",
                     failEq, failSlot, self, a, b, desc,
                     d[0] & 0xFF, d[1] & 0xFF, d[2] & 0xFF, d[3] & 0xFF,
@@ -8513,10 +8865,8 @@ namespace
         if (recBase && vslot < 2)
             eqRec = ((ReadByteAtSEH(recBase, vslot * 0x14 + 4) & 0xFF)
                      | ((ReadByteAtSEH(recBase, vslot * 0x14 + 5) & 0xFF) << 8)) & 0x7FF;
-        LogDebug("[WeaponKey] Realize verdict eq=%u slot=%u ctl=%p animControl=%s (YES = the "
-            "motion-mtar entry resolved to a LOADED motion file and the clip control was "
-            "created - reload/cock clips should animate the parts; NO = entry missing OR "
-            "the mtar file is not resident in memory, parts stay frozen)\n",
+        LogDebug("[WeaponKey] Realize verdict eq=%u slot=%u ctl=%p animControl=%s "
+                 "(NO = entry missing or mtar not resident, parts stay frozen)\n",
             eqRec, vslot, vctl,
             (vctl && SlotHasAnimControl(vctl, vslot)) ? "YES" : "NO");
         static std::atomic<int> resolverIdBudget{ 3 };
@@ -8528,10 +8878,9 @@ namespace
             void* p68 = ReadPtrAtSEH(self, 0x68);
             void* v68 = p68 ? ReadPtrAtSEH(p68, 0) : nullptr;
             void* f00 = v68 ? ReadPtrAtSEH(v68, 0) : nullptr;
-            LogDebug("[WeaponKey] resolver identity: [REOI+0x58]=%p vtbl=%p mtarResolver(vtbl"
-                "+0x28)=%p | [REOI+0x68]=%p vtbl=%p provider(vtbl+0x00)=%p (static "
-                "addresses, no ASLR - game+offset maps directly into the EN154 "
-                "disassembly dump; the +0x28 target IS the entry-to-MtarFile resolver)\n",
+            LogDebug("[WeaponKey] resolver identity: [REOI+0x58]=%p vtbl=%p "
+                     "mtarResolver(vtbl+0x28)=%p | [REOI+0x68]=%p vtbl=%p "
+                     "provider(vtbl+0x00)=%p\n",
                 p58, v58, f28, p68, v68, f00);
         }
 #endif
@@ -8541,8 +8890,43 @@ namespace
     static void* __fastcall hkGetAnimFromGani(void* self, unsigned long long pathId)
     {
         void* r = g_OrigGetAnimFromGani(self, pathId);
+        outfit::NoteAnimControl(self);
 
 #ifdef _DEBUG
+        if (outfit::ConsumeAnimControlCensusRequest())
+        {
+            std::uint32_t count = 0;
+            if (ReadU32AtSEH(self, 0x1C, count) == 0)
+                count = 0;
+            void* base = ReadPtrAtSEH(self, 0x98);
+            LogDebug("[OutfitMotionMtar] anim control %p holds %u archive(s) at "
+                     "%p - 'stored' is the path the entry was registered under, "
+                     "'holds' is the path the archive itself carries; a custom "
+                     "path on the 'holds' side after a revert is an archive the "
+                     "table swap never reached\n",
+                self, count, base);
+            if (base && count && count <= 64)
+            {
+                for (unsigned i = 0; i < count; ++i)
+                {
+                    unsigned char* e =
+                        static_cast<unsigned char*>(base) + i * 0x30;
+                    void* file   = ReadPtrAtSEH(e, 0x18);
+                    void* stored = ReadPtrAtSEH(e, 0x20);
+                    void* holds  = file ? ReadPtrAtSEH(file, 0x30) : nullptr;
+                    void* data   = file ? ReadPtrAtSEH(file, 0x98) : nullptr;
+                    LogDebug("[OutfitMotionMtar]   entry %2u file=%p "
+                             "stored=%016llX holds=%016llX %s\n",
+                        i, file,
+                        static_cast<unsigned long long>(
+                            reinterpret_cast<uintptr_t>(stored)),
+                        static_cast<unsigned long long>(
+                            reinterpret_cast<uintptr_t>(holds)),
+                        data ? "resident"
+                             : "NOT RESIDENT - answers no clip at all");
+                }
+            }
+        }
         static std::mutex mx;
         static std::set<unsigned long long> seen;
         bool isNew = false;
@@ -8721,8 +9105,8 @@ namespace
                 if (now - lastMs > 2000)
                 {
                     lastMs = now;
-                    Log("[WeaponKey] WARNING: donor equipId=%u gunBasic unresolved at "
-                        "draw time - part substitution skipped (slot %d); the weapon "
+                    Log("[WeaponKey] WARNING: donor equipId=%u gunBasic unresolved "
+                        "at draw - part substitution skipped (slot %d); the weapon "
                         "may not animate correctly\n", g_TlsVanillaEquip, slot);
                 }
             }
@@ -8764,9 +9148,10 @@ namespace
                 }
                 const std::uint32_t code = g_OrigPartCode[slot](self, use);
                 if (slot == 0 && (code == 0 || code == 0x2f))
-                    Log("[WeaponKey] WARNING: receiver part code came out %u (0x%X) for "
-                        "equipId=%u (rc %u->%u) - the engine will invalidate this "
-                        "weapon; pick a donor whose receiver has a real motion type\n",
+                    Log("[WeaponKey] WARNING: receiver part code came out %u (0x%X) "
+                        "for equipId=%u (rc %u->%u) - the engine will invalidate "
+                        "this weapon; pick a donor with a real receiver motion "
+                        "type\n",
                         code, code, g_TlsCustomEquip, partId, use);
                 return code;
             }
@@ -8832,8 +9217,9 @@ namespace
             {
                 const unsigned eqpType = key & 0x1f;
                 if (vanilla != equipId)
-                    LogDebug("[WeaponKey] KEY=%u (0x%X) eqpType=%u -> equipId=%u  FAMILY-FROM "
-                        "equipId=%u (template+part codes only; identity stays %u)\n",
+                    LogDebug("[WeaponKey] KEY=%u (0x%X) eqpType=%u -> equipId=%u "
+                             "FAMILY-FROM equipId=%u (template+part codes only; "
+                             "identity stays %u)\n",
                         key, key, eqpType, equipId, vanilla, equipId);
                 else
                     LogDebug("[WeaponKey] KEY=%u (0x%X) eqpType=%u -> equipId=%u\n",
@@ -8938,8 +9324,8 @@ namespace
                 const bool failed = !patched && (cur & 0x1f) != vanType;
                 if (isNew && failed)
                     Log("[WeaponKey] WARNING: template family patch failed for "
-                        "equipId=%u (eqpType %u -> %u) - the weapon may handle as "
-                        "the wrong family\n",
+                        "equipId=%u (eqpType %u -> %u) - it may handle as the wrong "
+                        "family\n",
                         g_TlsCustomEquip, cur & 0x1f, vanType);
 #ifdef _DEBUG
                 if (isNew && !failed)
@@ -9175,8 +9561,8 @@ namespace
                 k, kPartVtblOff[k], mB, cs, es, note);
 #else
             if (mB && cs != -9 && (cs != MH_OK || (es != MH_OK && es != MH_ERROR_ENABLED)))
-                Log("[WeaponKey] WARNING: part-code slot%d hook failed (cs=%d es=%d) - "
-                    "donor part substitution incomplete for this slot\n", k, cs, es);
+                Log("[WeaponKey] WARNING: part-code slot%d hook failed (cs=%d "
+                    "es=%d) - donor substitution incomplete for this slot\n", k, cs, es);
 #endif
         }
     }
@@ -9199,9 +9585,9 @@ namespace
             static std::atomic<int> logged{ 0 };
             const int bit = 1 << gbByte;
             if (!(logged.fetch_or(bit, std::memory_order_relaxed) & bit))
-                LogDebug("[WeaponKey] part-type gap fill (gb byte %d): part %u had no "
-                    "motion type of its own, served donor part %u type %u from "
-                    "familyFrom equipId=%u\n",
+                LogDebug("[WeaponKey] part-type gap fill (gb byte %d): part %u had "
+                         "no motion type, served donor part %u type %u from "
+                         "familyFrom equipId=%u\n",
                     gbByte, partId, donor, t, g_TlsVanillaEquip);
         }
 #endif
@@ -9230,10 +9616,10 @@ namespace
                     if (lastSig.exchange(sig, std::memory_order_relaxed) != sig)
                     {
                         if (finalType == 0)
-                            Log("[WeaponKey] WARNING: rc=%u has NO motion type and "
-                                "donor rc=%u has none either - the engine will INVALIDATE "
-                                "this weapon; point motionFrom at a receiver with a real "
-                                "motion type\n", receiverId, van.gb[0]);
+                            Log("[WeaponKey] WARNING: rc=%u has no motion type and "
+                                "donor rc=%u has none either - the engine will "
+                                "INVALIDATE this weapon; point motionFrom at a "
+                                "receiver that has one\n", receiverId, van.gb[0]);
 #ifdef _DEBUG
                         else
                             LogDebug("[WeaponKey] receiverType tap: rc=%u motionFrom type=%u, "
@@ -9247,9 +9633,9 @@ namespace
                 {
                     static std::atomic<std::uint32_t> lastMiss{ 0xFFFFFFFF };
                     if (lastMiss.exchange(receiverId, std::memory_order_relaxed) != receiverId)
-                        Log("[WeaponKey] WARNING: custom-range rc=%u queried during "
-                            "mapped setup but does not match the mapped weapon's receiver - "
-                            "no donor substitution applied\n", receiverId);
+                        Log("[WeaponKey] WARNING: custom rc=%u queried during "
+                            "mapped setup but does not match the mapped weapon's "
+                            "receiver - no donor substitution\n", receiverId);
                 }
             }
         }
@@ -9308,10 +9694,10 @@ namespace
                             logIt = g_PartLogged.insert(0x40000000u | mintEq).second;
                         }
                         if (logIt)
-                            LogDebug("[ChimeraMotion] minted weapon info for eq=%u carried no "
-                                "part-motion row (wi+0x7a=0; the hw=0 template mint skips the "
-                                "per-hw fill) - stamped row=%d from receiver %d so the bolt/"
-                                "slide transform binds.\n",
+                            LogDebug("[ChimeraMotion] minted weapon info eq=%u had "
+                                     "no part-motion row (wi+0x7a=0) - stamped "
+                                     "row=%d from receiver %d so the bolt/slide "
+                                     "transform binds\n",
                                 mintEq, rowVal, rc);
                     }
                 }
@@ -9335,9 +9721,9 @@ namespace
                     {
                         lastMs = now;
                         Log("[WeaponKey] WARNING: the engine invalidated a custom "
-                            "weapon's setup (slot=%d subId=%u equipId=%u) - the weapon "
-                            "will not function; check that motionFrom points at a real "
-                            "gun's receiver and familyFrom at a usable donor\n",
+                            "weapon's setup (slot=%d subId=%u equipId=%u) - check "
+                            "that motionFrom points at a real gun's receiver and "
+                            "familyFrom at a usable donor\n",
                             slot, subId, mappedThis);
                     }
                 }
@@ -9396,11 +9782,11 @@ void EquipParam_SetWeaponHandling(std::uint32_t equipId, std::uint32_t familyFro
     const std::uint32_t vanType = GetEquipTypeForEquipId(familyFrom) & 0x1f;
     if (!vanOk || vanType < 1 || vanType > 8)
     {
-        LogDebug("[WeaponKey] SetWeaponHandling REFUSED: familyFrom=%u does not resolve to a "
-            "native weapon (subId=%u eqpType=%u). Vanilla EQP_WP_* Lua constants are NOT "
-            "equip-table ids - draw the donor weapon once and use the number from its "
-            "'[WeaponKey] ... equipId=N' log line. Mapping NOT registered so the weapon "
-            "keeps its previous behavior.\n", familyFrom, van.subId, vanType);
+        LogDebug("[WeaponKey] SetWeaponHandling REFUSED: familyFrom=%u is not a "
+                 "native weapon (subId=%u eqpType=%u). Vanilla EQP_WP_* Lua "
+                 "constants are not equip-table ids - use the number from the "
+                 "donor's '[WeaponKey] ... equipId=N' line. Mapping not "
+                 "registered\n", familyFrom, van.subId, vanType);
         return;
     }
     {
@@ -9442,6 +9828,7 @@ bool Install_WeaponKeyLog()
         LogDebug("[WeaponKey] SetupWeaponInfo key-log Install -> OK (target=%p)\n", target);
 #endif
 
+#ifdef _DEBUG
     if (::AddressSetRuntime::IsEn154Family(gGameBuild))
     {
         g_MotionEntryAAddr = ResolveGameAddress(gAddr.Equip_MotionEntrySlotHookA);
@@ -9459,7 +9846,9 @@ bool Install_WeaponKeyLog()
         Log("[WeaponKey] motion-entry slot tracking A=%s B=%s\n",
             aOk ? "armed" : "FAILED", bOk ? "armed" : "FAILED");
     }
+#endif
 
+#ifdef _DEBUG
     const uintptr_t gcsAddr = GetControlStringAddr();
     if (gcsAddr)
     {
@@ -9467,9 +9856,8 @@ bool Install_WeaponKeyLog()
         const bool gcsOk = CreateAndEnableHook(
             g_GetControlStringAddr, &hkGetControlString,
             reinterpret_cast<void**>(&g_OrigGetControlString));
-        Log("[WeaponKey] unbound animation-port report %s (GetControlString=%p; reports a blend "
-            "layer that was never bound to a clip - almost always a part id past the end of one "
-            "of MotionLoaderImpl's type tables)\n",
+        Log("[WeaponKey] unbound animation-port report %s (GetControlString=%p) - "
+            "reports blend layers never bound to a clip\n",
             gcsOk ? "armed" : "FAILED", g_GetControlStringAddr);
         if (!gcsOk)
             g_GetControlStringAddr = nullptr;
@@ -9482,12 +9870,12 @@ bool Install_WeaponKeyLog()
         const bool svOk = CreateAndEnableHook(
             g_GetStringValueByIndexAddr, &hkGetStringValueByIndex,
             reinterpret_cast<void**>(&g_OrigGetStringValueByIndex));
-        Log("[WeaponKey] string-value probe %s (GetStringValueByIndex=%p; logs the control-port "
-            "index and the binder's array bases so the malformed value can be located exactly)\n",
+        Log("[WeaponKey] string-value probe %s (GetStringValueByIndex=%p)\n",
             svOk ? "armed" : "FAILED", g_GetStringValueByIndexAddr);
         if (!svOk)
             g_GetStringValueByIndexAddr = nullptr;
     }
+#endif
 
     const uintptr_t realizeAddr = RealizedEquipRealizeAddr();
     if (realizeAddr)
@@ -9496,10 +9884,9 @@ bool Install_WeaponKeyLog()
         const bool rOk = CreateAndEnableHook(
             g_RealizeAddr, &hkRealizedEquipRealize,
             reinterpret_cast<void**>(&g_OrigRealizedEquipRealize));
-        Log("[WeaponKey] weapon-motion entry alias %s (RealizedEquipObjectImpl::Realize=%p; "
-            "custom weapon equipIds get their empty per-equipId motion-mtar entry aliased to "
-            "the familyFrom donor - or the vanilla owner of a shared subId - so Realize builds "
-            "the real anim control: clip-driven bolt/parts animation like vanilla weapons)\n",
+        Log("[WeaponKey] weapon-motion entry alias %s (Realize=%p) - empty "
+            "per-equipId entries alias to the familyFrom donor so Realize builds a "
+            "real anim control\n",
             rOk ? "armed" : "FAILED", g_RealizeAddr);
         if (!rOk)
             g_RealizeAddr = nullptr;
@@ -9513,8 +9900,7 @@ bool Install_WeaponKeyLog()
         const bool ganiOk = CreateAndEnableHook(
             g_GetAnimFromGaniAddr, &hkGetAnimFromGani,
             reinterpret_cast<void**>(&g_OrigGetAnimFromGani));
-        Log("[WeaponKey] gani clip tracer %s (GetAnimFileFromGaniPath=%p; logs which animation "
-            "clips resolve and which miss)\n",
+        Log("[WeaponKey] gani clip tracer %s (GetAnimFileFromGaniPath=%p)\n",
             ganiOk ? "armed" : "FAILED", g_GetAnimFromGaniAddr);
         if (!ganiOk)
             g_GetAnimFromGaniAddr = nullptr;
@@ -9527,10 +9913,8 @@ bool Install_WeaponKeyLog()
         const bool pOk = CreateAndEnableHook(
             g_PostPutMotionAddr, &hkPostPutMotion,
             reinterpret_cast<void**>(&g_OrigPostPutMotion));
-        Log("[WeaponKey] reader probe %s (PostPutMotionExecute=%p; diffs each record's "
-            "request bit and state words across the reader call - a BOLT PASS line proves the "
-            "per-shot request reached AND was consumed for that weapon, with no extra hooks "
-            "on the unknown-arity apply functions)\n",
+        Log("[WeaponKey] reader probe %s (PostPutMotionExecute=%p) - a BOLT PASS "
+            "line proves a per-shot request reached and was consumed\n",
             pOk ? "armed" : "FAILED", g_PostPutMotionAddr);
         if (!pOk)
             g_PostPutMotionAddr = nullptr;
@@ -9763,11 +10147,9 @@ namespace
             {
                 static std::atomic<bool> s_Warned{ false };
                 if (!s_Warned.exchange(true))
-                    LogDebug("[EquipParam] bullet trail/muzzle effect index %u is past this "
-                        "weapon's effect FilePtr array (count=%llu) - skipping the effect "
-                        "instead of reading past the array end (the engine does no bounds "
-                        "check; a donor-aliased custom weapon asking for an index its own "
-                        "equip row does not cover would otherwise GP-fault)\n",
+                    LogDebug("[EquipParam] bullet trail/muzzle effect index %u past "
+                             "this weapon's effect FilePtr array (count=%llu) - "
+                             "effect skipped instead of reading past the end\n",
                         index, count);
                 return;
             }
@@ -9776,11 +10158,10 @@ namespace
             {
                 static std::atomic<bool> s_Warned{ false };
                 if (!s_Warned.exchange(true))
-                    LogDebug("[EquipParam] bullet trail/muzzle effect index %u: this emitter's "
-                        "array count is not readable or not credible (raw=%llu), so the "
-                        "index cannot be proven out of range - letting the effect through. "
-                        "If this line is followed by a GP-fault in BulletEffectController, "
-                        "the count header is at a different offset on this path.\n",
+                    LogDebug("[EquipParam] bullet trail/muzzle effect index %u: "
+                             "array count not readable or credible (raw=%llu) - "
+                             "letting the effect through; a GP-fault after this "
+                             "means the count header sits elsewhere\n",
                         index, count);
             }
         }
@@ -9862,9 +10243,8 @@ bool Install_GunInfoGuard()
         }
 #ifdef _DEBUG
         else
-            LogDebug("[EquipParam] ReloadChimeraPartsInfoTable capture Install -> OK "
-                "(target=%p; pack names harvested at parse time feed the family "
-                "mount gate)\n", g_ReloadChimeraPartsAddr);
+            LogDebug("[EquipParam] ReloadChimeraPartsInfoTable capture: OK "
+                     "target=%p (pack names feed the family mount gate)\n", g_ReloadChimeraPartsAddr);
 #endif
         g_GetAnimFileAddr = ResolveGameAddress(gAddr.Mtar_GetAnimFile);
         const bool okG = CreateAndEnableHook(
@@ -9878,10 +10258,9 @@ bool Install_GunInfoGuard()
         }
 #ifdef _DEBUG
         else
-            LogDebug("[EquipParam] mtar GetAnimFile merge hook Install -> OK (target=%p; "
-                "a clip missing from a weapon's bound archive is served from any "
-                "registered resident family archive that contains it - the lookup-"
-                "time equivalent of shipping one merged per-weapon mtar)\n",
+            LogDebug("[EquipParam] mtar GetAnimFile merge hook: OK target=%p (a "
+                     "clip missing from a weapon's archive is served from any "
+                     "resident family archive)\n",
                 g_GetAnimFileAddr);
 #endif
         g_HideMagazineAddr = ResolveGameAddress(gAddr.EquipSystemImpl_HideMagazine);
@@ -9896,10 +10275,9 @@ bool Install_GunInfoGuard()
         }
 #ifdef _DEBUG
         else
-            LogDebug("[EquipParam] HideMagazine guard Install -> OK (target=%p; while a "
-                "custom weapon plays a cross-family clip - an under-barrel action - "
-                "the engine's request to hide the weapon's OWN magazine is refused, "
-                "so the rifle mag no longer vanishes during UB reloads)\n",
+            LogDebug("[EquipParam] HideMagazine guard: OK target=%p (refuses the "
+                     "own-magazine hide while a cross-family under-barrel clip "
+                     "plays)\n",
                 g_HideMagazineAddr);
 #endif
     }
@@ -9918,10 +10296,9 @@ bool Install_GunInfoGuard()
         }
 #ifdef _DEBUG
         else
-            LogDebug("[EquipParam] parts-control remap-create hook Install -> OK "
-                "(target=%p; custom weapons get the skeleton-remap control variant, "
-                "so receiver-family clips authored for the bigger chimera rig bind "
-                "per-bone instead of being refused by the track-count guard)\n",
+            LogDebug("[EquipParam] parts-control remap-create hook: OK target=%p "
+                     "(custom weapons get the skeleton-remap variant so chimera-rig "
+                     "clips bind per-bone)\n",
                 g_PartsCtlCreateSlotAddr);
 #endif
     }
@@ -9940,10 +10317,8 @@ bool Install_GunInfoGuard()
         }
 #ifdef _DEBUG
         else
-            Log("[EquipParam] SetMotionDataByPath model-guard detour Install -> OK "
-                "(target=%p; catches DIRECT reader/Realize callers the vtable hook misses - "
-                "skips the clip-set when model[slot] is null so a weapon whose part model "
-                "failed to load degrades instead of crashing in SetMotionData)\n",
+            Log("[EquipParam] SetMotionDataByPath model-guard detour: OK target=%p "
+                "(skips the clip-set when model[slot] is null)\n",
                 g_SetMotionByPathRealAddr);
 #endif
     }
@@ -10111,10 +10486,10 @@ namespace
             safeRoot = "ar00";
             static std::atomic<bool> s_BadRootWarned{ false };
             if (!s_BadRootWarned.exchange(true))
-                LogDebug("[EquipParam] DefineWeaponFireSound root is NULL or unterminated "
-                    "(eqpType=%u): substituting \"ar00\" so the game's strcat_s cannot "
-                    "overrun - the weapon's GunInfo setup faulted and was guarded, so "
-                    "its stats/sound are degraded but it no longer crashes\n", eqpType);
+                LogDebug("[EquipParam] DefineWeaponFireSound root NULL/unterminated "
+                         "(eqpType=%u) - substituting \"ar00\" so strcat_s cannot "
+                         "overrun; the guarded GunInfo setup leaves stats and sound "
+                         "degraded\n", eqpType);
         }
 
         const bool haveSup = found && !spec.supText.empty();
@@ -10319,8 +10694,8 @@ namespace
                 if (workingReq)
                     *reinterpret_cast<std::int32_t*>(
                         workingReq + 0x10 + static_cast<std::size_t>(i) * 0x18) = 0;
-                LogDebug("[EquipParam] loadout: phantom weapon equipId=%d (its mod was uninstalled "
-                    "while it was equipped) -> set to EQP_None (empty slot).\n", id);
+                LogDebug("[EquipParam] loadout: phantom weapon equipId=%d (its mod "
+                         "was uninstalled while equipped) -> EQP_None\n", id);
             }
         }
         __except (SehAvOnly(GetExceptionCode()))
@@ -10330,9 +10705,19 @@ namespace
 
     static std::atomic<int> g_LoadoutPickLogged{ 0 };
 
+    struct LoadoutRowState
+    {
+        std::uint8_t  state    = 0xFF;
+        std::uint8_t  subIdx   = 0xFF;
+        std::uint16_t srcMask  = 0xFFFF;
+        std::uint16_t workMask = 0xFFFF;
+        std::int32_t  bias     = -12345;
+        void*         workRow  = nullptr;
+    };
+
     static int ReadLoadoutSlotIdsSEH(void* self, std::uint32_t slot,
                                      std::int32_t* src, std::int32_t* work,
-                                     std::int32_t* outBias, void** outWorkRow)
+                                     LoadoutRowState* outState)
     {
         __try
         {
@@ -10347,6 +10732,9 @@ namespace
             for (int i = 0; i < 3; ++i)
                 src[i] = *reinterpret_cast<std::int32_t*>(
                     sourceReq + static_cast<std::size_t>(i) * 0x18);
+            if (outState)
+                outState->srcMask =
+                    *reinterpret_cast<std::uint16_t*>(sourceReq + 0x9c);
 
             std::uint8_t* workingBase = *reinterpret_cast<std::uint8_t**>(self8 + 0x1e0);
             if (!workingBase)
@@ -10354,8 +10742,15 @@ namespace
             const std::int32_t bias = *reinterpret_cast<std::int32_t*>(loadoutSubsys + 0xc);
             std::uint8_t* workingReq = workingBase
                 + static_cast<std::size_t>(static_cast<std::int32_t>(slot) - bias) * 0xb0;
-            if (outBias)    *outBias    = bias;
-            if (outWorkRow) *outWorkRow = workingReq;
+            if (outState)
+            {
+                outState->bias     = bias;
+                outState->workRow  = workingReq;
+                outState->state    = workingReq[0];
+                outState->subIdx   = workingReq[1];
+                outState->workMask =
+                    *reinterpret_cast<std::uint16_t*>(workingReq + 0x10 + 0x9c);
+            }
             for (int i = 0; i < 3; ++i)
                 work[i] = *reinterpret_cast<std::int32_t*>(
                     workingReq + 0x10 + static_cast<std::size_t>(i) * 0x18);
@@ -10375,6 +10770,31 @@ namespace
         std::array<std::int32_t, 6> now = {
             sAfter[0], sAfter[1], sAfter[2], wAfter[0], wAfter[1], wAfter[2]
         };
+        auto it = s_last.find(slot);
+        if (it != s_last.end() && it->second == now)
+            return false;
+        s_last[slot] = now;
+        return true;
+    }
+
+    static std::atomic<int> g_LoadoutStateLogged{ 0 };
+
+    static bool LoadoutRowStateChangedSinceLastLog(std::uint32_t slot,
+                                                   const LoadoutRowState& before,
+                                                   const LoadoutRowState& after)
+    {
+        static std::map<std::uint32_t, std::array<std::uint32_t, 4>> s_last;
+        std::array<std::uint32_t, 4> now = {
+            static_cast<std::uint32_t>(after.state),
+            static_cast<std::uint32_t>(after.subIdx),
+            static_cast<std::uint32_t>(after.srcMask),
+            static_cast<std::uint32_t>(after.workMask)
+        };
+        if (before.state != after.state)
+        {
+            s_last[slot] = now;
+            return true;
+        }
         auto it = s_last.find(slot);
         if (it != s_last.end() && it->second == now)
             return false;
@@ -10405,6 +10825,69 @@ namespace
         }
     }
 
+    static std::uint16_t* LoadoutSourceMaskSEH(void* self, std::uint32_t slot)
+    {
+        __try
+        {
+            std::uint8_t* self8 = static_cast<std::uint8_t*>(self);
+            std::uint8_t* loadoutSubsys = *reinterpret_cast<std::uint8_t**>(self8 + 0x1a0);
+            if (!loadoutSubsys) return nullptr;
+            std::uint8_t* l138 = *reinterpret_cast<std::uint8_t**>(loadoutSubsys + 0x138);
+            if (!l138) return nullptr;
+            std::uint8_t* sourceBase = *reinterpret_cast<std::uint8_t**>(l138 + 0x98);
+            if (!sourceBase) return nullptr;
+            return reinterpret_cast<std::uint16_t*>(
+                sourceBase + static_cast<std::size_t>(slot) * 0xa0 + 0x9c);
+        }
+        __except (SehAvOnly(GetExceptionCode()))
+        {
+            return nullptr;
+        }
+    }
+
+    static constexpr std::uint32_t kLoadoutSlotCount = 4;
+    static std::atomic<std::uint32_t> g_HiddenSubBits[kLoadoutSlotCount] = {};
+    static std::atomic<bool> g_HideWasArmed{ false };
+    static std::atomic<int> g_RearmLogged{ 0 };
+
+    static bool DirtySourceSubSlotsSEH(void* self, std::uint32_t slot,
+                                       std::uint32_t bits)
+    {
+        std::uint16_t* mask = LoadoutSourceMaskSEH(self, slot);
+        if (!mask || !bits)
+            return false;
+        __try
+        {
+            *mask = static_cast<std::uint16_t>(*mask | bits);
+            return true;
+        }
+        __except (SehAvOnly(GetExceptionCode()))
+        {
+            return false;
+        }
+    }
+
+    static void ReDirtyHiddenLoadoutIdsOnLift(void* self)
+    {
+        const bool armed = DeployGuard::ShouldDropExtendedIds();
+        if (!g_HideWasArmed.exchange(armed, std::memory_order_relaxed) || armed)
+            return;
+
+        for (std::uint32_t s = 0; s < kLoadoutSlotCount; ++s)
+        {
+            const std::uint32_t bits =
+                g_HiddenSubBits[s].exchange(0, std::memory_order_relaxed);
+            if (!bits || !DirtySourceSubSlotsSEH(self, s, bits))
+                continue;
+            if (g_RearmLogged.fetch_add(1) < 8)
+                Log("[DeployGuard] loadout slot=%u sub-slot bits 0x%X were hidden "
+                    "while the extended-id guard was armed, so the engine copied "
+                    "empty cells into its working row and cleared the change mask "
+                    "- re-marked them changed now that the hide has lifted, or the "
+                    "working loadout would keep serving the empty slots\n",
+                    s, bits);
+        }
+    }
     static int SuppressExtendedLoadoutIdsSEH(void* self, std::uint32_t slot,
                                              std::int32_t* saved)
     {
@@ -10428,12 +10911,13 @@ namespace
                 saved[i] = -1;
                 continue;
             }
+            if (slot < kLoadoutSlotCount)
+                g_HiddenSubBits[slot].fetch_or(1u << i, std::memory_order_relaxed);
             if (g_DropLogged.fetch_add(1) < 24)
-                Log("[DeployGuard] loadout slot=%u sub=%d holds extended equipId %d - "
-                    "hidden from the loadout the engine is building right now, because "
-                    "the previous run entered a mission load and died before the "
-                    "player's weapon was set up. The saved loadout is NOT modified: the "
-                    "id is put back the moment this build finishes.\n",
+                Log("[DeployGuard] loadout slot=%u sub=%d holds extended equipId %d "
+                    "- hidden from this build because the previous run died mid "
+                    "mission-load; the saved loadout is untouched and the id "
+                    "returns when the build finishes\n",
                     slot, i, saved[i]);
         }
         return hidden;
@@ -10468,11 +10952,13 @@ namespace
         int pinnedCount = 0;
         BlankPhantomLoadoutWeaponsSEH(self, slot, pinned, &pinnedCount);
         for (int i = 0; i < pinnedCount; ++i)
-            V_FrameWorkState::NotePinnedEquipId(pinned[i]);
+            V_FrameWorkState::NoteStickyPinnedEquipId(pinned[i]);
+        ReDirtyHiddenLoadoutIdsOnLift(self);
 
         std::int32_t sBefore[3] = {}, wBefore[3] = {};
+        LoadoutRowState stBefore;
         const int okBefore = ReadLoadoutSlotIdsSEH(self, slot, sBefore, wBefore,
-                                                  nullptr, nullptr);
+                                                  &stBefore);
         std::int32_t suppressed[3] = { -1, -1, -1 };
         int suppressedCount = 0;
         if (okBefore >= 1)
@@ -10494,8 +10980,9 @@ namespace
             if (now - lastMs > 5000)
             {
                 lastMs = now;
-                LogDebug("[EquipParam] UpdateLoadoutRequest guarded a crash (a phantom loadout "
-                    "weapon could not be cleared this frame) - request skipped.\n");
+                LogDebug("[EquipParam] UpdateLoadoutRequest guarded a crash (a "
+                         "phantom loadout weapon could not be cleared) - request "
+                         "skipped\n");
             }
         }
         t_LoadoutBuildActive = false;
@@ -10504,23 +10991,52 @@ namespace
             RestoreExtendedLoadoutIdsSEH(self, slot, suppressed);
 
         std::int32_t sAfter[3] = {}, wAfter[3] = {};
-        std::int32_t biasAfter = -12345;
-        void* workRowAfter = nullptr;
+        LoadoutRowState stAfter;
         const int okAfter = ReadLoadoutSlotIdsSEH(self, slot, sAfter, wAfter,
-                                                 &biasAfter, &workRowAfter);
+                                                 &stAfter);
+        const std::int32_t biasAfter = stAfter.bias;
+        void* const workRowAfter = stAfter.workRow;
         const bool rowTrusted =
             biasAfter == static_cast<std::int32_t>(slot);
+
+        if (rowTrusted && okAfter == 2
+            && LoadoutRowStateChangedSinceLastLog(slot, stBefore, stAfter)
+            && g_LoadoutStateLogged.fetch_add(1) < 300)
+            LogDebug("[LoadoutState] slot=%u state %u->%u sub %u->%u "
+                "srcMask 0x%04X->0x%04X workMask 0x%04X->0x%04X - the engine copies "
+                "the picked loadout into the working row only while state==0 and "
+                "srcMask!=0; states 1-5 are waits and only state 5 clears back to 0, "
+                "so a row parked above 0 ignores every later pick\n",
+                slot,
+                static_cast<unsigned>(stBefore.state),
+                static_cast<unsigned>(stAfter.state),
+                static_cast<unsigned>(stBefore.subIdx),
+                static_cast<unsigned>(stAfter.subIdx),
+                static_cast<unsigned>(stBefore.srcMask),
+                static_cast<unsigned>(stAfter.srcMask),
+                static_cast<unsigned>(stBefore.workMask),
+                static_cast<unsigned>(stAfter.workMask));
         const bool interesting = rowTrusted
             && ((okBefore != 2 || okAfter != 2)
                 || LoadoutStateChangedSinceLastLog(slot, sAfter, wAfter));
         if (interesting && g_LoadoutPickLogged.fetch_add(1) < 400)
             LogDebug("[LoadoutPick] slot=%u src[%d %d %d]->[%d %d %d] "
-                "work[%d %d %d]->[%d %d %d] read=%d/%d bias=%d workRow=%p\n",
+                "work[%d %d %d]->[%d %d %d] read=%d/%d bias=%d workRow=%p "
+                "state=%u->%u sub=%u->%u srcMask=0x%04X->0x%04X "
+                "workMask=0x%04X->0x%04X\n",
                 slot, sBefore[0], sBefore[1], sBefore[2],
                 sAfter[0], sAfter[1], sAfter[2],
                 wBefore[0], wBefore[1], wBefore[2],
                 wAfter[0], wAfter[1], wAfter[2], okBefore, okAfter,
-                biasAfter, workRowAfter);
+                biasAfter, workRowAfter,
+                static_cast<unsigned>(stBefore.state),
+                static_cast<unsigned>(stAfter.state),
+                static_cast<unsigned>(stBefore.subIdx),
+                static_cast<unsigned>(stAfter.subIdx),
+                static_cast<unsigned>(stBefore.srcMask),
+                static_cast<unsigned>(stAfter.srcMask),
+                static_cast<unsigned>(stBefore.workMask),
+                static_cast<unsigned>(stAfter.workMask));
     }
 }
 
@@ -10553,9 +11069,9 @@ bool Install_LoadoutGunInfoGetOrBuild()
     void* target = ResolveGameAddress(gAddr.EquipSystem_GetGunInfoById);
     if (!target)
     {
-        LogDebug("[EquipParam] GetGunInfoById address not set for this build - loadout "
-            "get-or-build disabled (a loadout weapon whose gun-info is not yet resident "
-            "would crash UpdateLoadoutRequest on this build)\n");
+        LogDebug("[EquipParam] GetGunInfoById address not set for this build - "
+                 "loadout get-or-build disabled; a non-resident loadout weapon "
+                 "would crash UpdateLoadoutRequest\n");
         return true;
     }
     const bool ok = CreateAndEnableHook(
@@ -10660,7 +11176,8 @@ bool Install_SuppressorGauge_Hook()
     void* target = ResolveGameAddress(gAddr.EquipDevelopControllerImpl_GetSuppressorAmount);
     if (!target)
     {
-        LogDebug("[SuppressorGauge] GetSuppressorAmount address not set for this build - custom suppressor gauge skipped\n");
+        LogDebug("[SuppressorGauge] GetSuppressorAmount address not set for this "
+                 "build - custom gauge skipped\n");
         return true;
     }
 
@@ -10842,7 +11359,8 @@ int EquipParam_AllocateDamageSlotForName(const char* name)
     g_DamageNameToId[name] = id;
 
     CustomDamageRowPtrGrow(id);
-    LogDebug("[EquipParam] '%s' -> damageId %d (custom; served from DLL buffer via GetDamageParameter hook)\n",
+    LogDebug("[EquipParam] '%s' -> damageId %d (custom; served from the DLL "
+             "buffer)\n",
         name, id);
     return id;
 }
@@ -10861,12 +11379,14 @@ int __cdecl l_SetDamage(lua_State* L)
     int damageId = 0;
     if (!ReadNamedInt(L, 1, "damageId", damageId) || damageId <= 0)
     {
-        LogDebug("[EquipParam] SetDamage: missing/invalid damageId (declare one via V_TppEquip.DeclareDamages)\n");
+        LogDebug("[EquipParam] SetDamage: missing/invalid damageId (declare via "
+                 "V_TppEquip.DeclareDamages)\n");
         return 0;
     }
     if (damageId >= kDamageCustomBase + kDamageCustomCap)
     {
-        LogDebug("[EquipParam] SetDamage: damageId=%d out of range (1..%d = vanilla override, %d..%d = custom) - not written\n",
+        LogDebug("[EquipParam] SetDamage: damageId=%d out of range (1..%d vanilla "
+                 "override, %d..%d custom) - not written\n",
             damageId, kDamageCapacity - 1, kDamageCustomBase, kDamageCustomBase + kDamageCustomCap - 1);
         return 0;
     }
@@ -10892,9 +11412,8 @@ int __cdecl l_SetDamage(lua_State* L)
     auto warnWidth = [&](const char* name, int v, int maxV)
     {
         if (v < 0 || v > maxV)
-            LogDebug("[EquipParam] SetDamage damageId=%d: %s=%d exceeds the native "
-                "field (0..%d) and wraps to %d in the engine row - clamp or "
-                "rescale the value\n",
+            LogDebug("[EquipParam] SetDamage damageId=%d: %s=%d over the native "
+                     "field (0..%d) - wraps to %d\n",
                 damageId, name, v, maxV, v & maxV);
     };
     warnWidth("lethalDamage",   r.lethalDamage,   0xFFFF);
@@ -10948,7 +11467,8 @@ int __cdecl l_SetDamage(lua_State* L)
     std::uint8_t* buf = DamageBufBase();
     if (!buf && damageId < kDamageCapacity)
     {
-        LogDebug("[EquipParam] SetDamage: native damage table not available for this build - vanilla override skipped\n");
+        LogDebug("[EquipParam] SetDamage: native damage table unavailable on this "
+                 "build - vanilla override skipped\n");
         return 0;
     }
 
@@ -11058,7 +11578,8 @@ bool Install_DamageParameter_Hook()
             getterTarget, &hkGetDamageParameter,
             reinterpret_cast<void**>(&g_OrigGetDamageParameter));
         if (r)
-            LogDebug("[Damage] GetDamageParameter redirect hook Install -> OK (target=%p; custom attackIds %d..%d served from DLL buffer)\n",
+            LogDebug("[Damage] GetDamageParameter redirect: OK target=%p (custom "
+                     "attackIds %d..%d from the DLL buffer)\n",
                 getterTarget, kDamageCustomBase, kDamageCustomBase + kDamageCustomCap - 1);
         else
             Log("[Damage] GetDamageParameter redirect hook Install -> FAIL (target=%p)\n", getterTarget);
@@ -11066,7 +11587,8 @@ bool Install_DamageParameter_Hook()
     }
     else
     {
-        LogDebug("[Damage] GetDamageParameter address not set for this build - custom damage attackIds unavailable\n");
+        LogDebug("[Damage] GetDamageParameter address not set for this build - "
+                 "custom damage attackIds unavailable\n");
     }
 
     return ok;
@@ -11340,8 +11862,9 @@ void EquipParam_VanillaPostWrite(int space, int id, const unsigned char* row, in
     }
 
     if (transition > 0)
-        LogDebug("[FobGuard] vanilla %s id %d differs from its stock values after a module "
-            "write - vanilla weapons built on it are no longer FOB-deployable\n",
+        LogDebug("[FobGuard] vanilla %s id %d differs from stock after a module "
+                 "write - vanilla weapons built on it are no longer "
+                 "FOB-deployable\n",
             kVanillaSpaceNames[space], id);
     else if (transition < 0)
         LogDebug("[FobGuard] vanilla %s id %d restored to stock values - FOB block lifted\n",

@@ -353,22 +353,6 @@ void Remove_VIPRadioImportantGameObjectId(std::uint32_t gameObjectId)
 }
 
 
-bool Try_GetSingleRecentImportantCorpseIndex(std::uint16_t& outSoldierIndex, bool& outIsOfficer)
-{
-    outSoldierIndex = 0xFFFFu;
-    outIsOfficer = false;
-
-    std::lock_guard<std::mutex> lock(g_StateMutex);
-
-    if (g_RecentImportantCorpsesFromRequest.size() != 1)
-        return false;
-
-    outSoldierIndex = g_RecentImportantCorpsesFromRequest.front().soldierIndex;
-    outIsOfficer = g_RecentImportantCorpsesFromRequest.front().isOfficer;
-    return true;
-}
-
-
 void Clear_VIPRadioImportantGameObjectIds()
 {
     std::lock_guard<std::mutex> lock(g_StateMutex);

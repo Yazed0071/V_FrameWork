@@ -99,6 +99,7 @@
     <ClInclude Include="src\hooks\ui\EnemyLangIdOverride.h" />
     <ClInclude Include="src\hooks\ui\MissionEmergencyHook.h" />
     <ClInclude Include="src\hooks\pickable\TppPickableRuntime.h" />
+    <ClInclude Include="src\hooks\collection\TppCollectionRuntime.h" />
     <ClInclude Include="src\hooks\sahelan\RealizedSahelanFovaHook.h" />
     <ClInclude Include="src\hooks\sahelan\SetEyeLampColorHook.h" />
     <ClInclude Include="src\hooks\menupopup\MbDvcCustomPopupHook.h" />
@@ -188,6 +189,7 @@
     <ClCompile Include="src\hooks\ui\EnemyLangIdOverride.cpp" />
     <ClCompile Include="src\hooks\ui\MissionEmergencyHook.cpp" />
     <ClCompile Include="src\hooks\pickable\TppPickableRuntime.cpp" />
+    <ClCompile Include="src\hooks\collection\TppCollectionRuntime.cpp" />
     <ClCompile Include="src\hooks\sahelan\RealizedSahelanFovaHook.cpp" />
     <ClCompile Include="src\hooks\sahelan\SetEyeLampColorHook.cpp" />
     <ClCompile Include="src\hooks\menupopup\MbDvcCustomPopupHook.cpp" />

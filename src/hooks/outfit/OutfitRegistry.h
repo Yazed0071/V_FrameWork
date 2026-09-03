@@ -24,7 +24,21 @@ namespace outfit
     constexpr std::uint8_t kPlayerType_DDMale    = 1;
     constexpr std::uint8_t kPlayerType_DDFemale  = 2;
     constexpr std::uint8_t kPlayerType_Avatar    = 3;
-    constexpr std::uint8_t kPlayerTypeMax        = 4;
+    constexpr std::uint8_t kPlayerType_Ocelot    = 5;
+    constexpr std::uint8_t kPlayerType_Quiet     = 6;
+    constexpr std::uint8_t kPlayerTypeMax        = 7;
+
+    constexpr bool IsUniqueCharacterPlayerType(std::uint8_t playerType)
+    {
+        return playerType == kPlayerType_Ocelot
+            || playerType == kPlayerType_Quiet;
+    }
+
+    constexpr bool IsFemaleBodyPlayerType(std::uint8_t playerType)
+    {
+        return playerType == kPlayerType_DDFemale
+            || playerType == kPlayerType_Quiet;
+    }
 
 
     constexpr std::size_t  kCamoMaterialCount       = 82;
@@ -50,9 +64,43 @@ namespace outfit
     std::uint64_t MotionMtarVanillaHash(std::size_t slot);
     int           MotionMtarSlotFromVanillaHash(std::uint64_t pathHash);
 
+    constexpr std::uint32_t kSoundSwitchUnset = 0;
+
+    constexpr std::uint32_t SoundSwitchHash(const char* s)
+    {
+        if (!s || !s[0]) return kSoundSwitchUnset;
+        std::uint32_t h = 2166136261u;
+        for (const char* p = s; *p; ++p)
+        {
+            unsigned char c = static_cast<unsigned char>(*p);
+            if (c >= 'A' && c <= 'Z')
+                c = static_cast<unsigned char>(c - 'A' + 'a');
+            h = static_cast<std::uint32_t>(h * 16777619u);
+            h ^= c;
+        }
+        return h;
+    }
+
+    constexpr std::uint32_t kDamageSeBattleDress =
+        SoundSwitchHash("battledress");
+    constexpr std::uint32_t kDamageSeDefault = SoundSwitchHash("default");
+    constexpr std::uint32_t kDamageSeNormal  = SoundSwitchHash("normal");
+
+    struct DeclaredAbilities
+    {
+        bool          declared      = false;
+        bool          silentSteps   = false;
+        std::uint8_t  defense       = 0;
+        std::uint8_t  lifeRecovery  = 0;
+        std::uint32_t rattleSuit    = kSoundSwitchUnset;
+        std::uint32_t damageSe      = kSoundSwitchUnset;
+        std::uint8_t  suitParamKind = 0;
+    };
+
     struct OutfitVariant
     {
         bool           used               = false;
+        DeclaredAbilities abilities;
         std::uint64_t  partsPathCode64    = 0;
         std::uint64_t  fpkPathCode64      = 0;
         std::uint64_t  camoFpk            = kSubAssetUseVanilla;
@@ -60,6 +108,7 @@ namespace outfit
         std::uint64_t  diamondFpk         = kSubAssetDisabled;
         std::uint64_t  diamondFv2         = kSubAssetDisabled;
         std::uint64_t  voiceFpk           = kSubAssetUseVanilla;
+        std::uint64_t  motionMtars[kMotionMtarSlotCount] = {};
         std::uint64_t  displayNameHash    = 0;
         std::uint64_t  iconPathHash       = 0;
         bool           hasEnableArm        = false;
@@ -95,7 +144,9 @@ namespace outfit
         bool           abilitySilentSteps     = false;
         std::uint8_t   abilityDefense         = 0;
         std::uint8_t   abilityLifeRecovery    = 0;
-        std::uint8_t   abilityRattleSuit      = 0xFF;
+        std::uint32_t  abilityRattleSuit      = kSoundSwitchUnset;
+        std::uint32_t  abilityDamageSe        = kSoundSwitchUnset;
+        std::uint8_t   suitParamKind          = 0;
         std::uint16_t  headOptionEquipIds[kMaxHeadOptionsPerOutfit] = {};
         std::uint8_t   headOptionCount                              = 0;
         bool           supportsHeadOptions                          = false;
@@ -200,7 +251,8 @@ namespace outfit
         std::uint64_t GetVariantCamoFpk(std::uint8_t playerType, std::uint8_t variantIdx) const;
         std::uint64_t GetVariantCamoFv2(std::uint8_t playerType, std::uint8_t variantIdx) const;
         std::uint64_t GetVariantDiamondFpk(std::uint8_t playerType, std::uint8_t variantIdx) const;
-        std::uint64_t GetMotionMtarOverride(std::uint8_t playerType, std::size_t slot) const;
+        std::uint64_t GetMotionMtarOverride(std::uint8_t playerType, std::size_t slot,
+                                            std::uint8_t variantIdx = 0) const;
         std::uint64_t GetVariantDiamondFv2(std::uint8_t playerType, std::uint8_t variantIdx) const;
         std::uint64_t GetVariantVoiceFpk(std::uint8_t playerType, std::uint8_t variantIdx) const;
         std::uint64_t GetVariantDisplayNameHash(std::uint8_t playerType, std::uint8_t variantIdx) const;
@@ -216,6 +268,23 @@ namespace outfit
         bool          HasCamoBonusValuesFor(std::uint8_t playerType) const;
         const std::int32_t* GetCamoBonusValuesFor(std::uint8_t playerType) const;
     };
+
+    constexpr std::uint8_t PlayerPartsGroup(std::uint8_t playerType)
+    {
+        return playerType == 1u ? std::uint8_t{ 1 }
+             : playerType == 2u ? std::uint8_t{ 2 }
+                                : std::uint8_t{ 0 };
+    }
+
+    inline bool DeclaresBranchInPartsGroupOf(const OutfitEntry& entry,
+                                             std::uint8_t playerType)
+    {
+        const std::uint8_t group = PlayerPartsGroup(playerType);
+        for (std::uint8_t p = 0; p < kPlayerTypeMax; ++p)
+            if (entry.DeclaresPlayerType(p) && PlayerPartsGroup(p) == group)
+                return true;
+        return false;
+    }
 
 
     bool RegisterOutfit(const OutfitDefinition& def,
@@ -240,6 +309,8 @@ namespace outfit
     void NoteOutfitRowRefresh(std::uint16_t developId);
     bool BindOutfitForVisibleRow(std::uint16_t developId);
 
+    bool TryGetOutfitByKey(const char* key, const OutfitEntry** outEntry);
+
     bool TryGetOutfitByPartsType(std::uint8_t partsType,
                                  const OutfitEntry** outEntry);
 
@@ -248,6 +319,26 @@ namespace outfit
     bool TryGetOutfitBySelectorCode(std::uint8_t selectorCode,
                                     const OutfitEntry** outEntry);
 
+
+    void GetAbilityLevelsLockFree(std::uint8_t selectorCode,
+                                  std::uint8_t playerType,
+                                  std::uint8_t* outDefense,
+                                  std::uint8_t* outRecovery);
+
+    std::uint8_t GetActiveVariantLockFree(std::uint8_t partsType);
+
+    void GetAbilityLevelsForVariantLockFree(std::uint8_t selectorCode,
+                                            std::uint8_t playerType,
+                                            std::uint8_t variantIdx,
+                                            std::uint8_t* outDefense,
+                                            std::uint8_t* outRecovery);
+
+    bool TryGetVariantAbilities(std::uint8_t partsType, std::uint8_t playerType,
+                                std::uint8_t variantIdx,
+                                DeclaredAbilities* out);
+
+    std::uint8_t GetSuitParamDonorLockFree(std::uint8_t selectorCode,
+                                          std::uint8_t playerType);
 
     bool TryGetOutfitByVariantSelector(std::uint8_t selectorCode,
                                        const OutfitEntry** outEntry,
@@ -315,6 +406,7 @@ namespace outfit
     struct VanillaSuitVariantAsset
     {
         bool          used            = false;
+        DeclaredAbilities abilities;
         std::uint64_t partsPathCode64 = 0;
         std::uint64_t fpkPathCode64   = 0;
         std::uint64_t camoFpk         = kSubAssetUseVanilla;
@@ -339,6 +431,11 @@ namespace outfit
     const VanillaSuitVariantAsset* VanillaExtGetVariant(
         std::uint8_t vanillaPartsType, std::uint8_t playerType,
         std::uint8_t variantIdx);
+
+    bool VanillaExtGetVariantAbilities(std::uint8_t vanillaPartsType,
+                                       std::uint8_t playerType,
+                                       std::uint8_t variantIdx,
+                                       DeclaredAbilities* out);
 
     const VanillaSuitVariantAsset* VanillaExtGetVariantBridged(
         std::uint8_t vanillaPartsType, std::uint8_t playerType,
@@ -371,6 +468,40 @@ namespace outfit
     std::uint64_t VanillaExtGetSuitVoiceFpk(std::uint8_t vanillaPartsType,
                                             std::uint8_t playerType,
                                             std::uint8_t wornCamo);
+
+    struct VanillaSuitAbilities
+    {
+        bool          silentSteps   = false;
+        std::uint8_t  defense       = 0;
+        std::uint8_t  lifeRecovery  = 0;
+        std::uint32_t rattleSuit    = kSoundSwitchUnset;
+        std::uint32_t damageSe      = kSoundSwitchUnset;
+        std::uint8_t  suitParamKind = 0;
+    };
+
+    bool ExtendVanillaSuitAbilities(std::uint8_t vanillaPartsType,
+                                    std::uint8_t playerType,
+                                    std::uint8_t sourceCamo,
+                                    const VanillaSuitAbilities& abilities);
+
+    bool VanillaExtGetSuitAbilities(std::uint8_t vanillaPartsType,
+                                    std::uint8_t playerType,
+                                    std::uint8_t wornCamo,
+                                    VanillaSuitAbilities* out);
+
+    struct VanillaExtPinFlags
+    {
+        bool supported[kPlayerTypeMax] = {};
+        bool quietMove[kPlayerTypeMax] = {};
+    };
+
+    bool VanillaExtGetPinFlags(std::uint8_t vanillaPartsType,
+                               VanillaExtPinFlags* out);
+
+    bool VanillaExtHasAnyAbilities();
+
+    bool VanillaExtHasQuietMovement(std::uint8_t vanillaPartsType,
+                                    std::uint8_t playerType);
 
     bool ExtendVanillaSuitArmHead(std::uint8_t vanillaPartsType,
                                   std::uint8_t playerType,
@@ -420,14 +551,25 @@ namespace outfit
     std::uint8_t  GetMotionOutfitHintPlayerType();
     void          RegisterMotionMtarOverrideHash(std::uint64_t pathHash, int slot);
     bool          IsMotionMtarOverrideHash(std::uint64_t pathHash, int* outSlot);
+    bool          AnyMotionMtarOverridesRegistered();
 
     bool BootRestoreScrubActive();
     void EndBootRestoreScrub(const char* reason);
 
 
+    enum class OutfitWriteSource : std::uint8_t
+    {
+        Unknown   = 0,
+        Pin       = 1,
+        PartsLoad = 2,
+        SetSuit   = 3
+    };
+
     bool WriteLivePlayerOutfit(std::uint8_t partsType,
                                std::uint8_t selectorCode,
-                               std::uint8_t playerType);
+                               std::uint8_t playerType,
+                               OutfitWriteSource source =
+                                   OutfitWriteSource::Unknown);
 
     void RememberPlayerTypeOutfit(std::uint8_t playerType,
                                   std::uint8_t partsType, std::uint8_t selector);
@@ -452,6 +594,7 @@ namespace outfit
 
     void          SetPendingOutfitDevelopId(std::uint16_t developId);
     std::uint16_t GetPendingOutfitDevelopId();
+    std::uint32_t GetPendingOutfitDevelopIdStamp();
     void          ClearPendingOutfitDevelopId();
 
 

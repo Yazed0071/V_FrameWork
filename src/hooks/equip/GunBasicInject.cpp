@@ -230,6 +230,19 @@ namespace
         g_lua_settop(L, -2);
         return ok;
     }
+
+    static bool ReadNamedFlag(lua_State* L, int tableIdx, const char* name)
+    {
+        g_lua_getfield(L, tableIdx, const_cast<char*>(name));
+        bool on = false;
+        const int t = g_lua_type(L, -1);
+        if (t == LUA_TBOOLEAN)
+            on = g_lua_toboolean && g_lua_toboolean(L, -1) != 0;
+        else if (g_lua_isnumber(L, -1))
+            on = g_lua_tointeger(L, -1) != 0;
+        g_lua_settop(L, -2);
+        return on;
+    }
 }
 
 int GunBasic_AllocateWeaponIdForName(const char* name)
@@ -246,7 +259,7 @@ int GunBasic_AllocateWeaponIdForName(const char* name)
     if (!g_PersistedReserved)
     {
         g_PersistedReserved = true;
-        V_FrameWorkState::ForEachPersistedConstant("WPSLOT",
+        V_FrameWorkState::ForEachPersistedConstant("WP",
             [](const char* reservedName, std::int32_t v)
             {
                 static_cast<void>(reservedName);
@@ -262,7 +275,7 @@ int GunBasic_AllocateWeaponIdForName(const char* name)
     if (!buf || cap <= 1)
         return 0;
 
-    const int persisted = V_FrameWorkState::GetPersistedConstant("WPSLOT", name);
+    const int persisted = V_FrameWorkState::GetPersistedConstant("WP", name);
     if (persisted >= 2 && persisted <= cap &&
         !g_ClaimedIds.count(persisted) &&
         SlotIsZeroSEH(buf, persisted - 1) == 1)
@@ -295,18 +308,18 @@ int GunBasic_AllocateWeaponIdForName(const char* name)
 
             g_ClaimedIds.insert(weaponId);
             g_WpNameToId[name] = weaponId;
-            V_FrameWorkState::SetPersistedConstant("WPSLOT", name, weaponId);
+            V_FrameWorkState::SetPersistedConstant("WP", name, weaponId);
             if (weaponId > kPackedSubIdMax)
-                LogDebug("[GunBasic] '%s' -> weaponId %d: past the %d-id packed-word ceiling, so this "
-                    "weapon MUST hold an extended equipId - a native equip row cannot carry a "
-                    "subId this large and would silently truncate it to %d\n",
+                LogDebug("[GunBasic] '%s' -> weaponId %d: past the %d-id "
+                         "packed-word ceiling, so this weapon MUST hold an extended "
+                         "equipId - a native row would truncate the subId to %d\n",
                     name, weaponId, kPackedSubIdMax, weaponId & 0x3FF);
             return weaponId;
         }
     }
 
     LogDebug("[GunBasic] no free native gunBasic slot for '%s' (cap=%d full) - "
-        "custom weapon behavior unavailable; falls back to the default id space\n",
+             "custom weapon behavior unavailable\n",
         name, cap);
     return 0;
 }
@@ -524,10 +537,9 @@ int __cdecl l_SetGunBasic(lua_State* L)
         if (i < 3 && (!present || v <= 0))
         {
             row.f[i + 1] = kEssentialDefaultId;
-            LogDebug("[GunBasic] SetGunBasic: weaponId=%d %s is missing/unresolved - the mod "
-                "that defines that part id may not be installed. Substituting vanilla "
-                "default id %d so the weapon still loads (generic stats for that part "
-                "until the dependency is installed).\n",
+            LogDebug("[GunBasic] SetGunBasic weaponId=%d: %s is missing/unresolved "
+                     "(its defining mod may not be installed) - substituting "
+                     "vanilla default id %d, generic stats for that part\n",
                 weaponId, kEssentialLabel[i], kEssentialDefaultId);
         }
     }
@@ -565,13 +577,12 @@ int __cdecl l_SetGunBasic(lua_State* L)
             const int donor  = EquipParam_GetWideReceiverDonor(wideRc);
             row.f[i + 1] = (donor > 0) ? donor : kEssentialDefaultId;
             if (donor <= 0)
-                LogDebug("[GunBasic] SetGunBasic: weaponId=%d receiverId=%d does not fit the "
-                    "one-byte gunBasic row field and has no motionFrom donor to stand in "
-                    "for it - the row falls back to vanilla receiver %d, so this weapon "
-                    "takes THAT receiver's motion type, reload clip set and sound root "
-                    "instead of its own (a rifle on receiver 1 animates as a handgun and "
-                    "cannot reload). Give receiverId=%d a motionFrom in SetReceiver, and "
-                    "call SetReceiver before SetGunBasic.\n",
+                LogDebug("[GunBasic] SetGunBasic weaponId=%d: receiverId=%d does "
+                         "not fit the one-byte row field and has no motionFrom "
+                         "donor - falling back to vanilla receiver %d, so the "
+                         "weapon takes THAT receiver's motion type, reload clips "
+                         "and sound root. Give receiverId=%d a motionFrom, and call "
+                         "SetReceiver before SetGunBasic\n",
                     weaponId, wideRc, kEssentialDefaultId, wideRc);
             continue;
         }
@@ -585,9 +596,8 @@ int __cdecl l_SetGunBasic(lua_State* L)
             continue;   // deferred to the late bind, not a missing part
         if (row.f[i] <= 0)
         {
-            LogDebug("[GunBasic] SetGunBasic: weaponId=%d %s did not resolve to a valid part "
-                "byte - substituting vanilla default id %d (weapon will use generic "
-                "stats for that part until the defining mod is installed).\n",
+            LogDebug("[GunBasic] SetGunBasic weaponId=%d: %s did not resolve to a "
+                     "valid part byte - substituting vanilla default id %d\n",
                 weaponId, kEssentialLabel[i - 1], kEssentialDefaultId);
             row.f[i] = kEssentialDefaultId;
         }
@@ -597,9 +607,8 @@ int __cdecl l_SetGunBasic(lua_State* L)
     {
         if (row.f[i] > 0xFF)
         {
-            LogDebug("[GunBasic] SetGunBasic: weaponId=%d field #%d value %d exceeds 255; "
-                "gunBasic part fields are one byte each - custom parts must reuse a "
-                "vanilla receiver/barrel/ammo id. Truncated.\n",
+            LogDebug("[GunBasic] SetGunBasic weaponId=%d: field #%d value %d "
+                     "exceeds 255 - gunBasic part fields are one byte; truncated\n",
                 weaponId, i, row.f[i]);
         }
     }
@@ -638,10 +647,9 @@ int __cdecl l_SetGunBasic(lua_State* L)
         }
         else
         {
-            LogDebug("[GunBasic] SetGunBasic: weaponId=%d out of native buffer range [1,%d] "
-                "(or buffer unresolved for this build) - NOT written. A gunBasic weaponId "
-                "must be a WP declared via V_TppEquip.DeclareWPs so it gets an in-range "
-                "slot.\n", weaponId, cap);
+            LogDebug("[GunBasic] SetGunBasic weaponId=%d out of native buffer range "
+                     "[1,%d] (or the buffer is unresolved) - NOT written; declare "
+                     "the WP via V_TppEquip.DeclareWPs to get an in-range slot\n", weaponId, cap);
         }
 
         const int donorRc = EquipParam_GetWideReceiverDonor(row.f[1]);
@@ -664,12 +672,11 @@ int __cdecl l_SetGunBasic(lua_State* L)
             const int applied = EquipParam_InheritPartMotionTypes(
                 row.f[2], donorBa, row.f[3], donorAm, row.f[7], donorSt, &eligible);
             if (eligible > 0 && applied == 0)
-                LogDebug("[ChimeraMotion] weaponId=%d: %d custom part(s) could inherit an "
-                    "animation type but the motionFrom donor receiver %d has none to give "
-                    "(its vanilla weapon row uses ba=%d am=%d st=%d, each reporting type "
-                    "0) - those parts contribute no motion set, so this weapon's parts "
-                    "control is built with no motion archive and the slide/magazine stay "
-                    "frozen\n",
+                LogDebug("[ChimeraMotion] weaponId=%d: %d custom part(s) could "
+                         "inherit an anim type but motionFrom donor receiver %d has "
+                         "none (its vanilla row uses ba=%d am=%d st=%d, all type 0) "
+                         "- the parts control gets no motion archive and the "
+                         "slide/magazine stay frozen\n",
                     weaponId, eligible, donorRc, donorBa, donorAm, donorSt);
         }
     }

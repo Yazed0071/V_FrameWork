@@ -135,27 +135,19 @@ namespace
         }
     }
 
-    static void* AllocateMirrorNear(std::uintptr_t nearAddr, std::size_t size)
+    static void* AllocateMirrorOutsideHookWindow(std::size_t size)
     {
         SYSTEM_INFO si{};
         GetSystemInfo(&si);
         const std::uintptr_t granularity = si.dwAllocationGranularity;
-        const std::uintptr_t roundedNear = nearAddr & ~(granularity - 1);
-        const std::uintptr_t maxDistance = 0x60000000ull;
-        for (std::uintptr_t offset = granularity; offset < maxDistance;
-             offset += granularity)
+        const std::uintptr_t first = 0x18A000000ull;
+        const std::uintptr_t last  = 0x1BF000000ull;
+
+        for (std::uintptr_t addr = first; addr + size < last; addr += granularity)
         {
-            if (roundedNear >= offset)
-            {
-                void* p = VirtualAlloc(
-                    reinterpret_cast<LPVOID>(roundedNear - offset), size,
-                    MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-                if (p) return p;
-            }
-            void* p2 = VirtualAlloc(
-                reinterpret_cast<LPVOID>(roundedNear + offset), size,
-                MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-            if (p2) return p2;
+            if (void* p = VirtualAlloc(reinterpret_cast<LPVOID>(addr), size,
+                                       MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE))
+                return p;
         }
         return nullptr;
     }
@@ -203,9 +195,9 @@ namespace
             if ((p[0] != 0x48 && p[0] != 0x4C) || p[1] != 0x8D)
             {
                 ++skipped;
-                LogDebug("[EquipIdTable] mirror site 0x%llX is not the expected LEA - "
-                    "skipped; this equip-data reader keeps the 653-row native "
-                    "table and reads a garbage row for any extended equipId\n",
+                LogDebug("[EquipIdTable] mirror site 0x%llX is not the expected LEA "
+                         "- skipped; this reader keeps the 653-row table and reads "
+                         "a garbage row for extended equipIds\n",
                     static_cast<unsigned long long>(va));
                 continue;
             }
@@ -215,8 +207,8 @@ namespace
             {
                 ++skipped;
                 LogDebug("[EquipIdTable] mirror site 0x%llX does not point at the "
-                    "native InfoList - skipped; extended equipIds keep reading a "
-                    "garbage row through it\n",
+                         "native InfoList - skipped; extended equipIds keep reading "
+                         "a garbage row\n",
                     static_cast<unsigned long long>(va));
                 continue;
             }
@@ -225,10 +217,9 @@ namespace
                 - static_cast<std::intptr_t>(va + 7);
             if (delta < INT32_MIN || delta > INT32_MAX)
             {
-                Log("[EquipIdTable] ERROR: the InfoList mirror landed outside "
-                    "rel32 range of the equip-data readers - extended weapons "
-                    "keep queueing a garbage package at loadout spawn and never "
-                    "finish loading\n");
+                Log("[EquipIdTable] ERROR: the InfoList mirror landed outside rel32 "
+                    "range of the equip-data readers - extended weapons queue a "
+                    "garbage package and never finish loading\n");
                 break;
             }
             DWORD old = 0;
@@ -250,10 +241,9 @@ namespace
             {
                 ++skipped;
                 LogDebug("[EquipIdTable] mirror site 0x%llX is not the expected "
-                    "image-base read of the native InfoList - skipped; the "
-                    "block-with-pack resolver keeps reading a garbage row for "
-                    "extended equipIds, so their model package is never verified "
-                    "and the weapon never realizes\n",
+                         "image-base read of the native InfoList - skipped; the "
+                         "block-with-pack resolver keeps reading a garbage row, so "
+                         "extended weapons never realize\n",
                     static_cast<unsigned long long>(site.va));
                 continue;
             }
@@ -263,9 +253,8 @@ namespace
             if (delta < INT32_MIN || delta > INT32_MAX)
             {
                 Log("[EquipIdTable] ERROR: the InfoList mirror landed outside "
-                    "disp32 range of the image base - the block-with-pack "
-                    "resolver keeps reading a garbage row for extended "
-                    "equipIds\n");
+                    "disp32 range of the image base - the block-with-pack resolver "
+                    "keeps reading a garbage row for extended equipIds\n");
                 break;
             }
             DWORD old = 0;
@@ -281,9 +270,8 @@ namespace
 
         if (skipped)
             Log("[EquipIdTable] WARNING: %zu of %zu InfoList reader site(s) could "
-                "not be repointed at the mirror - an extended weapon reached "
-                "through one of those readers still resolves no package and its "
-                "loadout slot will wait forever\n",
+                "not be repointed - an extended weapon reached through one resolves "
+                "no package and its loadout slot waits forever\n",
                 skipped, skipped + patched);
         g_MirrorSitesSkipped = skipped;
         return patched;
@@ -305,16 +293,15 @@ namespace
                 if (s_extLogged < 8)
                 {
                     ++s_extLogged;
-                    LogDebug("[EquipIdTable] equipId=%d is beyond the %d-slot native "
-                        "table - stored in the DLL extended table (served to the "
-                        "engine via the hooked equip accessors)\n",
+                    LogDebug("[EquipIdTable] equipId=%d is past the %d-slot native "
+                             "table - stored in the DLL extended table\n",
                         row.equipId, EquipIdCompression::kCompressedSlotBound);
                 }
                 return;
             }
             LogDebug("[EquipIdTable] REFUSED write: equipId=%d compresses to 0x%X, "
-                "out of the 0x%X-slot native table and not in the handle-"
-                "representable extended range - row dropped.\n",
+                     "outside the 0x%X-slot native table and the "
+                     "handle-representable extended range - row dropped\n",
                 row.equipId, index, EquipIdCompression::kCompressedSlotBound);
             return;
         }
@@ -331,10 +318,10 @@ namespace
 
         if (row.subId > 0x3FF)
         {
-            LogDebug("[EquipIdTable] REFUSED write: equipId=%d carries subId=%d, but a native equip "
-                "row packs subId into 10 bits (max 1023) alongside a 6-bit equipType - writing "
-                "it would truncate to %d and the loadout would resolve a DIFFERENT weapon. This "
-                "weapon needs an extended equipId; row dropped.\n",
+            LogDebug("[EquipIdTable] REFUSED write: equipId=%d subId=%d - a native "
+                     "row packs subId into 10 bits (max 1023), so it would truncate "
+                     "to %d and the loadout would resolve a different weapon; needs "
+                     "an extended equipId, row dropped\n",
                 row.equipId, row.subId, row.subId & 0x3FF);
             return;
         }
@@ -342,8 +329,8 @@ namespace
         std::uint8_t* dst = infoList + static_cast<size_t>(index) * kRowStride;
         if (!SafeStampRow(dst, typeWords + index, row))
         {
-            LogDebug("[EquipIdTable] SEH writing native row for equipId=%d - "
-                "addresses wrong for this build; write skipped\n", row.equipId);
+            LogDebug("[EquipIdTable] SEH writing the native row for equipId=%d - "
+                     "addresses wrong for this build; write skipped\n", row.equipId);
             return;
         }
 
@@ -430,10 +417,10 @@ namespace
                 if (it != g_AmmoRootParams.end())
                 {
                     row.subId = it->second;
-                    LogDebug("[EquipIdTable] equipId=%d is a registered ammo item - subId "
-                        "auto-set to its ammoId %d (the supply-crate refill resolves the "
-                        "refill amount through this field; with subId 0 an ammo supply "
-                        "delivered nothing for this ammo)\n",
+                    LogDebug("[EquipIdTable] equipId=%d is a registered ammo item - "
+                             "subId auto-set to ammoId %d (the supply refill "
+                             "resolves its amount through this field; subId 0 "
+                             "delivers nothing)\n",
                         row.equipId, row.subId);
                 }
             }
@@ -525,17 +512,16 @@ namespace
         if (!ScanTypeWordsSEH(words, kNativeInfoRows, &maxType, &maxSub, &typeBit5))
         {
             LogDebug("[EquipIdCeiling] SEH scanning the packed type/subId words - "
-                "the weapon-count ceiling could not be measured on this build\n");
+                     "the weapon-count ceiling is unmeasurable on this build\n");
             return;
         }
 
-        LogDebug("[EquipIdCeiling] native packed word is type:6|subId:10 - live scan of %d rows: "
-            "max equipType=%d, max subId=%d, rows using type bit5=%d. NATIVE equip rows stay "
-            "capped at subId %d (the engine unpacks this word from staged copies, so the "
-            "unpack sites are not statically enumerable and re-packing it would corrupt equip "
-            "types). EXTENDED equipIds are served from the DLL table by the GetEquipTypeId/"
-            "GetEquipSubId hooks and never touch this word, so their subId ceiling is the "
-            "gunBasic shadow instead, currently %d.\n",
+        LogDebug("[EquipIdCeiling] packed word is type:6|subId:10 - scan of %d "
+                 "rows: max equipType=%d, max subId=%d, rows using type bit5=%d. "
+                 "NATIVE rows stay capped at subId %d (the unpack sites are not "
+                 "statically enumerable). EXTENDED equipIds bypass this word via "
+                 "the GetEquipTypeId/GetEquipSubId hooks; their ceiling is the "
+                 "gunBasic shadow, currently %d\n",
             static_cast<int>(kNativeInfoRows), maxType, maxSub, typeBit5,
             GunBasic_PackedSubIdMax(), GunBasic_MaxWeaponId());
     }
@@ -580,8 +566,8 @@ namespace
         const int stranded = (weaponExt > headroom) ? (weaponExt - headroom) : 0;
 
         LogDebug("[EquipIdBudget] custom equip rows %d: WEAPONS %d (native %d / "
-            "EXTENDED %d) | non-weapons %d (native %d / extended %d). Native "
-            "slots still free: item band %d, weapon band %d.\n",
+                 "EXTENDED %d) | non-weapons %d (native %d / extended %d). Native "
+                 "free: item band %d, weapon band %d\n",
             weaponNative + weaponExt + otherNative + otherExt,
             weaponNative + weaponExt, weaponNative, weaponExt,
             otherNative + otherExt, otherNative, otherExt,
@@ -592,14 +578,11 @@ namespace
 
         if (weaponExt > 0 && (!subIdServed || !mirrorArmed))
             LogDebug("[EquipIdBudget] %d weapon(s) hold EXTENDED equipIds but this "
-                "build lacks %s%s%s, so those weapons cannot be equipped: "
-                "without the subId accessor the loadout resolves them to "
-                "nothing and equips a vanilla gun instead, and without the "
-                "mirror their block package never goes resident and the deploy "
-                "hangs on an infinite load. Recoverable native headroom = %d "
-                "free + %d currently spent on non-weapon rows = %d; "
-                "reallocating weapons into native ids first would still strand "
-                "%d of them.\n",
+                     "build lacks %s%s%s - without the subId accessor the loadout "
+                     "equips a vanilla gun instead, and without the mirror the "
+                     "deploy hangs on an infinite load. Native headroom = %d free + "
+                     "%d on non-weapon rows = %d; reallocating would still strand "
+                     "%d\n",
                 weaponExt,
                 subIdServed ? "" : "the GetEquipSubId hook",
                 (!subIdServed && !mirrorArmed) ? " and " : "",
@@ -649,9 +632,9 @@ namespace
             vfw = g_Rows;
         }
 
-        LogDebug("[ZetaDiag] ===== equip-id dump #%d: %zu V_FrameWork custom rows "
-            "(%s, folded-indexed, AFTER the game/Zeta push, BEFORE V_FrameWork "
-            "re-stamps) =====\n", myN, vfw.size(),
+        LogDebug("[ZetaDiag] ===== equip-id dump #%d: %zu custom rows (%s, "
+                 "folded-indexed, after the game/Zeta push, before V_FrameWork "
+                 "re-stamps) =====\n", myN, vfw.size(),
             g_InfoMirror ? "mirror - what the repointed readers actually resolve"
                          : "native table");
 
@@ -693,9 +676,8 @@ namespace
                 && cur != 0)
                 ++wbOcc;
         }
-        LogDebug("[ZetaDiag] #%d summary: OURS=%d FOREIGN-collisions=%d EMPTY=%d "
-            "PAST-BOUND=%d | weapon band 0x230-0x288 occupied=%d/89 (read from "
-            "the %s)\n",
+        LogDebug("[ZetaDiag] #%d summary: OURS=%d FOREIGN=%d EMPTY=%d PAST-BOUND=%d "
+                 "| weapon band 0x230-0x288 occupied=%d/89 (from the %s)\n",
             myN, ours, foreign, empty, ext, wbOcc,
             g_InfoMirror ? "mirror" : "native table");
     }
@@ -807,33 +789,30 @@ bool TppEquip_EnsureInfoListMirror()
         g_MirrorSitesPatched = true;
         DeployGuard::ForceDropExtendedIds();
         Log("[EquipIdTable] extended InfoList mirror DISABLED by "
-            "disabled_modules.txt. The 14 equip-data reader sites keep the game's "
-            "own 653-row table, so equipIds 1792+ resolve nothing at all - they are "
-            "dropped from the loadout for this session to keep the deploy safe. "
-            "Every vanilla and vanilla-band custom weapon now runs the engine's "
-            "unmodified equip-data path. If weapon models appear on the body in "
-            "this session, the mirror is the cause; if they still do not, the "
-            "mirror is cleared for real this time.\n");
+            "disabled_modules.txt - the 14 reader sites keep the 653-row table, so "
+            "equipIds 1792+ resolve nothing and are dropped from the loadout this "
+            "session to keep the deploy safe\n");
         return false;
     }
     if (!::AddressSetRuntime::IsEn154Family(gGameBuild))
     {
         LogDebug("[EquipIdTable] InfoList mirror sites not ported for this build - "
-            "the equip-data readers index the 653-row native table with the raw "
-            "extended equipId, so an extended weapon's loadout slot queues a "
-            "garbage package, never reports ready, and the deploy hangs\n");
+                 "the readers index the 653-row table with the raw extended "
+                 "equipId, so an extended weapon queues a garbage package and the "
+                 "deploy hangs\n");
         g_MirrorSitesPatched = true;
         return true;
     }
     if (!g_InfoMirror)
     {
-        g_InfoMirror = static_cast<std::uint8_t*>(AllocateMirrorNear(
-            0x140a00000ull, static_cast<size_t>(kMirrorRows) * kRowStride));
+        g_InfoMirror = static_cast<std::uint8_t*>(AllocateMirrorOutsideHookWindow(
+            static_cast<size_t>(kMirrorRows) * kRowStride));
         if (!g_InfoMirror)
         {
-            Log("[EquipIdTable] ERROR: could not allocate the InfoList mirror "
-                "near the game image - extended weapons keep queueing a garbage "
-                "package at loadout spawn and the deploy hangs\n");
+            g_MirrorSitesPatched = true;
+            Log("[EquipIdTable] ERROR: could not allocate the InfoList mirror near "
+                "the game image - extended weapons queue a garbage package and the "
+                "deploy hangs\n");
             return false;
         }
     }
@@ -843,21 +822,21 @@ bool TppEquip_EnsureInfoListMirror()
     if (patched == 0)
     {
         Log("[EquipIdTable] ERROR: no InfoList reader site could be repointed - "
-            "extended weapons resolve no model package and deploying with one "
-            "equipped will hang on the loading screen\n");
+            "extended weapons resolve no model package and deploying with one hangs "
+            "on the loading screen\n");
         return false;
     }
     if (g_MirrorSitesSkipped != 0)
         Log("[EquipIdTable] WARNING: %zu InfoList reader site(s) could not be "
-            "repointed at the mirror - an extended weapon reached through one of "
-            "them resolves no package and its loadout slot waits forever\n",
+            "repointed - an extended weapon reached through one resolves no package "
+            "and its loadout slot waits forever\n",
             g_MirrorSitesSkipped);
 #ifdef _DEBUG
-    LogDebug("[EquipIdTable] extended InfoList mirror armed at %p: %zu equip-data "
-        "reader site(s) repointed from the 653-row native table to a %d-row "
-        "mirror, indexed by the engine's own folded row (vanilla aliasing left "
-        "intact); extended equipIds %d..%d fold to rows 0x%X..0x%X, clear of "
-        "every vanilla row\n",
+    LogDebug("[EquipIdTable] extended InfoList mirror armed at %p: %zu reader "
+             "site(s) repointed from the 653-row native table to a %d-row mirror "
+             "indexed by the engine's own folded row (vanilla aliasing intact); "
+             "extended equipIds %d..%d fold to rows 0x%X..0x%X, clear of every "
+             "vanilla row\n",
         static_cast<void*>(g_InfoMirror), patched, kMirrorRows,
         EquipIdCompression::kExtendedAllocFirst,
         EquipIdCompression::kExtendedEquipIdLast,
@@ -940,12 +919,12 @@ bool Install_TppEquip_ReloadEquipIdTable_Hook()
             typeTarget, &hkGetEquipTypeId,
             reinterpret_cast<void**>(&g_OrigGetEquipTypeId));
         if (!okT)
-            Log("[EquipIdTable] GetEquipTypeId hook Install -> FAIL (target=%p) - "
-                "extended equipIds will report type 0\n", typeTarget);
+            Log("[EquipIdTable] GetEquipTypeId hook: FAIL target=%p - extended "
+                "equipIds report type 0\n", typeTarget);
 #ifdef _DEBUG
         else
-            LogDebug("[EquipIdTable] GetEquipTypeId hook Install -> OK (target=%p; serves "
-                "the equip type of extended custom equipIds from the DLL table)\n",
+            LogDebug("[EquipIdTable] GetEquipTypeId hook: OK target=%p (serves "
+                     "extended equip types from the DLL table)\n",
                 typeTarget);
 #endif
     }
@@ -957,22 +936,20 @@ bool Install_TppEquip_ReloadEquipIdTable_Hook()
             subTarget, &hkGetEquipSubId,
             reinterpret_cast<void**>(&g_OrigGetEquipSubId));
         if (!okS)
-            Log("[EquipIdTable] GetEquipSubId hook Install -> FAIL (target=%p) - the "
-                "native accessor answers extended custom equipIds with a weapon-band "
-                "ordinal instead of the real weapon subId, so the loadout builds a "
-                "different gun than the one picked\n", subTarget);
+            Log("[EquipIdTable] GetEquipSubId hook: FAIL target=%p - the native "
+                "accessor answers extended equipIds with a weapon-band ordinal, so "
+                "the loadout builds a different gun\n", subTarget);
 #ifdef _DEBUG
         else
-            LogDebug("[EquipIdTable] GetEquipSubId hook Install -> OK (target=%p; serves "
-                "the weapon subId of extended custom equipIds from the DLL table)\n",
+            LogDebug("[EquipIdTable] GetEquipSubId hook: OK target=%p (serves "
+                     "extended weapon subIds from the DLL table)\n",
                 subTarget);
 #endif
     }
     else
-        LogDebug("[EquipIdTable] GetEquipSubId address not ported for this build - the "
-            "native accessor answers extended custom equipIds with a weapon-band "
-            "ordinal instead of the real weapon subId, so picking a custom weapon "
-            "builds a different gun\n");
+        LogDebug("[EquipIdTable] GetEquipSubId address not ported for this build - "
+                 "the native accessor answers extended equipIds with a weapon-band "
+                 "ordinal, so picking a custom weapon builds a different gun\n");
     return ok;
 }
 
@@ -1035,10 +1012,9 @@ void TppEquip_NoteAmmoRootParam(int eqpAmmoEquipId, int ammoId)
     if (restamp)
     {
         WriteNativeRow(updated);
-        LogDebug("[EquipIdTable] ammo item equipId=%d subId %d -> %d (its ammoId; the "
-            "supply-crate refill resolves the refill amount through this field - the row "
-            "was stamped before SetMagazine assigned the ammo row, so ammo supplies "
-            "delivered nothing for it)\n",
+        LogDebug("[EquipIdTable] ammo item equipId=%d subId %d -> %d (its ammoId; "
+                 "the row was stamped before SetMagazine assigned the ammo row, so "
+                 "supplies delivered nothing)\n",
             eqpAmmoEquipId, prevSub, ammoId);
     }
 }

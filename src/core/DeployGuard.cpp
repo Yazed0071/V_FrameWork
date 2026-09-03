@@ -61,10 +61,10 @@ namespace DeployGuard
 
             static std::atomic<bool> s_said{ false };
             if (!s_said.exchange(true))
-                Log("[DeployGuard] armed: %s now tracks the live mission code and loadout. "
-                    "It is deleted when the player's weapon is set up and again on a clean "
-                    "exit, so a copy still present at the next boot means the game died "
-                    "mid-load.\n", path);
+                Log("[DeployGuard] armed: %s tracks the live mission code and "
+                    "loadout; it is deleted once the player's weapon is set up and "
+                    "again on a clean exit, so a leftover copy at boot means the "
+                    "game died mid-load\n", path);
         }
 
         void DeleteMarker()
@@ -85,9 +85,9 @@ namespace DeployGuard
         if (fopen_s(&f, path, "r") != 0 || !f)
             return;
 
-        Log("[DeployGuard] the previous session left a deploy marker behind - that run "
-            "entered a mission load and never reached the point where the player's "
-            "weapon is set up. The loadout it hung on:\n");
+        Log("[DeployGuard] the previous session left a deploy marker - that run "
+            "entered a mission load and never reached the player's weapon setup. "
+            "The loadout it hung on:\n");
 
         char line[256];
         while (fgets(line, sizeof(line), f))
@@ -105,10 +105,10 @@ namespace DeployGuard
         DeleteFileA(path);
 
         g_DropExtended.store(true, std::memory_order_relaxed);
-        Log("[DeployGuard] extended equipIds are hidden from the loadout the engine builds "
-            "so the deploy can complete. Weapons in that band will be missing from their "
-            "slots until a load finishes; the SAVED loadout keeps them, and the hide is "
-            "lifted the moment a mission load reaches the point the last run died at.\n");
+        Log("[DeployGuard] extended equipIds are hidden from the loadout the engine "
+            "builds so the deploy can complete - those slots stay empty until a "
+            "load finishes; the SAVED loadout keeps them and the hide lifts once a "
+            "load passes the point the last run died at\n");
     }
 
     void NoteLoadoutSlot(std::uint32_t slot, const std::int32_t* ids)
@@ -117,14 +117,28 @@ namespace DeployGuard
             return;
 
         bool changed = false;
+        std::int32_t removed[3] = {};
+        int nRemoved = 0;
         {
             std::lock_guard<std::mutex> lock(g_Mutex);
             for (int i = 0; i < 3; ++i)
             {
                 if (g_Loadout[slot][i] == ids[i])
                     continue;
+                if (g_Loadout[slot][i] > 0)
+                    removed[nRemoved++] = g_Loadout[slot][i];
                 g_Loadout[slot][i] = ids[i];
                 changed = true;
+            }
+            for (int r = 0; r < nRemoved; ++r)
+            {
+                for (std::uint32_t s = 0; s < kSlots && removed[r] != 0; ++s)
+                    for (int i = 0; i < 3; ++i)
+                        if (g_Loadout[s][i] == removed[r])
+                        {
+                            removed[r] = 0;
+                            break;
+                        }
             }
         }
         if (!changed)
@@ -132,6 +146,9 @@ namespace DeployGuard
 
         for (int i = 0; i < 3; ++i)
             V_FrameWorkState::NotePinnedEquipId(ids[i]);
+        for (int r = 0; r < nRemoved; ++r)
+            if (removed[r] > 0)
+                V_FrameWorkState::UnpinEquipId(removed[r]);
 
         const std::uint32_t code = g_LastCode.load(std::memory_order_relaxed);
         if (code != 0xFFFFFFFFu)
@@ -166,12 +183,10 @@ namespace DeployGuard
             return;
 
         if (g_DropExtended.exchange(false, std::memory_order_relaxed))
-            Log("[DeployGuard] mission %u loaded through to the player's weapon being set "
-                "up, which is exactly the point the previous run died at, so the extended "
-                "equipId hide is lifted for the rest of this session - weapons in that "
-                "band fill their slots normally from here. It stays armed while you are "
-                "in the title screen or on Mother Base, because the deploy it has to "
-                "cover has not happened yet at that point.\n", code);
+            Log("[DeployGuard] mission %u reached the player's weapon setup - the "
+                "point the previous run died at - so the extended equipId hide is "
+                "lifted for this session. It stays armed on the title screen and "
+                "Mother Base, where the deploy it covers has not happened yet\n", code);
     }
 
     void OnCleanExit()

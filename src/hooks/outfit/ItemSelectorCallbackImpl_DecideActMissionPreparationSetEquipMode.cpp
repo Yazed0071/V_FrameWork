@@ -10,6 +10,7 @@
 #include <unordered_set>
 
 #include "../equip/DevelopArrayGrow.h"
+#include "../equip/EquipDevelop_AddToEquipDevelopTable.h"
 #include "AddressSet.h"
 #include "HookUtils.h"
 #include "log.h"
@@ -122,8 +123,8 @@ namespace
                 {
                     Log("[OutfitItemSelector] WARN stale variant cell: selector "
                         "0x%02X resolves to developId=%u but the clicked row is "
-                        "developId=%u - trusting the row (the selector byte was "
-                        "rotated to another outfit)\n",
+                        "developId=%u - trusting the row (the byte was rotated to "
+                        "another outfit)\n",
                         static_cast<unsigned>(s.selectorCode),
                         static_cast<unsigned>(entry->developId),
                         static_cast<unsigned>(rowEntry->developId));
@@ -219,10 +220,10 @@ namespace
                 }
                 else
                 {
-                    LogDebug("[OutfitItemSelector:%s] equip refused: live-byte pools "
-                        "full and every bound outfit is pinned (worn / loadout / "
-                        "order) - developId=%u stays vanilla; free a slot by "
-                        "unequipping\n", tag, static_cast<unsigned>(devId));
+                    LogDebug("[OutfitItemSelector:%s] equip refused: live-byte "
+                             "pools full and every bound outfit is pinned - "
+                             "developId=%u stays vanilla; unequip something to free "
+                             "a slot\n", tag, static_cast<unsigned>(devId));
                 }
             }
             if (devId == 0 && isSuitClick)
@@ -241,11 +242,10 @@ namespace
                         outfit::TryGetOutfitByDevelopId(s.selectedId, &byDev)
                         && byDev;
                     LogDebug("[OutfitItemSelector:%s] suit click matched no "
-                        "registered outfit: flowIndex=%u selector=0x%02X "
-                        "equipKind=0x%X byFlow=%s byDevelop=%s - no partsType "
-                        "is activated and no pending developId is published, "
-                        "so the engine falls back to the vanilla suit "
-                        "(partsType 0x00)\n",
+                             "registered outfit: flowIndex=%u selector=0x%02X "
+                             "equipKind=0x%X byFlow=%s byDevelop=%s - no partsType "
+                             "activated and no pending developId, so the engine "
+                             "falls back to the vanilla suit\n",
                         tag,
                         static_cast<unsigned>(s.selectedId),
                         static_cast<unsigned>(s.selectorCode),
@@ -344,6 +344,7 @@ namespace
         const outfit::OutfitEntry* entry = nullptr;
         bool resolves =
             outfit::TryGetOutfitByFlowIndex(s.selectedId, &entry) && entry;
+        const bool knownAsOutfit = resolves;
         if (resolves && !entry->bound)
         {
             if (outfit::BindOutfit(entry->developId, true, "supply-order"))
@@ -368,6 +369,19 @@ namespace
         }
         else if (s.selectedId >= kCustomFlowFirst && s.selectedId <= kCustomFlowLast)
         {
+            if (!knownAsOutfit
+                && EquipDevelopAdd::IsManagedFlowIndex(
+                       static_cast<std::uint16_t>(s.selectedId)))
+            {
+#ifdef _DEBUG
+                LogDebug("[OutfitItemSelector:%s] supply-cell left alone: "
+                         "flowIndex=%u cell=%zu is a registered NON-OUTFIT custom "
+                         "row - the vanilla-suit degrade would stamp a suit "
+                         "selector into a weapon/item crate\n",
+                    tag, static_cast<unsigned>(s.selectedId), s.cellIndex);
+#endif
+                return;
+            }
             newSelector = 0x4F;
             why = "UNREGISTERED custom row - degraded to coherent VANILLA crate";
         }
@@ -386,9 +400,9 @@ namespace
                   | static_cast<std::uint32_t>(newSelector);
 #ifdef _DEBUG
             LogDebug("[OutfitItemSelector:%s] supply-cell selector fixup: "
-                "flowIndex=%u cell=%zu 0x%08X -> 0x%08X (%s: crate payload "
-                "now carries selector 0x%02X so the pickup camo->partsType "
-                "resolver produces a coherent suit)\n",
+                     "flowIndex=%u cell=%zu 0x%08X -> 0x%08X (%s: the crate payload "
+                     "now carries selector 0x%02X so the pickup resolver produces a "
+                     "coherent suit)\n",
                 tag,
                 static_cast<unsigned>(s.selectedId),
                 s.cellIndex, prev, *cell,
@@ -468,9 +482,8 @@ namespace
                 outfit::SetPendingOutfitDevelopId(entry->developId);
 #ifdef _DEBUG
                 LogDebug("[OutfitItemSelector:prep] supply ORDER of custom outfit "
-                    "developId=%u variantIdx=%u - stashed for crate pickup "
-                    "(no order-time activation; the crate delivers this "
-                    "variant)\n",
+                         "developId=%u variantIdx=%u - stashed for crate pickup "
+                         "(the crate delivers this variant)\n",
                     static_cast<unsigned>(entry->developId),
                     static_cast<unsigned>(variantIdx));
 #endif
@@ -571,11 +584,10 @@ namespace
                     outfit::SetPendingOutfitDevelopId(entry->developId);
 
 #ifdef _DEBUG
-                    LogDebug("[OutfitItemSelector:supply] also stashed "
-                        "pendingSupplyDropDevelopId=%u variantIdx=%u "
-                        "(equipKind=0x%X, isSuitClick=%d, "
-                        "isCustomSelector=%d) for crate-pickup "
-                        "force-equip\n",
+                    LogDebug("[OutfitItemSelector:supply] stashed "
+                             "pendingSupplyDropDevelopId=%u variantIdx=%u "
+                             "(equipKind=0x%X isSuitClick=%d isCustomSelector=%d) "
+                             "for crate-pickup force-equip\n",
                         static_cast<unsigned>(entry->developId),
                         static_cast<unsigned>(variantIdx),
                         s.equipKind,
@@ -615,8 +627,8 @@ namespace
             else
             {
                 LogDebug("[OutfitItemSelector:devmenu] R&D request for developId=%u "
-                    "not stashed: live byte pools full - unequip an outfit to "
-                    "free a slot\n",
+                         "not stashed: live byte pools full - unequip an outfit to "
+                         "free a slot\n",
                     static_cast<unsigned>(entry->developId));
                 isCustom = false;
             }
@@ -631,10 +643,9 @@ namespace
             outfit::SetPendingSupplyDropVariantIdx(entry->defaultVariant);
 #ifdef _DEBUG
             LogDebug("[OutfitItemSelector:devmenu] R&D request for custom outfit "
-                "flowIndex=%u developId=%u partsType=0x%02X selector=0x%02X "
-                "- stashed both pendingOutfitDevelopId AND "
-                "pendingSupplyDropDevelopId (variantIdx=0) for crate-pickup "
-                "recovery\n",
+                     "flowIndex=%u developId=%u partsType=0x%02X selector=0x%02X - "
+                     "stashed both pending ids (variantIdx=0) for crate-pickup "
+                     "recovery\n",
                 static_cast<unsigned>(flowIndex),
                 static_cast<unsigned>(entry->developId),
                 static_cast<unsigned>(entry->partsType),
@@ -653,8 +664,8 @@ namespace
                     reinterpret_cast<std::uint8_t*>(self) + 0x23A0) = 0xFFFFFFFFu;
 #ifdef _DEBUG
                 LogDebug("[OutfitItemSelector:devmenu] custom HEAD row flowIndex=%u "
-                    "is not orderable - drop request neutralized (heads equip "
-                    "via the HEAD OPTION submenu, not supply crates)\n",
+                         "is not orderable - drop request neutralized (heads equip "
+                         "via the HEAD OPTION submenu)\n",
                     static_cast<unsigned>(flowIndex));
 #endif
             }
@@ -687,19 +698,19 @@ namespace
                 payload[3] = 0;
 
 #ifdef _DEBUG
-                LogDebug("[OutfitItemSelector:devmenu] post-orig SupplyCboxDropRequest "
-                    "repair: type 0x%X->3 flags 0x%X->0x81 camo 0x%02X->0x%02X "
-                    "(flowIndex=%u, registered custom outfit) - coherent suit "
-                    "crate; pickup resolves identity from the camo byte\n",
+                LogDebug("[OutfitItemSelector:devmenu] post-orig "
+                         "SupplyCboxDropRequest repair: type 0x%X->3 flags "
+                         "0x%X->0x81 camo 0x%02X->0x%02X (flowIndex=%u) - coherent "
+                         "suit crate; pickup resolves identity from the camo byte\n",
                     prevType, prevFlags, prevCamo, payload[1],
                     static_cast<unsigned>(flowIndex));
 #endif
             }
             __except (EXCEPTION_EXECUTE_HANDLER)
             {
-                LogDebug("[OutfitItemSelector:devmenu] SEH writing SupplyCboxDropRequest "
-                    "at self+0x23A0..0x246C (self=%p) - offset assumption may be "
-                    "wrong\n", self);
+                LogDebug("[OutfitItemSelector:devmenu] SEH writing "
+                         "SupplyCboxDropRequest at self+0x23A0..0x246C (self=%p) - "
+                         "the offset assumption may be wrong\n", self);
             }
         }
     }

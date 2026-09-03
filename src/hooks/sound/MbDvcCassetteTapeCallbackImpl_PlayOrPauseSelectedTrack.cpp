@@ -742,9 +742,9 @@ bool PlayCassetteByTrackId(
 
     if (!ResolveDirectPlayState(playFn, player))
     {
-        Log("[CassettePlay] WARN: cannot play tape - no play-capable cassette player. Open the in-game Music Player"
-            " once so the cassette player gets captured (the cold *(MM+0xA8) object is track-info-only,"
-            " not a vtable play target).\n");
+        Log("[CassettePlay] WARN: no play-capable cassette player - open the "
+            "in-game Music Player once so it gets captured (the cold *(MM+0xA8) "
+            "object is track-info-only, not a vtable play target)\n");
         return false;
     }
 

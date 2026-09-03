@@ -3,8 +3,11 @@
 #include <Windows.h>
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <set>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -60,7 +63,32 @@ namespace
     static std::atomic<bool>       g_Installed{ false };
 
 
-    static thread_local std::uint32_t t_CurrentSpeakingSlot = 0xFFFFFFFFu;
+    static constexpr std::uint32_t kNoSoundSlot = 0xFFFFFFFFu;
+
+    static thread_local std::uint32_t t_CurrentSpeakingSlot = kNoSoundSlot;
+    static thread_local std::uint32_t t_CurrentSoundSlotRaw = kNoSoundSlot;
+
+    struct VoiceLineIdentity
+    {
+        std::uint32_t event;
+        std::uint32_t voiceType;
+        std::uint32_t voiceParam;
+        std::uint32_t category;
+    };
+
+    static constexpr std::uint32_t kVoiceTypeCommandPost         = 0xCC8D2DC8u;
+    static constexpr std::uint32_t kVoiceTypeCommandPostSoviet   = 0xA14739A0u;
+    static constexpr std::uint32_t kVoiceTypeCommandPostAfrican  = 0x8E471B8Au;
+
+    static bool IsCommandPostOwnVoiceType(std::uint32_t voiceType)
+    {
+        return voiceType == kVoiceTypeCommandPost
+            || voiceType == kVoiceTypeCommandPostSoviet
+            || voiceType == kVoiceTypeCommandPostAfrican;
+    }
+
+    static thread_local void*             t_CurrentVoiceController = nullptr;
+    static thread_local VoiceLineIdentity t_CurrentVoiceLine       = {};
 
     static std::mutex                                            g_GoIdAkObjMutex;
     static std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> g_AkObjIdsByGoId;
@@ -70,10 +98,18 @@ namespace
     static std::mutex                                                 g_MapMutex;
     static std::unordered_map<void*, std::vector<std::uint32_t>>      g_AkObjIdsByObject;
 
+    static std::mutex                                            g_EmitterNameMutex;
+    static std::unordered_map<std::uint32_t, std::string>        g_EmitterNameByAkObjId;
+
     static std::mutex                  g_SoldierVoiceMutex;
     static std::vector<std::uint32_t>  g_SoldierVoiceAkObjIds;
     static std::atomic<float>          g_ActiveSoldierVoiceCents{ 0.0f };
     static std::atomic<bool>           g_HaveActiveSoldierVoiceCents{ false };
+
+    static std::mutex                             g_CommandPostVoiceMutex;
+    static std::vector<std::uint32_t>             g_CommandPostAkObjIds;
+    static std::unordered_map<std::uint32_t, float> g_CommandPostCentsByCp;
+    static std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> g_AkObjIdsByCp;
 
     static std::mutex                                            g_ControlLinkMutex;
     static std::unordered_map<void*, void*>                      g_SelfToParentControl;
@@ -152,6 +188,27 @@ namespace
     }
 
 
+    static VoiceLineIdentity SehReadVoiceLineIdentity(const void* entry)
+    {
+        VoiceLineIdentity line = {};
+        if (!entry)
+            return line;
+        __try
+        {
+            const auto e = reinterpret_cast<const std::uint8_t*>(entry);
+            line.event      = *reinterpret_cast<const std::uint32_t*>(e + 0x20);
+            line.voiceType  = *reinterpret_cast<const std::uint32_t*>(e + 0x24);
+            line.voiceParam = *reinterpret_cast<const std::uint32_t*>(e + 0x28);
+            line.category   = *reinterpret_cast<const std::uint16_t*>(e + 0x2c);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            line = VoiceLineIdentity{};
+        }
+        return line;
+    }
+
+
     static void SehCallCallVoiceImpl(void* param_1, void* param_2,
                                      std::uint32_t slot)
     {
@@ -179,12 +236,21 @@ namespace
 
         Debug_InterrogationVoice_NoteDequeue(param_2, slot);
 
-        const std::uint32_t prev = t_CurrentSpeakingSlot;
-        t_CurrentSpeakingSlot = soldierIndex;
+        const std::uint32_t     prev     = t_CurrentSpeakingSlot;
+        const std::uint32_t     prevRaw  = t_CurrentSoundSlotRaw;
+        void* const             prevCtl  = t_CurrentVoiceController;
+        const VoiceLineIdentity prevLine = t_CurrentVoiceLine;
+        t_CurrentSpeakingSlot    = soldierIndex;
+        t_CurrentSoundSlotRaw    = slot;
+        t_CurrentVoiceController = param_1;
+        t_CurrentVoiceLine       = SehReadVoiceLineIdentity(param_2);
 
         SehCallCallVoiceImpl(param_1, param_2, slot);
 
-        t_CurrentSpeakingSlot = prev;
+        t_CurrentSpeakingSlot    = prev;
+        t_CurrentSoundSlotRaw    = prevRaw;
+        t_CurrentVoiceController = prevCtl;
+        t_CurrentVoiceLine       = prevLine;
     }
 
 
@@ -199,6 +265,77 @@ namespace
         {
             return 0;
         }
+    }
+
+
+    static constexpr const char* kCommandPostEmitterName = "CommandPost";
+    static constexpr std::size_t kEmitterNameLogCap      = 64;
+    static constexpr std::size_t kCommandPostLogCap      = 64;
+
+
+    static void NoteEmitterName(const char* name, std::uint32_t akObjId,
+                                const void* owner)
+    {
+        if (!name)
+            return;
+
+        {
+            std::lock_guard<std::mutex> lock(g_EmitterNameMutex);
+            g_EmitterNameByAkObjId[akObjId] = name;
+        }
+
+        static std::mutex             s_reportMutex;
+        static std::set<std::string>  s_namesSeen;
+        static std::size_t            s_commandPostsSeen = 0;
+
+        std::lock_guard<std::mutex> lock(s_reportMutex);
+
+        if (std::strcmp(name, kCommandPostEmitterName) == 0
+            && s_commandPostsSeen < kCommandPostLogCap)
+        {
+            ++s_commandPostsSeen;
+
+            char stack[256];
+            int  written = 0;
+            for (std::size_t i = t_ActiveObjectDepth;
+                 i-- > 0 && written < static_cast<int>(sizeof(stack)) - 1; )
+            {
+                const int n = std::snprintf(
+                    stack + written,
+                    sizeof(stack) - static_cast<std::size_t>(written),
+                    " [%zu]=%p", i, t_ActiveObjectStack[i]);
+                if (n < 0)
+                    break;
+                written += n;
+            }
+            if (written <= 0)
+                stack[0] = '\0';
+
+            LogDebug("[SoldierAkObjIdMap] command post #%zu emitter akObjId %u owner %p "
+                     "cpIndex %d voiceType=0x%08X (%s) voiceParam=0x%08X event=0x%08X "
+                     "category=%u depth %zu activation stack:%s - the post, HQ and the "
+                     "soldier answering all transmit on this one emitter, so the voice "
+                     "type is what tells them apart: cp_a* is the post's own voice and "
+                     "takes the bias, hq_a* and ene_a* are the far end and keep their "
+                     "vanilla pitch; cpIndex -1 is the radio static that brackets a "
+                     "transmission rather than a spoken line\n",
+                     s_commandPostsSeen, akObjId, owner,
+                     static_cast<int>(static_cast<std::int32_t>(t_CurrentSoundSlotRaw)),
+                     t_CurrentVoiceLine.voiceType,
+                     IsCommandPostOwnVoiceType(t_CurrentVoiceLine.voiceType)
+                         ? "command post" : "far end",
+                     t_CurrentVoiceLine.voiceParam, t_CurrentVoiceLine.event,
+                     t_CurrentVoiceLine.category,
+                     t_ActiveObjectDepth, stack);
+            return;
+        }
+
+        if (s_namesSeen.size() >= kEmitterNameLogCap
+            || !s_namesSeen.insert(name).second)
+            return;
+
+        LogDebug("[SoldierAkObjIdMap] sound emitter '%s' registered akObjId %u "
+                 "(owner %p)\n", name, akObjId, owner);
     }
 
 
@@ -230,6 +367,8 @@ namespace
 
         if (akObjId && owner)
         {
+            NoteEmitterName(name, akObjId, owner);
+
             bool isNewMapping = false;
             try
             {
@@ -254,7 +393,7 @@ namespace
                 catch (...) {}
 
                 const std::uint32_t currentSlot = t_CurrentSpeakingSlot;
-                if (currentSlot != 0xFFFFFFFFu)
+                if (currentSlot != kNoSoundSlot)
                 {
                     const std::uint32_t goId = 0x0400u | (currentSlot & 0x01FFu);
                     float desiredCents = 0.0f;
@@ -277,6 +416,34 @@ namespace
                         Set_PitchBiasForAkObjId(static_cast<std::uint64_t>(akObjId), desiredCents);
                     }
                 }
+            }
+
+            const std::uint32_t cpIndex = t_CurrentSoundSlotRaw;
+
+            const bool isCommandPostOwnVoiceLine =
+                name
+                && std::strcmp(name, kCommandPostEmitterName) == 0
+                && cpIndex != kNoSoundSlot
+                && IsCommandPostOwnVoiceType(t_CurrentVoiceLine.voiceType);
+
+            if (isNewMapping && isCommandPostOwnVoiceLine)
+            {
+                float desiredCents = 0.0f;
+                try
+                {
+                    std::lock_guard<std::mutex> lock(g_CommandPostVoiceMutex);
+                    g_CommandPostAkObjIds.push_back(akObjId);
+                    g_AkObjIdsByCp[cpIndex].push_back(akObjId);
+
+                    const auto it = g_CommandPostCentsByCp.find(cpIndex);
+                    if (it != g_CommandPostCentsByCp.end())
+                        desiredCents = it->second;
+                }
+                catch (...) {}
+
+                if (desiredCents != 0.0f)
+                    Set_PitchBiasForAkObjId(static_cast<std::uint64_t>(akObjId),
+                                            desiredCents);
             }
 
             if (isNewMapping)
@@ -378,9 +545,22 @@ namespace SoldierAkObjIdMap
             std::lock_guard<std::mutex> lock(g_MapMutex);
             g_AkObjIdsByObject.clear();
         }
+        {
+            std::lock_guard<std::mutex> lock(g_EmitterNameMutex);
+            g_EmitterNameByAkObjId.clear();
+        }
 
         g_Installed.store(false, std::memory_order_relaxed);
         return true;
+    }
+
+
+    std::string GetEmitterNameForAkObjId(std::uint32_t akObjId)
+    {
+        std::lock_guard<std::mutex> lock(g_EmitterNameMutex);
+        const auto it = g_EmitterNameByAkObjId.find(akObjId);
+        if (it == g_EmitterNameByAkObjId.end()) return {};
+        return it->second;
     }
 
 
@@ -499,6 +679,44 @@ namespace SoldierAkObjIdMap
         const auto it = g_AkObjIdsByGoId.find(goId);
         if (it == g_AkObjIdsByGoId.end()) return {};
         return it->second;
+    }
+
+
+    void SetCommandPostVoiceCents(std::uint32_t cpIndex, float cents)
+    {
+        std::vector<std::uint32_t> live;
+        {
+            std::lock_guard<std::mutex> lock(g_CommandPostVoiceMutex);
+            g_CommandPostCentsByCp[cpIndex] = cents;
+
+            const auto it = g_AkObjIdsByCp.find(cpIndex);
+            if (it != g_AkObjIdsByCp.end())
+                live = it->second;
+        }
+
+        for (std::uint32_t akObjId : live)
+            Set_PitchBiasForAkObjId(static_cast<std::uint64_t>(akObjId), cents);
+    }
+
+
+    void ClearCommandPostVoiceCents()
+    {
+        std::vector<std::uint32_t> ids;
+        {
+            std::lock_guard<std::mutex> lock(g_CommandPostVoiceMutex);
+            g_CommandPostCentsByCp.clear();
+            g_AkObjIdsByCp.clear();
+            ids.swap(g_CommandPostAkObjIds);
+        }
+        for (std::uint32_t akObjId : ids)
+            Clear_PitchBiasForAkObjId(static_cast<std::uint64_t>(akObjId));
+    }
+
+
+    std::vector<std::uint32_t> GetCommandPostAkObjIds()
+    {
+        std::lock_guard<std::mutex> lock(g_CommandPostVoiceMutex);
+        return g_CommandPostAkObjIds;
     }
 
 
