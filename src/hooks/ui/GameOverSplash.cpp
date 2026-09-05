@@ -7,6 +7,7 @@
 #include "log.h"
 #include "AddressSet.h"
 #include "MissionCodeGuard.h"
+#include "MissionTextureTable.h"
 
 namespace
 {
@@ -19,8 +20,8 @@ namespace
     GameOverSetVisible_t g_OrigGameOverSetVisible = nullptr;
     SetTextureName_t     g_SetTextureName = nullptr;
 
-    uint64_t g_MainTexture = 0;
-    uint64_t g_BlurTexture = 0;
+    MissionTextureTable g_MainTextures;
+    MissionTextureTable g_BlurTextures;
 
 
     bool Resolve()
@@ -44,52 +45,67 @@ namespace
         if (!visible || !layout || !Resolve())
             return;
 
+        const uint32_t mission = MissionCodeGuard::GetCurrentMissionCode();
+        const uint64_t mainTex = g_MainTextures.Resolve(mission);
+        const uint64_t blurTex = g_BlurTextures.Resolve(mission);
+        if (mainTex == 0 && blurTex == 0)
+            return;
+
         void* const node8 = reinterpret_cast<void*>(layout[8]);
         void* const node9 = reinterpret_cast<void*>(layout[9]);
         void* const node10 = reinterpret_cast<void*>(layout[10]);
         void* const node11 = reinterpret_cast<void*>(layout[11]);
 
-        if (g_MainTexture != 0)
+        if (mainTex != 0)
         {
-            if (node8) g_SetTextureName(node8, g_MainTexture, SLOT_MAIN_TEXTURE, 2);
-            if (node9) g_SetTextureName(node9, g_MainTexture, SLOT_MAIN_TEXTURE, 2);
+            if (node8) g_SetTextureName(node8, mainTex, SLOT_MAIN_TEXTURE, 2);
+            if (node9) g_SetTextureName(node9, mainTex, SLOT_MAIN_TEXTURE, 2);
         }
 
-        if (g_BlurTexture != 0)
+        if (blurTex != 0)
         {
-            if (node8)  g_SetTextureName(node8,  g_BlurTexture, SLOT_BLUR_LAYER, 2);
-            if (node9)  g_SetTextureName(node9,  g_BlurTexture, SLOT_BLUR_LAYER, 2);
-            if (node10) g_SetTextureName(node10, g_BlurTexture, SLOT_MAIN_TEXTURE, 2);
-            if (node11) g_SetTextureName(node11, g_BlurTexture, SLOT_MAIN_TEXTURE, 2);
+            if (node8)  g_SetTextureName(node8,  blurTex, SLOT_BLUR_LAYER, 2);
+            if (node9)  g_SetTextureName(node9,  blurTex, SLOT_BLUR_LAYER, 2);
+            if (node10) g_SetTextureName(node10, blurTex, SLOT_MAIN_TEXTURE, 2);
+            if (node11) g_SetTextureName(node11, blurTex, SLOT_MAIN_TEXTURE, 2);
         }
+
+        LogDebug("[GameOverSplash] mission %u -> main %016llX blur %016llX\n",
+                 mission,
+                 static_cast<unsigned long long>(mainTex),
+                 static_cast<unsigned long long>(blurTex));
     }
 }
 
 
-void GameOverSplash_SetMainTexture(uint64_t textureHash)
+void GameOverSplash_SetMainTexture(uint64_t textureHash, uint32_t missionCode)
 {
-    g_MainTexture = textureHash;
+    g_MainTextures.Set(missionCode, textureHash);
+    LogDebug("[GameOverSplash] set main texture %016llX for mission %u\n",
+             static_cast<unsigned long long>(textureHash), missionCode);
 }
 
-void GameOverSplash_ClearMainTexture()
+void GameOverSplash_ClearMainTexture(uint32_t missionCode)
 {
-    g_MainTexture = 0;
+    g_MainTextures.Clear(missionCode);
 }
 
-void GameOverSplash_SetBlurTexture(uint64_t textureHash)
+void GameOverSplash_SetBlurTexture(uint64_t textureHash, uint32_t missionCode)
 {
-    g_BlurTexture = textureHash;
+    g_BlurTextures.Set(missionCode, textureHash);
+    LogDebug("[GameOverSplash] set blur texture %016llX for mission %u\n",
+             static_cast<unsigned long long>(textureHash), missionCode);
 }
 
-void GameOverSplash_ClearBlurTexture()
+void GameOverSplash_ClearBlurTexture(uint32_t missionCode)
 {
-    g_BlurTexture = 0;
+    g_BlurTextures.Clear(missionCode);
 }
 
-void GameOverSplash_ClearTextures()
+void GameOverSplash_ClearTextures(uint32_t missionCode)
 {
-    g_MainTexture = 0;
-    g_BlurTexture = 0;
+    g_MainTextures.Clear(missionCode);
+    g_BlurTextures.Clear(missionCode);
 }
 
 

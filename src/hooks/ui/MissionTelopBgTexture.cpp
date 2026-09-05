@@ -4,12 +4,14 @@
 #include <Windows.h>
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 
 #include "AddressSet.h"
 #include "FoxHashes.h"
 #include "HookUtils.h"
 #include "log.h"
 #include "MissionCodeGuard.h"
+#include "MissionTextureTable.h"
 
 
 namespace
@@ -26,13 +28,12 @@ namespace
     static GetLayout_t      g_GetLayout          = nullptr;
     static GetModel_t       g_GetModel           = nullptr;
 
-    static std::atomic<bool>          g_Override { false };
-    static std::atomic<bool>          g_InTelop  { false };
-    static std::atomic<std::uint64_t> g_TexHash  { 0 };
+    static std::atomic<bool>   g_InTelop { false };
+    static MissionTextureTable g_Textures;
 
-    constexpr std::uint64_t VANILLA_TELOP_BG = 0x156846156e516e5eull;  // SetBgTexture's frame-mesh bind
-    constexpr std::uint64_t SLOT_BG   = 0xbcae534bull;                 // slot SetBgTexture writes
-    constexpr std::uint64_t SLOT_MAIN = 0x3bbf9889ull;                 // color layer slot
+    constexpr std::uint64_t VANILLA_TELOP_BG = 0x156846156e516e5eull;
+    constexpr std::uint64_t SLOT_MASK = 0xbcae534bull;
+    constexpr std::uint64_t SLOT_MAIN = 0x3bbf9889ull;
 
     constexpr std::uint32_t TELOP_LAYOUT_ID = 0x5997da9cu;
     constexpr std::uint32_t TELOP_MODEL_ID  = 0xa7965f2eu;
@@ -44,12 +45,9 @@ namespace
         return { gAddr.TelopStartTitleEvCall_SetBgTexture, gAddr.Layout_GetLayout, gAddr.Layout_GetModel };
     }
 
-    static std::uint64_t MaskSlot()
+    static std::uint64_t CurrentCustom()
     {
-        static std::uint64_t s_maskSlot = 0;
-        if (s_maskSlot == 0)
-            s_maskSlot = static_cast<std::uint64_t>(FoxHashes::StrCode32("Mask_Texture"));
-        return s_maskSlot;
+        return g_Textures.Resolve(MissionCodeGuard::GetCurrentMissionCode());
     }
 
     static void Prefetch(std::uint64_t textureHash)
@@ -74,11 +72,8 @@ namespace
 
     static void BindCustom(void* node, std::uint64_t custom)
     {
-        g_OrigSetTextureName(node, custom, SLOT_BG, 2);
+        g_OrigSetTextureName(node, custom, SLOT_MASK, 2);
         g_OrigSetTextureName(node, custom, SLOT_MAIN, 2);
-        const std::uint64_t mask = MaskSlot();
-        if (mask != 0)
-            g_OrigSetTextureName(node, custom, mask, 2);
     }
 
     static void* GetTelopModel(void* self)
@@ -117,7 +112,7 @@ namespace
                 void* node = data[i];
                 if (!node) continue;
                 if (*reinterpret_cast<std::uint8_t*>(reinterpret_cast<char*>(node) + 0x72) != 2)
-                    continue; 
+                    continue;
 
                 BindCustom(node, custom);
             }
@@ -125,15 +120,63 @@ namespace
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
 
+#ifdef _DEBUG
+    static std::atomic<int> g_DdTraceBudget { 80 };
+
+    static bool IsDdFamilyTexture(std::uint64_t hash)
+    {
+        return hash == 0x156846156e516e5eull || hash == 0x156848f067a209acull
+            || hash == 0x156943e30b3ba648ull || hash == 0x156be0c43f60cc54ull;
+    }
+
+    static void TraceDdFamilyBind(void* node, std::uint64_t textureHash, std::uint64_t slotHash, int type)
+    {
+        if (!IsDdFamilyTexture(textureHash))
+            return;
+        if (g_DdTraceBudget.fetch_sub(1, std::memory_order_relaxed) <= 0)
+            return;
+
+        void* frames[8] = {};
+        const USHORT count = RtlCaptureStackBackTrace(1, 8, frames, nullptr);
+        const std::uintptr_t base = GetExeBase();
+
+        char chain[400];
+        std::size_t used = 0;
+        for (USHORT i = 0; i < count && used < sizeof(chain) - 40; ++i)
+        {
+            const std::uintptr_t va = reinterpret_cast<std::uintptr_t>(frames[i]);
+            int n = 0;
+            if (base && va >= base && va < base + 0xA200000ull)
+                n = snprintf(chain + used, sizeof(chain) - used, " game+0x%llX",
+                             static_cast<unsigned long long>(va - base));
+            else
+                n = snprintf(chain + used, sizeof(chain) - used, " ext:%p", frames[i]);
+            if (n <= 0) break;
+            used += static_cast<std::size_t>(n);
+        }
+        chain[used] = 0;
+
+        LogDebug("[UiTexTrace] DD-family bind hash=%016llX slot=%08llX pool=%d node=%p mission=%u callers:%s\n",
+                 static_cast<unsigned long long>(textureHash),
+                 static_cast<unsigned long long>(slotHash),
+                 type, node,
+                 static_cast<unsigned>(MissionCodeGuard::GetCurrentMissionCode()),
+                 chain);
+    }
+#endif
+
     static void __fastcall hk_SetTextureName(void* node, std::uint64_t textureHash, std::uint64_t slotHash, int type)
     {
         MISSION_GUARD_ORIGINAL_VOID(g_OrigSetTextureName, node, textureHash, slotHash, type);
 
+#ifdef _DEBUG
+        TraceDdFamilyBind(node, textureHash, slotHash, type);
+#endif
+
         std::uint64_t mainTex = 0;
-        if (textureHash == VANILLA_TELOP_BG &&
-            g_InTelop.load(std::memory_order_relaxed) && g_Override.load(std::memory_order_relaxed))
+        if (textureHash == VANILLA_TELOP_BG && g_InTelop.load(std::memory_order_relaxed))
         {
-            const std::uint64_t custom = g_TexHash.load(std::memory_order_relaxed);
+            const std::uint64_t custom = CurrentCustom();
             if (custom != 0)
             {
                 Prefetch(custom);
@@ -148,9 +191,8 @@ namespace
         if (mainTex != 0 && g_OrigSetTextureName)
         {
             g_OrigSetTextureName(node, mainTex, SLOT_MAIN, 2);
-            const std::uint64_t mask = MaskSlot();
-            if (mask != 0)
-                g_OrigSetTextureName(node, mainTex, mask, 2);
+            if (slotHash != SLOT_MASK)
+                g_OrigSetTextureName(node, mainTex, SLOT_MASK, 2);
         }
     }
 
@@ -163,39 +205,43 @@ namespace
             g_OrigSetBgTexture(self);
         g_InTelop.store(false, std::memory_order_relaxed);
 
-        if (g_Override.load(std::memory_order_relaxed) && self)
+        if (self)
         {
-            const std::uint64_t custom = g_TexHash.load(std::memory_order_relaxed);
+            const std::uint64_t custom = CurrentCustom();
             if (custom != 0)
             {
                 Prefetch(custom);
                 ApplyCustomToMeshes(GetTelopModel(self), custom);
+                LogDebug("[MissionTelopBg] mission %u -> %016llX\n",
+                         static_cast<unsigned>(MissionCodeGuard::GetCurrentMissionCode()),
+                         static_cast<unsigned long long>(custom));
             }
         }
     }
 }
 
-void Set_MissionTelopSplashTexturePath(const char* path)
+void Set_MissionTelopSplashTexturePath(const char* path, std::uint32_t missionCode)
 {
     if (!path || !path[0])
         return;
 
     const std::uint64_t h = FoxHashes::PathCode64Ext(path);
-    g_TexHash.store(h, std::memory_order_relaxed);
+    g_Textures.Set(missionCode, h);
     Prefetch(h);
-    g_Override.store(true, std::memory_order_relaxed);
+    LogDebug("[MissionTelopBg] set texture %016llX for mission %u (%s)\n",
+             static_cast<unsigned long long>(h), missionCode, path);
 }
 
-void Unset_MissionTelopSplashTexturePath()
+void Unset_MissionTelopSplashTexturePath(std::uint32_t missionCode)
 {
-    g_Override.store(false, std::memory_order_relaxed);
+    g_Textures.Clear(missionCode);
 }
 
 bool Install_MissionTelopBgTexture_Hook()
 {
     const TelopBuildAddrs a = AddrsForThisBuild();
     if (a.setBgTexture == 0)
-        return true; 
+        return true;
 
     if (!gAddr.SetTextureName)
     {
@@ -233,7 +279,7 @@ bool Uninstall_MissionTelopBgTexture_Hook()
 
     g_OrigSetTextureName = nullptr;
     g_OrigSetBgTexture   = nullptr;
-    g_Override.store(false, std::memory_order_relaxed);
+    g_Textures.Clear(0);
     g_InTelop.store(false, std::memory_order_relaxed);
     return true;
 }

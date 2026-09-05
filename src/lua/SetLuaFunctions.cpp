@@ -26,6 +26,7 @@ extern "C" {
 #include "MissionTelopBgTexture.h"
 #include "LoadingSplash.h"
 #include "GameOverSplash.h"
+#include "RewardPopupBgTexture.h"
 #include "VIPSleepFaintHook.h"
 #include "VIPHoldupHook.h"
 #include "VIPRadioHook.h"
@@ -472,13 +473,23 @@ int __cdecl l_ClearAllEquipBgTextures(lua_State* L)
 }
 
 
+static std::uint32_t OptionalMissionCode(lua_State* L, int index)
+{
+    const int type = LuaType(L, index);
+    if (type == LUA_TNONE || type == LUA_TNIL)
+        return 0;
+    const int code = GetLuaInt(L, index);
+    return code > 0 ? static_cast<std::uint32_t>(code) : 0u;
+}
+
+
 int __cdecl l_SetLoadingSplashMainTexturePath(lua_State* L)
 {
     const char* rawPath = GetLuaString(L, 1);
     if (!rawPath || !*rawPath)
         return 0;
 
-    LoadingSplash_SetMainTexture(FoxHashes::PathCode64Ext(rawPath));
+    LoadingSplash_SetMainTexture(FoxHashes::PathCode64Ext(rawPath), OptionalMissionCode(L, 2));
     return 0;
 }
 
@@ -489,15 +500,14 @@ int __cdecl l_SetLoadingSplashBlurTexturePath(lua_State* L)
     if (!rawPath || !*rawPath)
         return 0;
 
-    LoadingSplash_SetBlurTexture(FoxHashes::PathCode64Ext(rawPath));
+    LoadingSplash_SetBlurTexture(FoxHashes::PathCode64Ext(rawPath), OptionalMissionCode(L, 2));
     return 0;
 }
 
 
 int __cdecl l_ClearLoadingSplashTextures(lua_State* L)
 {
-    UNREFERENCED_PARAMETER(L);
-    LoadingSplash_ClearTextures();
+    LoadingSplash_ClearTextures(OptionalMissionCode(L, 1));
     return 0;
 }
 
@@ -508,7 +518,7 @@ int __cdecl l_SetGameOverSplashMainTexturePath(lua_State* L)
     if (!rawPath || !*rawPath)
         return 0;
 
-    GameOverSplash_SetMainTexture(FoxHashes::PathCode64Ext(rawPath));
+    GameOverSplash_SetMainTexture(FoxHashes::PathCode64Ext(rawPath), OptionalMissionCode(L, 2));
     return 0;
 }
 
@@ -519,15 +529,32 @@ int __cdecl l_SetGameOverSplashBlurTexturePath(lua_State* L)
     if (!rawPath || !*rawPath)
         return 0;
 
-    GameOverSplash_SetBlurTexture(FoxHashes::PathCode64Ext(rawPath));
+    GameOverSplash_SetBlurTexture(FoxHashes::PathCode64Ext(rawPath), OptionalMissionCode(L, 2));
     return 0;
 }
 
 
 int __cdecl l_ClearGameOverSplashTextures(lua_State* L)
 {
-    UNREFERENCED_PARAMETER(L);
-    GameOverSplash_ClearTextures();
+    GameOverSplash_ClearTextures(OptionalMissionCode(L, 1));
+    return 0;
+}
+
+
+int __cdecl l_SetRewardPopupBgTexturePath(lua_State* L)
+{
+    const char* rawPath = GetLuaString(L, 1);
+    if (!rawPath || !*rawPath)
+        return 0;
+
+    RewardPopupBg_SetTexture(FoxHashes::PathCode64Ext(rawPath), OptionalMissionCode(L, 2));
+    return 0;
+}
+
+
+int __cdecl l_ClearRewardPopupBgTexture(lua_State* L)
+{
+    RewardPopupBg_ClearTexture(OptionalMissionCode(L, 1));
     return 0;
 }
 
@@ -655,7 +682,7 @@ int __cdecl l_RequestToAttachInDemo(lua_State* L)
         connectPoint = GetLuaString(L, -1);
     LuaPop(L, 1);
 
-    bool unattachOnSleep = false;
+    bool unattachOnSleep = true;
     LuaGetField(L, 1, "unattachOnSleep");
     if (LuaType(L, -1) == LUA_TBOOLEAN)
         unattachOnSleep = GetLuaBool(L, -1);
@@ -1629,7 +1656,7 @@ int __cdecl l_SetMissionTelopSplashTexturePath(lua_State* L)
     const char* path = GetLuaString(L, 1);
     const bool ok = (path != nullptr && path[0] != '\0');
     if (ok)
-        Set_MissionTelopSplashTexturePath(path);
+        Set_MissionTelopSplashTexturePath(path, OptionalMissionCode(L, 2));
     PushLuaBool(L, ok);
     return 1;
 }
@@ -1637,8 +1664,7 @@ int __cdecl l_SetMissionTelopSplashTexturePath(lua_State* L)
 
 int __cdecl l_UnsetMissionTelopSplashTexturePath(lua_State* L)
 {
-    UNREFERENCED_PARAMETER(L);
-    Unset_MissionTelopSplashTexturePath();
+    Unset_MissionTelopSplashTexturePath(OptionalMissionCode(L, 1));
     return 0;
 }
 
@@ -1724,6 +1750,15 @@ int __cdecl l_FNVHash32(lua_State* L)
 }
 
 
+static const char* OptionalPopupBgPath(lua_State* L, int index)
+{
+    const int type = LuaType(L, index);
+    if (type == LUA_TNONE || type == LUA_TNIL)
+        return nullptr;
+    return GetLuaString(L, index);
+}
+
+
 int __cdecl l_ShowMbDvcAnnouncePopupReport(lua_State* L)
 {
     const char* title = GetLuaString(L, 1);
@@ -1731,7 +1766,7 @@ int __cdecl l_ShowMbDvcAnnouncePopupReport(lua_State* L)
     if (!title) title = "";
     if (!body)  body  = "";
 
-    const bool ok = Show_MbDvcAnnouncePopupReport(title, body);
+    const bool ok = Show_MbDvcAnnouncePopupReport(title, body, OptionalPopupBgPath(L, 3));
     PushLuaBool(L, ok);
     return 1;
 }
@@ -1744,7 +1779,7 @@ int __cdecl l_ShowMbDvcAnnouncePopupReportLangId(lua_State* L)
     if (!titleLabel) titleLabel = "";
     if (!bodyLabel)  bodyLabel  = "";
 
-    const bool ok = Show_MbDvcAnnouncePopupByLangId(titleLabel, bodyLabel);
+    const bool ok = Show_MbDvcAnnouncePopupByLangId(titleLabel, bodyLabel, OptionalPopupBgPath(L, 3));
     PushLuaBool(L, ok);
     return 1;
 }
@@ -1757,7 +1792,7 @@ int __cdecl l_ShowMbDvcAnnouncePopupReward(lua_State* L)
     if (!title) title = "";
     if (!body)  body  = "";
 
-    const bool ok = Show_MbDvcAnnouncePopupReward(title, body);
+    const bool ok = Show_MbDvcAnnouncePopupReward(title, body, OptionalPopupBgPath(L, 3));
     PushLuaBool(L, ok);
     return 1;
 }
@@ -1770,7 +1805,7 @@ int __cdecl l_ShowMbDvcAnnouncePopupRewardLangId(lua_State* L)
     if (!titleLabel) titleLabel = "";
     if (!bodyLabel)  bodyLabel  = "";
 
-    const bool ok = Show_MbDvcAnnouncePopupRewardLangId(titleLabel, bodyLabel);
+    const bool ok = Show_MbDvcAnnouncePopupRewardLangId(titleLabel, bodyLabel, OptionalPopupBgPath(L, 3));
     PushLuaBool(L, ok);
     return 1;
 }

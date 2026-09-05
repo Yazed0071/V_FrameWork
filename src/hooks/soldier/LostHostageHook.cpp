@@ -15,6 +15,7 @@
 #include "MissionCodeGuard.h"
 #include "LostHostageHook.h"
 #include "NoticeControllerImpl_CheckSightNoticePlayer.h"
+#include "SoldierVehicleAvoid.h"
 #include "StepRadioDiscovery.h"
 #include "AddressSet.h"
 #include "FoxHashes.h"
@@ -312,6 +313,9 @@ static bool __fastcall hkAddNoticeInfo(void* self, std::uint32_t soldierIndex, c
     ParseNoticeBlob(noticeBlob, noticeType, noticeObjId, slot);
 
     if (SoldierNotice_ShouldDropNotice(soldierIndex, noticeType, _ReturnAddress()))
+        return false;
+
+    if (SoldierVehicleAvoid_ShouldDropNotice(soldierIndex, noticeType, noticeBlob))
         return false;
 
     const bool accepted = g_OrigAddNoticeInfo(self, soldierIndex, noticeBlob);

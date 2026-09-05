@@ -59,7 +59,6 @@ namespace AddressSetRuntime
         uintptr_t SetTextureName = 0;
         uintptr_t SoundSystemCtor = 0;
         uintptr_t StateRadioRequest = 0;
-        uintptr_t State_ComradeAction = 0;
         uintptr_t State_EnterDownHoldup = 0;
         uintptr_t State_EnterStandHoldup1 = 0;
         uintptr_t State_EnterStandHoldupUnarmed = 0;
@@ -404,7 +403,6 @@ namespace AddressSetRuntime
         uintptr_t Mtar_GetAnimFile = 0;
         uintptr_t Mtar_GetDataInfo = 0;
         uintptr_t Equip_MotionEntryTable = 0;
-        uintptr_t Equip_MotionMtarResolver = 0;
         uintptr_t SimplePartsControllerImpl_Vtable = 0;
         uintptr_t SimplePartsControllerImpl_SetMotionData = 0;
         uintptr_t SimplePartsControllerImpl_SetMotionDataByPath = 0;
@@ -425,7 +423,6 @@ namespace AddressSetRuntime
         uintptr_t Soldier2InterrogateUtil_UpdateInterrogation = 0;
         uintptr_t Soldier2InterrogateUtil_UpdateInterrogationMarker = 0;
         uintptr_t SoundControllerImpl_CallVoice = 0;
-        uintptr_t MbDvcCassetteTapeCallbackImpl_SeekMusic = 0;
         uintptr_t EquipSystem_GetGunInfoById = 0;
 
         uintptr_t Reticle_InitHandGunAsset = 0;
@@ -443,24 +440,14 @@ namespace AddressSetRuntime
         uintptr_t BulletEffectController_CreateEffect = 0;
         uintptr_t ItemSelectorCallbackImpl_AddRecord = 0;
 
-        uintptr_t LoadPlayerLilChickCapFv2 = 0;
-        uintptr_t LoadPlayerLilChickCapFpk = 0;
-        uintptr_t LoadPlayerChickenCapFv2 = 0;
-        uintptr_t LoadPlayerChickenCapFpk = 0;
         uintptr_t AdditionalMotionTable_GetMtarPathId = 0;
-        uintptr_t ModelVertexColorChange_GetModelTotalVertexNum = 0;
         uintptr_t ItemSelector_AddDevelopWeaponList = 0;
         uintptr_t BlockControllerImpl_UpdateAdditionalMotionBlock = 0;
         uintptr_t Fox_Block_GetFileForPathId = 0;
         uintptr_t Fox_BlockGroup_GetBlockAtIndex = 0;
-        uintptr_t EquipPreviewSystem_RequestLoadEquip = 0;
         uintptr_t ItemSelector_StartEquipPreviewImpl = 0;
-        uintptr_t EquipBlockController2_RequestLoad = 0;
-        uintptr_t EquipBlockController2_Instance = 0;
-        uintptr_t ItemSelector_UpdateSelect = 0;
         uintptr_t UiEquipPreviewController_ScrollNext = 0;
         uintptr_t UiEquipPreviewController_ScrollPrev = 0;
-        uintptr_t UiEquipPreviewController_StopEquipPreview = 0;
         uintptr_t Player2Impl_AddAdditionalMtarAll = 0;
         uintptr_t Player2Impl_RemoveAdditionalMtarAll = 0;
         uintptr_t MotionLoaderImpl_BarrelTypeTable = 0;
@@ -490,7 +477,6 @@ namespace AddressSetRuntime
         uintptr_t Collection_IsDiamondByType = 0;
         uintptr_t MbmImpl_IsGotDataBase = 0;
         uintptr_t MbmImpl_AddTempDataBase = 0;
-        uintptr_t AttackAction_UpdateSecondWeaponMatrix = 0;
         uintptr_t QuietChokeHold = 0;
         uintptr_t QuietInterrogate = 0;
         uintptr_t QuietInterrogateBypass = 0;
@@ -534,6 +520,14 @@ namespace AddressSetRuntime
         uintptr_t GameObject_GetGameObjectIdWithName = 0;
         uintptr_t Vehicle_GetConnectPointWorldMatrix = 0;
         uintptr_t Player_SequentialDemoActionExecute = 0;
+        uintptr_t Player_SequentialDemoActionOnSignal = 0;
+        uintptr_t Fox_GameObjectManager_GetSharedInstance = 0;
+        uintptr_t GameObjectType_Horse2_Vtable = 0;
+        uintptr_t GameObjectType_Heli2_Vtable = 0;
+        uintptr_t GameObjectType_HeliAlt_Vtable = 0;
+        uintptr_t GameObjectType_WalkerGear2_Vtable = 0;
+        uintptr_t AnimationControllerImpl_Vtable = 0;
+        uintptr_t HeliAnimationControllerImpl_Vtable = 0;
     };
 
     inline GameBuild& GetGameBuild()

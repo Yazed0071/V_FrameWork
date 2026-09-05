@@ -189,6 +189,9 @@ bool Uninstall_LoadingSplash_Hook();
 bool Install_GameOverSplash_Hook();
 bool Uninstall_GameOverSplash_Hook();
 
+bool Install_RewardPopupBgTexture_Hook();
+bool Uninstall_RewardPopupBgTexture_Hook();
+
 bool Install_State_StandHoldupCancelLookToPlayer_Hook(HMODULE hGame);
 bool Uninstall_State_StandHoldupCancelLookToPlayer_Hook();
 
@@ -387,8 +390,12 @@ bool Install_UniqueCharacterSuitSlot();
 void Uninstall_UniqueCharacterSuitSlot();
 bool Install_PlayerAttachInDemo_Hook();
 bool Uninstall_PlayerAttachInDemo_Hook();
+bool Install_VehicleDemoStopExempt();
+void Uninstall_VehicleDemoStopExempt();
 bool Install_CheckSightNoticePlayer_Hook();
 bool Uninstall_CheckSightNoticePlayer_Hook();
+bool Install_SoldierVehicleAvoid_Hook();
+bool Uninstall_SoldierVehicleAvoid_Hook();
 bool Install_InterrogationVoiceEvent_Hook();
 bool Uninstall_InterrogationVoiceEvent_Hook();
 
@@ -602,6 +609,26 @@ namespace
         void Uninstall() override
         {
             Uninstall_GameOverSplash_Hook();
+        }
+    };
+
+    class RewardPopupBgTextureModule final : public IFeatureModule
+    {
+    public:
+        const char* GetName() const override
+        {
+            return "RewardPopupBgTexture";
+        }
+
+        bool Install(HMODULE hGame) override
+        {
+            UNREFERENCED_PARAMETER(hGame);
+            return Install_RewardPopupBgTexture_Hook();
+        }
+
+        void Uninstall() override
+        {
+            Uninstall_RewardPopupBgTexture_Hook();
         }
     };
 
@@ -1311,6 +1338,26 @@ namespace
         }
     };
 
+    class VehicleDemoStopExemptModule final : public IFeatureModule
+    {
+    public:
+        const char* GetName() const override
+        {
+            return "VehicleDemoStopExempt";
+        }
+
+        bool Install(HMODULE hGame) override
+        {
+            UNREFERENCED_PARAMETER(hGame);
+            return Install_VehicleDemoStopExempt();
+        }
+
+        void Uninstall() override
+        {
+            Uninstall_VehicleDemoStopExempt();
+        }
+    };
+
     class SoldierIgnorePlayerModule final : public IFeatureModule
     {
     public:
@@ -1328,6 +1375,26 @@ namespace
         void Uninstall() override
         {
             Uninstall_CheckSightNoticePlayer_Hook();
+        }
+    };
+
+    class SoldierIgnoreVehicleModule final : public IFeatureModule
+    {
+    public:
+        const char* GetName() const override
+        {
+            return "SoldierIgnoreVehicle";
+        }
+
+        bool Install(HMODULE hGame) override
+        {
+            UNREFERENCED_PARAMETER(hGame);
+            return Install_SoldierVehicleAvoid_Hook();
+        }
+
+        void Uninstall() override
+        {
+            Uninstall_SoldierVehicleAvoid_Hook();
         }
     };
 
@@ -1932,6 +1999,7 @@ void RegisterBuiltInFeatureModules()
     static MissionTelopBgTextureModule s_MissionTelopBgTextureModule;
     static LoadingSplashModule s_LoadingSplashModule;
     static GameOverSplashModule s_GameOverSplashModule;
+    static RewardPopupBgTextureModule s_RewardPopupBgTextureModule;
     static HoldupCancelLookToPlayerModule s_HoldupCancelLookToPlayerModule;
     static CautionTimerModule s_CautionTimerModule;
     static CpAntiAirModule s_CpAntiAirModule;
@@ -1970,7 +2038,9 @@ void RegisterBuiltInFeatureModules()
     static QuietCqcPatchesModule s_QuietCqcPatchesModule;
     static UniqueCharacterSuitSlotModule s_UniqueCharacterSuitSlotModule;
     static PlayerAttachInDemoModule s_PlayerAttachInDemoModule;
+    static VehicleDemoStopExemptModule s_VehicleDemoStopExemptModule;
     static SoldierIgnorePlayerModule s_SoldierIgnorePlayerModule;
+    static SoldierIgnoreVehicleModule s_SoldierIgnoreVehicleModule;
     static InterrogationVoiceEventModule s_InterrogationVoiceEventModule;
     static SetEyeLampColorModule s_SetEyeLampColorModule;
     static GetGameObjectIdWithIndex s_GetGameObjectIdWithIndex;
@@ -2024,6 +2094,7 @@ void RegisterBuiltInFeatureModules()
             FeatureModuleRegistry::Instance().Register(&s_MissionTelopBgTextureModule);
             FeatureModuleRegistry::Instance().Register(&s_LoadingSplashModule);
             FeatureModuleRegistry::Instance().Register(&s_GameOverSplashModule);
+            FeatureModuleRegistry::Instance().Register(&s_RewardPopupBgTextureModule);
             FeatureModuleRegistry::Instance().Register(&s_HoldupCancelLookToPlayerModule);
             FeatureModuleRegistry::Instance().Register(&s_CautionTimerModule);
             FeatureModuleRegistry::Instance().Register(&s_CpAntiAirModule);
@@ -2061,7 +2132,9 @@ void RegisterBuiltInFeatureModules()
             FeatureModuleRegistry::Instance().Register(&s_QuietCqcPatchesModule);
             FeatureModuleRegistry::Instance().Register(&s_UniqueCharacterSuitSlotModule);
             FeatureModuleRegistry::Instance().Register(&s_PlayerAttachInDemoModule);
+            FeatureModuleRegistry::Instance().Register(&s_VehicleDemoStopExemptModule);
             FeatureModuleRegistry::Instance().Register(&s_SoldierIgnorePlayerModule);
+            FeatureModuleRegistry::Instance().Register(&s_SoldierIgnoreVehicleModule);
             FeatureModuleRegistry::Instance().Register(&s_InterrogationVoiceEventModule);
             FeatureModuleRegistry::Instance().Register(&s_SoldierVoiceTypeQueryModule);
             FeatureModuleRegistry::Instance().Register(&s_VoicePitchOverrideModule);

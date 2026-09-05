@@ -14,6 +14,7 @@
 #include "HookUtils.h"
 #include "log.h"
 #include "MbDvcCustomPopupHook.h"
+#include "RewardPopupBgTexture.h"
 
 
 namespace
@@ -78,6 +79,7 @@ namespace
     {
         PopupTextSource title;
         PopupTextSource body;
+        std::uint64_t   bgTexture = 0;
         std::uint8_t    reserveId = kReserveId_NormalSlot0;
         bool            reserved  = false;
     };
@@ -846,6 +848,7 @@ namespace
             bool            havePopped = false;
             PopupTextSource title;
             PopupTextSource body;
+            std::uint64_t   bgTexture  = 0;
             {
                 std::lock_guard<std::mutex> lock(g_PendingMutex);
                 for (auto it = g_PendingQueue.begin(); it != g_PendingQueue.end(); ++it)
@@ -862,14 +865,17 @@ namespace
                     }
                     if (eligible)
                     {
-                        title = std::move(it->title);
-                        body  = std::move(it->body);
+                        title     = std::move(it->title);
+                        body      = std::move(it->body);
+                        bgTexture = it->bgTexture;
                         g_PendingQueue.erase(it);
                         havePopped = true;
                         break;
                     }
                 }
             }
+
+            RewardPopupBg_SetCurrentPopupTexture(havePopped ? bgTexture : 0);
 
             if (havePopped)
             {
@@ -896,6 +902,10 @@ namespace
                     Log("[MbDvcCustomPopup] override write failed (self=%p)\n", self);
                 }
             }
+        }
+        else if (prevState != 1 && currState == 1)
+        {
+            RewardPopupBg_SetCurrentPopupTexture(0);
         }
 
         return result;
@@ -1301,11 +1311,20 @@ bool Uninstall_MbDvcCustomPopup_Hook()
 }
 
 
+static std::uint64_t PopupBgHashFromPath(const char* bgTexturePath)
+{
+    if (!bgTexturePath || !*bgTexturePath)
+        return 0;
+    return FoxHashes::PathCode64Ext(bgTexturePath);
+}
+
+
 static bool Show_MbDvcAnnouncePopup_Impl(std::uint8_t  reserveId,
                                          const char*   titleLiteral,
                                          std::uint64_t titleHash,
                                          const char*   bodyLiteral,
-                                         std::uint64_t bodyHash)
+                                         std::uint64_t bodyHash,
+                                         std::uint64_t bgTexture)
 {
     PopupTextSource titleSrc;
     if (titleLiteral)
@@ -1345,6 +1364,7 @@ static bool Show_MbDvcAnnouncePopup_Impl(std::uint8_t  reserveId,
         PendingPopup p;
         p.title     = std::move(titleSrc);
         p.body      = std::move(bodySrc);
+        p.bgTexture = bgTexture;
         p.reserveId = reserveId;
         p.reserved  = false;
         g_PendingQueue.push_back(std::move(p));
@@ -1388,16 +1408,19 @@ static bool Show_MbDvcAnnouncePopup_Impl(std::uint8_t  reserveId,
 }
 
 
-bool Show_MbDvcAnnouncePopupReport(const char* title, const char* body)
+bool Show_MbDvcAnnouncePopupReport(const char* title, const char* body,
+                                   const char* bgTexturePath)
 {
     return Show_MbDvcAnnouncePopup_Impl(
         kReserveId_NormalSlot0,
         title ? title : "", 0,
-        body ? body : "",  0);
+        body ? body : "",  0,
+        PopupBgHashFromPath(bgTexturePath));
 }
 
 
-bool Show_MbDvcAnnouncePopupByLangId(const char* titleLabel, const char* bodyLabel)
+bool Show_MbDvcAnnouncePopupByLangId(const char* titleLabel, const char* bodyLabel,
+                                     const char* bgTexturePath)
 {
     const char*  titleLit  = nullptr;
     std::uint64_t titleHash = 0;
@@ -1416,22 +1439,26 @@ bool Show_MbDvcAnnouncePopupByLangId(const char* titleLabel, const char* bodyLab
     return Show_MbDvcAnnouncePopup_Impl(
         kReserveId_NormalSlot0,
         titleLit, titleHash,
-        bodyLit,  bodyHash);
+        bodyLit,  bodyHash,
+        PopupBgHashFromPath(bgTexturePath));
 }
 
 
-bool Show_MbDvcAnnouncePopupReward(const char* title, const char* body)
+bool Show_MbDvcAnnouncePopupReward(const char* title, const char* body,
+                                   const char* bgTexturePath)
 {
     constexpr std::uint8_t kServerSlot = 2;
     return Show_MbDvcAnnouncePopup_Impl(
         kServerSlot,
         title ? title : "", 0,
-        body ? body : "",  0);
+        body ? body : "",  0,
+        PopupBgHashFromPath(bgTexturePath));
 }
 
 
 bool Show_MbDvcAnnouncePopupRewardLangId(const char* titleLabel,
-                                         const char* bodyLabel)
+                                         const char* bodyLabel,
+                                         const char* bgTexturePath)
 {
     constexpr std::uint8_t kServerSlot = 2;
 
@@ -1452,7 +1479,8 @@ bool Show_MbDvcAnnouncePopupRewardLangId(const char* titleLabel,
     return Show_MbDvcAnnouncePopup_Impl(
         kServerSlot,
         titleLit, titleHash,
-        bodyLit,  bodyHash);
+        bodyLit,  bodyHash,
+        PopupBgHashFromPath(bgTexturePath));
 }
 
 

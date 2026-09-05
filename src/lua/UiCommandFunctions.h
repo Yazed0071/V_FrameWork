@@ -18,6 +18,8 @@ int __cdecl l_ClearLoadingSplashTextures(lua_State* L);
 int __cdecl l_SetGameOverSplashMainTexturePath(lua_State* L);
 int __cdecl l_SetGameOverSplashBlurTexturePath(lua_State* L);
 int __cdecl l_ClearGameOverSplashTextures(lua_State* L);
+int __cdecl l_SetRewardPopupBgTexturePath(lua_State* L);
+int __cdecl l_ClearRewardPopupBgTexture(lua_State* L);
 
 int __cdecl l_SetEquipIconFtexPath(lua_State* L);
 int __cdecl l_ClearIconFtexPath(lua_State* L);

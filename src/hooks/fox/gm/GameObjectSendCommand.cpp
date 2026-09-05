@@ -33,6 +33,7 @@ extern "C" {
 #include "../../soldier/CautionStepNormalTimerHook.h"
 #include "../../soldier/SoldierObjectRtpc.h"
 #include "../../soldier/NoticeControllerImpl_CheckSightNoticePlayer.h"
+#include "../../soldier/SoldierVehicleAvoid.h"
 #include "GetGameObjectIdWithIndex.h"
 #include "../../soldier/InterrogationVoiceEvent.h"
 #include "../../soldier/SoldierAkObjIdMap.h"
@@ -783,6 +784,27 @@ namespace
             if ((id >> 9) == TppGameObjectType::kSoldier2)
                 ::Set_SoldierNoticeIgnoreMask(id, mask);
             return r;
+        }
+        if (idStr == "SetIgnoreVehicle")
+        {
+            const std::uint32_t id = ReadCommandTargetId(L);
+
+            bool enabled = true;
+            g_lua_pushstring(L, const_cast<char*>("enabled"));
+            g_lua_gettable(L, 2);
+            const int enabledType = g_lua_type(L, -1);
+            if (enabledType == LUA_TBOOLEAN)
+                enabled = g_lua_toboolean(L, -1) != 0;
+            else if (enabledType == LUA_TNUMBER)
+                enabled = static_cast<int>(g_lua_tonumber(L, -1)) != 0;
+            g_lua_settop(L, top);
+
+            if ((id >> 9) == TppGameObjectType::kSoldier2)
+                ::Set_SoldierIgnoreVehicle(id, enabled);
+            else
+                Log("[SoldierIgnoreVehicle] SetIgnoreVehicle ignored: target 0x%08X is not a "
+                    "TppSoldier2 game object id (pass GameObject.GetGameObjectId(name))\n", id);
+            return 0;
         }
         if (idStr == "SetHeadMarkColor")
         {

@@ -49,7 +49,6 @@ namespace AddressSetRuntime
             0x141DC78F0ull, // SetTextureName
             0x140989120ull, // SoundSystemCtor
             0x14A2ACC00ull, // StateRadioRequest
-            0x1414B8D20ull, // State_ComradeAction
             0x14A140940ull, // State_EnterDownHoldup
             0x14A140C00ull, // State_EnterStandHoldup1
             0x14A141500ull, // State_EnterStandHoldupUnarmed
@@ -205,20 +204,20 @@ namespace AddressSetRuntime
             0x14126B560ull, // SearchLightActionPluginImpl_StateDoorEnd
             0x140338B60ull, // SoundControl_PostExternalEvent
             0x140989B20ull, // MusicPlayerPlayWrapper
-            0x145FA1510ull, // FUN_145fa1510
-            0x1408B1A0Dull, // SetEquipItem
-            0x141000780ull, // FUN_141000780
-            0x14504E090ull, // FUN_14504e090
+            0x145FA1510ull, // Barrier_GetItemId
+            0x1408B1A0Dull, // Barrier_EquipItemCallRet
+            0x141000780ull, // Barrier_Updater
+            0x14504E090ull, // Barrier_IsFobMode
             0x1409C3AF5ull, // Barrier_LoadGate0
             0x1409C3B5Full, // Barrier_LoadGate1
             0x1409C3BC5ull, // Barrier_LoadGate2
-            0x140FC3CC0ull, // FUN_140fc3cc0
-            0x140A2A480ull, // FUN_140a2a480
-            0x141B18900ull, // FUN_141b18900
-            0x140C0C0B0ull, // FUN_140c0c0b0
-            0x140BFF480ull, // FUN_140bff480
-            0x140AF36D0ull, // FUN_140af36d0
-            0x1404ECF80ull, // FUN_1404ecf80
+            0x140FC3CC0ull, // Dm_FireLoop
+            0x140A2A480ull, // Dm_Classify
+            0x141B18900ull, // Dm_VfxFactory
+            0x140C0C0B0ull, // Dm_ComponentFactory
+            0x140BFF480ull, // Dm_Alloc
+            0x140AF36D0ull, // Dm_BackLinkPool
+            0x1404ECF80ull, // Dm_OneShot
             0x1497396C0ull, // AttackActionImpl_IsWeaponNoUseInPlaceAction
             0x1466f3b10ull, // TppMotherBaseManagement_RegCstDev
             0x1466f4600ull, // TppMotherBaseManagement_RegFlwDev
@@ -344,7 +343,6 @@ namespace AddressSetRuntime
             0x141A75720ull, // Mtar_GetAnimFile
             0x141A762F0ull, // Mtar_GetDataInfo
             0x142A6B400ull, // Equip_MotionEntryTable
-            0x142A71328ull, // Equip_MotionMtarResolver
             0x1422E24F0ull, // SimplePartsControllerImpl_Vtable
             0x146826550ull, // SimplePartsControllerImpl_SetMotionData
             0x146826900ull, // SimplePartsControllerImpl_SetMotionDataByPath
@@ -365,7 +363,6 @@ namespace AddressSetRuntime
             0x1414404D0ull, // Soldier2InterrogateUtil_UpdateInterrogation
             0x141441EB0ull, // Soldier2InterrogateUtil_UpdateInterrogationMarker
             0x1468F0540ull, // SoundControllerImpl_CallVoice
-            0x14930D910ull, // MbDvcCassetteTapeCallbackImpl_SeekMusic
             0x14742D6D0ull, // EquipSystem_GetGunInfoById
             0x1460257C0ull, // Reticle_InitHandGunAsset
             0x149CD4AA0ull, // TimeCigaretteActionPluginImpl_HideTimeCigaretteUi
@@ -377,24 +374,14 @@ namespace AddressSetRuntime
             0x1495814B0ull, // WeaponEnhance_GetLangIdBound
             0x140b3b690ull, // BulletEffectController_CreateEffect
             0x1416A2160ull, // ItemSelectorCallbackImpl_AddRecord
-            0x140AE8960ull, // LoadPlayerLilChickCapFv2
-            0x140AE8A00ull, // LoadPlayerLilChickCapFpk
-            0x140AE8AA0ull, // LoadPlayerChickenCapFv2
-            0x140AE8B40ull, // LoadPlayerChickenCapFpk
             0x140AE3C40ull, // AdditionalMotionTable_GetMtarPathId
-            0x141C2EA80ull, // ModelVertexColorChange_GetModelTotalVertexNum
             0x1416A33F0ull, // ItemSelector_AddDevelopWeaponList
             0x1409B6F40ull, // BlockControllerImpl_UpdateAdditionalMotionBlock
             0x14006D440ull, // Fox_Block_GetFileForPathId
             0x14006D230ull, // Fox_BlockGroup_GetBlockAtIndex
-            0x140DB9630ull, // EquipPreviewSystem_RequestLoadEquip
             0x1416AD560ull, // ItemSelector_StartEquipPreviewImpl
-            0x140A03070ull,           // EquipBlockController2_RequestLoad
-            0x142C1E390ull,           // EquipBlockController2_Instance
-            0x1416ADA20ull,           // ItemSelector_UpdateSelect
             0x141682D50ull, // UiEquipPreviewController_ScrollNext
             0x141682BA0ull, // UiEquipPreviewController_ScrollPrev
-            0x1416831F0ull,           // UiEquipPreviewController_StopEquipPreview
             0x146255A40ull, // Player2Impl_AddAdditionalMtarAll
             0x146270C80ull, // Player2Impl_RemoveAdditionalMtarAll
             0x1423496B0ull, // MotionLoaderImpl_BarrelTypeTable
@@ -424,7 +411,6 @@ namespace AddressSetRuntime
             0x140A0BA50ull, // Collection_IsDiamondByType
             0x140A95E10ull, // MbmImpl_IsGotDataBase
             0x140A880E0ull, // MbmImpl_AddTempDataBase
-            0x141095C90ull, // AttackAction_UpdateSecondWeaponMatrix
             0x141160A64ull, // QuietChokeHold
             0x1411611F9ull, // QuietInterrogate
             0x14111013Cull, // QuietInterrogateBypass
@@ -468,6 +454,14 @@ namespace AddressSetRuntime
             0ull, // GameObject_GetGameObjectIdWithName
             0ull, // Vehicle_GetConnectPointWorldMatrix
             0ull, // Player_SequentialDemoActionExecute
+            0ull, // Player_SequentialDemoActionOnSignal
+            0ull, // Fox_GameObjectManager_GetSharedInstance
+            0ull, // GameObjectType_Horse2_Vtable
+            0ull, // GameObjectType_Heli2_Vtable
+            0ull, // GameObjectType_HeliAlt_Vtable
+            0ull, // GameObjectType_WalkerGear2_Vtable
+            0ull, // AnimationControllerImpl_Vtable
+            0ull, // HeliAnimationControllerImpl_Vtable
         };
         return value;
     }
@@ -516,7 +510,6 @@ namespace AddressSetRuntime
             0x141DC7930ull, // SetTextureName
             0x140988C00ull, // SoundSystemCtor
             0x14ACA5E60ull, // StateRadioRequest
-            0x1414B8CF0ull, // State_ComradeAction
             0x14AB05B80ull, // State_EnterDownHoldup
             0x14AB05D90ull, // State_EnterStandHoldup1
             0x14AB06770ull, // State_EnterStandHoldupUnarmed
@@ -672,20 +665,20 @@ namespace AddressSetRuntime
             0x14126B690ull, // SearchLightActionPluginImpl_StateDoorEnd
             0x1403385E0ull, // SoundControl_PostExternalEvent
             0x140989600ull, // MusicPlayerPlayWrapper
-            0x147BB2DA0ull, // FUN_147bb2da0
-            0x1408B152Dull, // SetEquipItem
-            0x1410007D0ull, // FUN_1410007d0
-            0x144EC3FF0ull, // FUN_144ec3ff0
+            0x147BB2DA0ull, // Barrier_GetItemId
+            0x1408B152Dull, // Barrier_EquipItemCallRet
+            0x1410007D0ull, // Barrier_Updater
+            0x144EC3FF0ull, // Barrier_IsFobMode
             0x1409C35B5ull, // Barrier_LoadGate0
             0x1409C361Full, // Barrier_LoadGate1
             0x1409C3685ull, // Barrier_LoadGate2
-            0x140FC3D90ull, // FUN_140fc3d90
-            0x140A29F50ull, // FUN_140a29f50
-            0x141B18A40ull, // FUN_141b18a40
-            0x140C0BC30ull, // FUN_140c0bc30
-            0x140BFF010ull, // FUN_140bff010
-            0x140AF3210ull, // FUN_140af3210
-            0x1404ECA60ull, // FUN_1404eca60
+            0x140FC3D90ull, // Dm_FireLoop
+            0x140A29F50ull, // Dm_Classify
+            0x141B18A40ull, // Dm_VfxFactory
+            0x140C0BC30ull, // Dm_ComponentFactory
+            0x140BFF010ull, // Dm_Alloc
+            0x140AF3210ull, // Dm_BackLinkPool
+            0x1404ECA60ull, // Dm_OneShot
             0x14A1AE850ull, // AttackActionImpl_IsWeaponNoUseInPlaceAction
             0x148332810ull, // TppMotherBaseManagement_RegCstDev
             0x148333ac0ull, // TppMotherBaseManagement_RegFlwDev
@@ -811,7 +804,6 @@ namespace AddressSetRuntime
             0x141A75850ull, // Mtar_GetAnimFile
             0x141A76420ull, // Mtar_GetDataInfo
             0x142A6B400ull, // Equip_MotionEntryTable
-            0x142A71328ull, // Equip_MotionMtarResolver
             0x1422E24F0ull, // SimplePartsControllerImpl_Vtable
             0x140ADCE80ull, // SimplePartsControllerImpl_SetMotionData
             0x140ADCF10ull, // SimplePartsControllerImpl_SetMotionDataByPath
@@ -832,7 +824,6 @@ namespace AddressSetRuntime
             0x1414404B0ull, // Soldier2InterrogateUtil_UpdateInterrogation
             0x141441E90ull, // Soldier2InterrogateUtil_UpdateInterrogationMarker
             0x1484DA340ull, // SoundControllerImpl_CallVoice
-            0x149CD3550ull, // MbDvcCassetteTapeCallbackImpl_SeekMusic
             0x14961D670ull, // EquipSystem_GetGunInfoById
             0x147C34E20ull, // Reticle_InitHandGunAsset
             0x14A630E60ull, // TimeCigaretteActionPluginImpl_HideTimeCigaretteUi
@@ -844,24 +835,14 @@ namespace AddressSetRuntime
             0x14A026BE0ull, // WeaponEnhance_GetLangIdBound
             0x140b3b210ull, // BulletEffectController_CreateEffect
             0x1416A22B0ull, // ItemSelectorCallbackImpl_AddRecord
-            0x140AE84A0ull, // LoadPlayerLilChickCapFv2
-            0x140AE8540ull, // LoadPlayerLilChickCapFpk
-            0x140AE85E0ull, // LoadPlayerChickenCapFv2
-            0x140AE8680ull, // LoadPlayerChickenCapFpk
             0x140AE3780ull,           // AdditionalMotionTable_GetMtarPathId
-            0x141C2E8F0ull, // ModelVertexColorChange_GetModelTotalVertexNum
             0x1416A3540ull, // ItemSelector_AddDevelopWeaponList
             0x1409B6A20ull,           // BlockControllerImpl_UpdateAdditionalMotionBlock
             0x14006D570ull,           // Fox_Block_GetFileForPathId
             0x14006D360ull,           // Fox_BlockGroup_GetBlockAtIndex
-            0x140DB9710ull, // EquipPreviewSystem_RequestLoadEquip
             0x1416AD6B0ull, // ItemSelector_StartEquipPreviewImpl
-            0x140A02B40ull,           // EquipBlockController2_RequestLoad
-            0x142C1E390ull,           // EquipBlockController2_Instance
-            0x1416ADB70ull,           // ItemSelector_UpdateSelect
             0x141682EA0ull, // UiEquipPreviewController_ScrollNext
             0x141682CF0ull, // UiEquipPreviewController_ScrollPrev
-            0x141683340ull,           // UiEquipPreviewController_StopEquipPreview
             0x147F20CD0ull, // Player2Impl_AddAdditionalMtarAll
             0x147F3FE80ull, // Player2Impl_RemoveAdditionalMtarAll
             0x142349610ull, // MotionLoaderImpl_BarrelTypeTable
@@ -891,7 +872,6 @@ namespace AddressSetRuntime
             0x140A0B520ull, // Collection_IsDiamondByType
             0x140A95920ull, // MbmImpl_IsGotDataBase
             0x140A87BF0ull, // MbmImpl_AddTempDataBase
-            0x141095CE0ull, // AttackAction_UpdateSecondWeaponMatrix
             0x141160AF4ull, // QuietChokeHold
             0x141161289ull, // QuietInterrogate
             0x14111019Cull, // QuietInterrogateBypass
@@ -935,6 +915,14 @@ namespace AddressSetRuntime
             0ull, // GameObject_GetGameObjectIdWithName
             0ull, // Vehicle_GetConnectPointWorldMatrix
             0ull, // Player_SequentialDemoActionExecute
+            0ull, // Player_SequentialDemoActionOnSignal
+            0ull, // Fox_GameObjectManager_GetSharedInstance
+            0ull, // GameObjectType_Horse2_Vtable
+            0ull, // GameObjectType_Heli2_Vtable
+            0ull, // GameObjectType_HeliAlt_Vtable
+            0ull, // GameObjectType_WalkerGear2_Vtable
+            0ull, // AnimationControllerImpl_Vtable
+            0ull, // HeliAnimationControllerImpl_Vtable
         };
 
         return value;

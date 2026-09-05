@@ -25,6 +25,7 @@
 #include "../hooks/soldier/GetVoiceParamWithCallSign.h"
 #include "../hooks/soldier/InterrogationVoiceEvent.h"
 #include "../hooks/soldier/LostHostageHook.h"
+#include "../hooks/soldier/SoldierVehicleAvoid.h"
 #include "../hooks/soldier/NoticeControllerImpl_CheckSightNoticePlayer.h"
 #include "../hooks/soldier/NoticeControllerImpl_GetOccasionalChat.h"
 #include "../hooks/soldier/SoldierAkObjIdMap.h"
@@ -67,6 +68,7 @@ namespace
         Reset_CustomNonVipRecoveryTracking();
         Clear_VIPRadioImportantGameObjectIds();
         Clear_AllSoldierIgnorePlayer();
+        Clear_AllSoldierIgnoreVehicle();
         Clear_TargetCqcStance();
         Clear_HeadMarkEntityColours();
         Clear_AllMissionDeployWarnings();
